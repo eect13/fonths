@@ -86,14 +86,14 @@ test("live catalog refresh does not fetch Fontsource", () => {
   assert.match(regen, /fonts\.google\.com\/metadata\/fonts/);
 });
 
-test("shipped snapshots ≈ Google 1959 + Fontsource exclusive 146 (c255 refresh 2026-11-04)", () => {
+test("shipped snapshots ≈ Google 1961 + Fontsource exclusive 146 (live refresh)", () => {
   assert.equal(google.count, google.families.length);
   assert.equal(other.count, other.families.length);
   assert.equal(directory.count, directory.families.length);
-  assert.equal(google.families.length, 1959);
+  assert.equal(google.families.length, 1961);
   assert.equal(other.families.length, 146);
-  assert.equal(directory.families.length, 1959);
-  assert.equal(google.families.length + other.families.length, 2105);
+  assert.equal(directory.families.length, 1961);
+  assert.equal(google.families.length + other.families.length, 2107);
   assert.ok(String(google.source).includes("live"));
   assert.ok(String(other.source).includes("live"));
   assert.ok(

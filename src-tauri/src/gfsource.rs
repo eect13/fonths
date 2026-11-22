@@ -801,6 +801,7 @@ pub fn clear_full_source(dir: &Path) {
 
 pub const PREFER_STATICS_MARKER: &str = "prefer-statics";
 pub const FAST_RESUME_MARKER: &str = "fast-resume";
+pub const NO_FAST_RESUME_MARKER: &str = "no-fast-resume";
 pub const DIR_PREFER_STATICS_MARKER: &str = ".prefer-statics";
 
 /// 1.0.206u VF-Primary default: prefer variable fonts unless the user opts into
@@ -844,8 +845,9 @@ pub fn set_prefer_statics(config_dir: Option<&Path>, prefer_statics: bool) {
     set_config_marker(config_dir, PREFER_STATICS_MARKER, prefer_statics);
 }
 
-/// Optional Fast Session Resume: bypass deep header re-verification on `.complete`
-/// non-web folders during boot/activation (`fast-resume` marker or `FM_FAST_RESUME=1`).
+/// Automatic Fast Session Resume (enabled by default): bypass deep header
+/// re-verification on `.complete` non-web folders during boot/activation unless
+/// explicitly disabled (`no-fast-resume` marker or `FM_FAST_RESUME=0`).
 pub fn fast_session_resume(config_dir: Option<&Path>) -> bool {
     if let Ok(v) = std::env::var("FM_FAST_RESUME") {
         if v == "1" || v.eq_ignore_ascii_case("true") {
@@ -855,13 +857,18 @@ pub fn fast_session_resume(config_dir: Option<&Path>) -> bool {
             return false;
         }
     }
-    config_dir
-        .map(|d| d.join(FAST_RESUME_MARKER).exists())
+    if config_dir
+        .map(|d| d.join(NO_FAST_RESUME_MARKER).exists())
         .unwrap_or(false)
+    {
+        return false;
+    }
+    true
 }
 
 pub fn set_fast_session_resume(config_dir: Option<&Path>, on: bool) {
     set_config_marker(config_dir, FAST_RESUME_MARKER, on);
+    set_config_marker(config_dir, NO_FAST_RESUME_MARKER, !on);
 }
 
 pub fn dir_prefers_statics(dir: &Path) -> bool {

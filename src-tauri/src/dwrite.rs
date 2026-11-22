@@ -410,7 +410,7 @@ mod imp {
             });
         }
 
-        out.sort_by(|a, b| a.family.to_lowercase().cmp(&b.family.to_lowercase()));
+        out.sort_by_key(|a| a.family.to_lowercase());
         Ok(out)
     }
 

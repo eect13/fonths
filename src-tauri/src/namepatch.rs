@@ -607,7 +607,7 @@ pub fn gdi_sanitize_ttf(font: &[u8]) -> Option<Vec<u8>> {
     if !has_dsig {
         keep.push((*b"DSIG", usize::MAX, EMPTY_DSIG.len()));
     }
-    keep.sort_by(|a, b| a.0.cmp(&b.0));
+    keep.sort_by_key(|a| a.0);
     let n = keep.len() as u16;
     let (search_range, entry, range_shift) = sfnt_search_range(n);
 

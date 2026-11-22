@@ -12,7 +12,7 @@ export const DEFAULT_DESKTOP_PREFS: DesktopPrefs = {
   closeToTray: false,
   startWithWindows: false,
   preferStaticFaces: false,
-  fastSessionResume: false,
+  fastSessionResume: true,
   deleteMode: "recycle",
 };
 
@@ -22,7 +22,7 @@ export function coerceDesktopPrefs(raw: unknown): DesktopPrefs {
     closeToTray: Boolean(o.closeToTray),
     startWithWindows: Boolean(o.startWithWindows),
     preferStaticFaces: Boolean(o.preferStaticFaces),
-    fastSessionResume: Boolean(o.fastSessionResume),
+    fastSessionResume: o.fastSessionResume === undefined ? true : Boolean(o.fastSessionResume),
     deleteMode: o.deleteMode === "permanent" ? "permanent" : "recycle",
   };
 }
@@ -36,7 +36,7 @@ export async function applyDesktopPrefs(prefs: DesktopPrefs): Promise<void> {
       closeToTray: prefs.closeToTray,
       startWithWindows: prefs.startWithWindows,
       preferStaticFaces: Boolean(prefs.preferStaticFaces),
-      fastSessionResume: Boolean(prefs.fastSessionResume),
+      fastSessionResume: prefs.fastSessionResume !== false,
       deleteMode: prefs.deleteMode === "permanent" ? "permanent" : "recycle",
     });
   } catch {

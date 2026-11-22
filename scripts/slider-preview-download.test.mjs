@@ -126,6 +126,6 @@ test("simultaneous card Activate merges — does not wait sibling idle", () => {
 
 test("rust start_google_downloads still merges pending when already running", () => {
   const rust = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
-  assert.match(rust, /if state\.running\.swap\(true, Ordering::SeqCst\)/);
+  assert.match(rust, /state\.running\.swap\(true, Ordering::SeqCst\)/);
   assert.match(rust, /pending\.extend\(fresh\)/);
 });

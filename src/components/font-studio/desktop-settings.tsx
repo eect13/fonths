@@ -23,10 +23,12 @@ import {
   armDocsVfSyncOwnership,
   clearDocsVfSyncCancelPending,
   didDocsVfSyncCancelToast,
+  getGdiSessionState,
   openActivatedFolder,
   peekDocsVfSyncCancelPending,
   syncDocumentsVfPolicy,
   syncManagedDocumentsRoot,
+  type GdiSessionState,
 } from "@/lib/fonts/os-activate";
 import { docsCancelToastAction } from "@/lib/fonts/docs-cancel-toast-action";
 import { useFontStore } from "@/lib/fonts/store";
@@ -43,6 +45,7 @@ export function DesktopSettings() {
   const { density, setDensity } = useUiDensity();
   const [open, setOpen] = useState(false);
   const [engineInfo, setEngineInfo] = useState<DWriteEngineInfo | null>(null);
+  const [gdiState, setGdiState] = useState<GdiSessionState | null>(null);
   const [cleaningTemp, setCleaningTemp] = useState(false);
   const [syncingCdn, setSyncingCdn] = useState(false);
   const [purgingNonGoogle, setPurgingNonGoogle] = useState(false);
@@ -70,8 +73,11 @@ export function DesktopSettings() {
     if (!open) return;
     let cancelled = false;
     void (async () => {
-      const info = await getDWriteEngineInfo();
-      if (!cancelled && info) setEngineInfo(info);
+      const [info, gdi] = await Promise.all([getDWriteEngineInfo(), getGdiSessionState()]);
+      if (!cancelled) {
+        if (info) setEngineInfo(info);
+        if (gdi) setGdiState(gdi);
+      }
     })();
     return () => {
       cancelled = true;
@@ -257,12 +263,12 @@ export function DesktopSettings() {
                 Fast GDI session restore
               </p>
               <p className="text-xs text-muted-foreground">
-                Copies under gdi-maps stay so the next launch restores fast. Skip deep SFNT re-checks on previously verified folders.
+                Automatic on reopen — Copies under gdi-maps stay so the next launch restores fast, skipping deep SFNT re-checks on verified folders.
               </p>
             </div>
             <Switch
               data-testid="fast-gdi-restore-switch"
-              checked={prefs.fastSessionResume}
+              checked={prefs.fastSessionResume !== false}
               onCheckedChange={(on) => setDesktopPrefs({ fastSessionResume: on })}
             />
           </label>
@@ -330,6 +336,9 @@ export function DesktopSettings() {
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
               Google: {googleCount.toLocaleString()} catalog · Uploads: {uploadCount.toLocaleString()} · On disk: {diskCount.toLocaleString()} · Active: {liveCount.toLocaleString()}
+              {gdiState
+                ? ` · GDI: ${gdiState.liveFaceCount.toLocaleString()} faces (${gdiState.gdiObjects.toLocaleString()} / ${gdiState.gdiQuota.toLocaleString()} handles)`
+                : ""}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">

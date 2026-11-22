@@ -105,7 +105,7 @@ fn family_dir_in(root: &Path, family: &str) -> PathBuf {
 }
 
 fn family_name_is_non_ascii(family: &str) -> bool {
-    family.trim().chars().any(|c| !c.is_ascii())
+    !family.trim().is_ascii()
 }
 
 /// On-disk folder name for `family`: `sanitize()` for ASCII names (unchanged, so the
@@ -170,7 +170,7 @@ fn sfnt_upload_family(path: &Path) -> Option<String> {
             name_len = u32::from_be_bytes([rec[12], rec[13], rec[14], rec[15]]) as usize;
         }
     }
-    if name_len < 6 || name_len > 4 * 1024 * 1024 {
+    if !(6..=4 * 1024 * 1024).contains(&name_len) {
         return None;
     }
     f.seek(SeekFrom::Start(name_off)).ok()?;
@@ -1460,6 +1460,12 @@ mod winfont {
                 return RegisterOutcome::Refused;
             };
             if !g.insert(path.to_path_buf()) {
+                // Another worker already inserted this exact path into `loaded()`;
+                // verify its staged map is intact instead of reporting a false failure.
+                drop(g);
+                if is_session_live_mapped(path) {
+                    return RegisterOutcome::Ok;
+                }
                 return RegisterOutcome::Refused;
             }
         }
@@ -1577,6 +1583,45 @@ mod winfont {
         n
     }
 
+    fn prune_path_from_by_family(path: &Path) {
+        if let Ok(mut g) = by_family().lock() {
+            g.retain(|_, paths| {
+                paths.remove(path);
+                !paths.is_empty()
+            });
+        }
+    }
+
+    /// Authoritative live GDI family keys currently backed by at least one loaded face.
+    pub fn live_family_names() -> Vec<String> {
+        let Ok(loaded_guard) = loaded().lock() else {
+            return Vec::new();
+        };
+        let Ok(mut fam_guard) = by_family().lock() else {
+            return Vec::new();
+        };
+        let mut live = Vec::new();
+        fam_guard.retain(|fam, paths| {
+            paths.retain(|p| loaded_guard.contains(p));
+            if !paths.is_empty() {
+                live.push(fam.clone());
+                true
+            } else {
+                false
+            }
+        });
+        live.sort();
+        live
+    }
+
+    /// Authoritative snapshot of (live_families, live_faces, staged_maps).
+    pub fn live_stats() -> (usize, usize, usize) {
+        let live_families = live_family_names().len();
+        let live_faces = loaded().lock().map(|g| g.len()).unwrap_or(0);
+        let staged_maps = maps().lock().map(|m| m.len()).unwrap_or(0);
+        (live_families, live_faces, staged_maps)
+    }
+
     pub fn unregister(path: &Path) {
         if is_windows_fonts_path(path) {
             return;
@@ -1584,6 +1629,7 @@ mod winfont {
         if let Ok(mut g) = loaded().lock() {
             g.remove(path);
         }
+        prune_path_from_by_family(path);
         // Drain the LocalAppData map AND the Documents original (1.0.156 in-place
         // Adds). Then drop the map file so Documents can be rewritten/deleted.
         let _ = remove_mapped_keep_file(path);
@@ -1600,6 +1646,7 @@ mod winfont {
         if let Ok(mut g) = loaded().lock() {
             g.remove(path);
         }
+        prune_path_from_by_family(path);
         let _ = remove_mapped_keep_file(path);
         dirty().store(true, Ordering::SeqCst);
     }
@@ -3423,6 +3470,22 @@ fn clear_session_sidecars(app: &AppHandle) {
     }
 }
 
+/// Trim, drop blanks, and deduplicate family names case-insensitively while preserving order.
+pub fn dedupe_family_names(names: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(names.len());
+    let mut seen = HashSet::with_capacity(names.len());
+    for raw in names {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if seen.insert(trimmed.to_ascii_lowercase()) {
+            out.push(trimmed.to_string());
+        }
+    }
+    out
+}
+
 fn load_session_families(app: &AppHandle) -> Vec<String> {
     let Some(path) = session_path(app) else {
         return Vec::new();
@@ -3430,7 +3493,8 @@ fn load_session_families(app: &AppHandle) -> Vec<String> {
     let Ok(bytes) = fs::read(path) else {
         return Vec::new();
     };
-    serde_json::from_slice::<Vec<String>>(&bytes).unwrap_or_default()
+    let raw = serde_json::from_slice::<Vec<String>>(&bytes).unwrap_or_default();
+    dedupe_family_names(&raw)
 }
 
 fn save_session_families(app: &AppHandle, families: &[String]) {
@@ -3440,7 +3504,8 @@ fn save_session_families(app: &AppHandle, families: &[String]) {
     if let Some(dir) = path.parent() {
         let _ = fs::create_dir_all(dir);
     }
-    let body = serde_json::to_vec_pretty(families).unwrap_or_else(|_| b"[]".to_vec());
+    let clean = dedupe_family_names(families);
+    let body = serde_json::to_vec_pretty(&clean).unwrap_or_else(|_| b"[]".to_vec());
     let _ = fs::write(path, body);
 }
 
@@ -3954,6 +4019,59 @@ pub fn session_boot_state() -> SessionBootState {
     }
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GdiSessionState {
+    pub live_families: Vec<String>,
+    pub live_family_count: usize,
+    pub live_face_count: usize,
+    pub staged_map_count: usize,
+    pub gdi_objects: u32,
+    pub gdi_objects_peak: u32,
+    pub gdi_quota: u32,
+    pub fast_resume: bool,
+    pub boot_running: bool,
+    pub boot_done: bool,
+}
+
+/// Authoritative in-process GDI session state for UI reconciliation and diagnostics.
+#[tauri::command]
+pub fn gdi_session_state() -> GdiSessionState {
+    let boot = session_boot();
+    #[cfg(windows)]
+    {
+        let live_families = winfont::live_family_names();
+        let (live_family_count, live_face_count, staged_map_count) = winfont::live_stats();
+        GdiSessionState {
+            live_families,
+            live_family_count,
+            live_face_count,
+            staged_map_count,
+            gdi_objects: winfont::process_gdi_objects(),
+            gdi_objects_peak: winfont::process_gdi_objects_peak(),
+            gdi_quota: GDI_OBJECT_DEFAULT_QUOTA,
+            fast_resume: fast_session_resume(),
+            boot_running: boot.running.load(Ordering::SeqCst),
+            boot_done: boot.done.load(Ordering::SeqCst),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        GdiSessionState {
+            live_families: Vec::new(),
+            live_family_count: 0,
+            live_face_count: 0,
+            staged_map_count: 0,
+            gdi_objects: 0,
+            gdi_objects_peak: 0,
+            gdi_quota: GDI_OBJECT_DEFAULT_QUOTA,
+            fast_resume: fast_session_resume(),
+            boot_running: boot.running.load(Ordering::SeqCst),
+            boot_done: boot.done.load(Ordering::SeqCst),
+        }
+    }
+}
+
 fn session_boot_begin() {
     let boot = session_boot();
     boot.done.store(false, Ordering::SeqCst);
@@ -4027,8 +4145,11 @@ pub fn session_begin(app: &AppHandle) {
         // by face_allowed_for_register) and report the real state for the UI.
         let partial = restore_partial_targets(app, &families, &ready_all);
         for (fam, _) in &partial {
-            ready_all.push(fam.clone());
+            if !ready_all.iter().any(|r| r.eq_ignore_ascii_case(fam)) {
+                ready_all.push(fam.clone());
+            }
         }
+        ready_all = dedupe_family_names(&ready_all);
         // 1.0.190: known-incapable Settled never queued for Add (early-skip only).
         let (ready_targets, settled_skip) = partition_session_restore_targets(app, &ready_all);
         // Calm "Restoring N/T" on the DownloadBar when idle — not a download hang.
@@ -4068,8 +4189,9 @@ pub fn session_begin(app: &AppHandle) {
                     p.running = false;
                     p.paused = false;
                     p.current.clear();
-                    p.done = p.ready_names.len() as u32;
-                    p.total = p.total.max(p.done);
+                    let cap = ready_targets.len() as u32;
+                    p.total = cap;
+                    p.done = (p.ready_names.len() as u32).min(cap);
                 }
                 bulk().running.store(false, Ordering::SeqCst);
                 emit_progress_force(app);
@@ -8273,11 +8395,16 @@ fn partition_session_restore_targets(
 ) -> (Vec<String>, Vec<String>) {
     let mut targets = Vec::new();
     let mut settled = Vec::new();
+    let mut seen = HashSet::new();
     for family in ready {
-        if family_early_skip_known_incapable(app, family) {
-            settled.push(family.clone());
+        let trimmed = family.trim();
+        if trimmed.is_empty() || !seen.insert(trimmed.to_ascii_lowercase()) {
+            continue;
+        }
+        if family_early_skip_known_incapable(app, trimmed) {
+            settled.push(trimmed.to_string());
         } else {
-            targets.push(family.clone());
+            targets.push(trimmed.to_string());
         }
     }
     (targets, settled)
@@ -8287,11 +8414,7 @@ fn partition_session_restore_targets(
 /// `plan_google_activation` so a 2,000-family session does not serially stat
 /// `.complete` on the invoke thread.
 fn filter_ready_families_parallel(app: &AppHandle, families: &[String]) -> Vec<String> {
-    let trimmed: Vec<String> = families
-        .iter()
-        .map(|f| f.trim().to_string())
-        .filter(|f| !f.is_empty())
-        .collect();
+    let trimmed = dedupe_family_names(families);
     if trimmed.len() <= 4 {
         return trimmed
             .into_iter()
@@ -10732,7 +10855,7 @@ pub fn register_font_path(app: AppHandle, path: String, family: Option<String>) 
 
 #[tauri::command]
 pub async fn flush_font_cache() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || flush_font_cache_blocking())
+    tauri::async_runtime::spawn_blocking(flush_font_cache_blocking)
         .await
         .map_err(|e| e.to_string())?
 }
@@ -11207,6 +11330,7 @@ pub async fn activate_families_on_disk(app: AppHandle, families: Vec<String>) ->
 }
 
 pub fn activate_families_on_disk_blocking(app: AppHandle, families: Vec<String>) -> Result<Vec<String>, String> {
+    let families = dedupe_family_names(&families);
     if families.is_empty() {
         return Ok(Vec::new());
     }
@@ -11264,14 +11388,8 @@ pub fn activate_families_on_disk_blocking(app: AppHandle, families: Vec<String>)
 fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: bool) {
     // Parallelize directory migration + this-process live check + ready check across
     // workers instead of serially walking 2,000+ folders before spawning workers.
-    let trimmed: Vec<(usize, String)> = families
-        .iter()
-        .enumerate()
-        .filter_map(|(i, f)| {
-            let t = f.trim();
-            (!t.is_empty()).then(|| (i, t.to_string()))
-        })
-        .collect();
+    let families = dedupe_family_names(&families);
+    let trimmed: Vec<(usize, String)> = families.iter().cloned().enumerate().collect();
     let workers = session_register_workers(trimmed.len());
     let queue = Arc::new(Mutex::new(VecDeque::from(trimmed)));
     let classified: Arc<Mutex<Vec<(usize, u8, String)>>> = Arc::new(Mutex::new(Vec::new()));
@@ -11484,11 +11602,12 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
 /// `done_base` is families already counted (this-process live skip) so percent
 /// does not restart at 0 after seeding already-registered names.
 fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String], done_base: usize) -> Vec<String> {
+    let ready = dedupe_family_names(ready);
     if ready.is_empty() {
         return Vec::new();
     }
     let workers = session_register_workers(ready.len());
-    let queue = Arc::new(Mutex::new(VecDeque::from(ready.to_vec())));
+    let queue = Arc::new(Mutex::new(VecDeque::from(ready.clone())));
     let registered: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let processed = Arc::new(AtomicUsize::new(0));
     let last_emit = Arc::new(Mutex::new(Instant::now()));
@@ -11582,17 +11701,22 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String], done_ba
                 if let Ok(mut p) = bulk().progress.lock() {
                     p.kind = "download".into();
                     p.running = true;
-                    p.done = (done_base + done_n) as u32;
                     let want_total = (done_base + total) as u32;
-                    if p.total < want_total {
+                    let step_done = (done_base + done_n).min(done_base + total) as u32;
+                    if restoring {
+                        // Session GDI restore total is strictly bounded by unique ready targets
+                        // and done advances monotonically without exceeding total.
                         p.total = want_total;
-                    }
-                    if p.total < p.done {
-                        p.total = p.done;
+                        p.done = p.done.max(step_done).min(want_total);
+                    } else {
+                        if p.total < want_total {
+                            p.total = want_total;
+                        }
+                        p.done = p.done.max(step_done).min(p.total);
                     }
                     // Calm Restoring N/T during session_begin — not per-face download chrome.
                     p.current = if restoring {
-                        format!("Restoring {}/{}", done_base + done_n, done_base + total)
+                        format!("Restoring {}/{}", p.done.min(want_total), want_total)
                     } else {
                         format!("Registering {family}")
                     };
@@ -12151,8 +12275,8 @@ fn replace_tiny_cjk_static_faces(
     replaced
 }
 
-/// Name-heal soft-fails on locked faces (Illustrator/fontdrvhost) but returns
-/// `locked` so the UI can fail loud — never looks like silent success.
+// Name-heal soft-fails on locked faces (Illustrator/fontdrvhost) but returns
+// `locked` so the UI can fail loud — never looks like silent success.
 
 /// Allowlisted Settled affordance (1.0.188: no Fontsource download; purge remnants).
 /// Activated only if Add>0 — never from settle alone. Offer no longer fetches FS TTFs.
@@ -13310,11 +13434,7 @@ pub fn start_google_downloads_blocking(
         }
     }
     let already_running = if !fresh.is_empty() {
-        if state.running.swap(true, Ordering::SeqCst) {
-            true
-        } else {
-            false
-        }
+        state.running.swap(true, Ordering::SeqCst)
     } else {
         state.running.load(Ordering::SeqCst)
     };
@@ -18311,12 +18431,16 @@ mod c263_tests {
         fs::create_dir_all(&cfg).unwrap();
         fs::create_dir_all(&inter).unwrap();
 
+        // Default ON (automatic Fast Session Resume on fresh installs & reopen).
+        assert!(gfsource::fast_session_resume(Some(&cfg)));
+        gfsource::set_fast_session_resume(Some(&cfg), false);
+        assert!(cfg.join(gfsource::NO_FAST_RESUME_MARKER).is_file());
+        assert!(!cfg.join(gfsource::FAST_RESUME_MARKER).exists());
         assert!(!gfsource::fast_session_resume(Some(&cfg)));
         gfsource::set_fast_session_resume(Some(&cfg), true);
         assert!(cfg.join(gfsource::FAST_RESUME_MARKER).is_file());
+        assert!(!cfg.join(gfsource::NO_FAST_RESUME_MARKER).exists());
         assert!(gfsource::fast_session_resume(Some(&cfg)));
-        gfsource::set_fast_session_resume(Some(&cfg), false);
-        assert!(!cfg.join(gfsource::FAST_RESUME_MARKER).exists());
 
         // Fast mode skips SFNT opens when .complete + font file >= 12B exist,
         // while strict mode still detects bad header / missing expected provenance.
@@ -18893,5 +19017,24 @@ mod c263_tests {
         assert!(is_protected_family_dir(&root, &root.join("Providers").join("Google")));
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_dedupe_and_gdi_state_never_exceed_unique_font_count() {
+        let raw = vec![
+            " Inter ".to_string(),
+            "inter".to_string(),
+            "".to_string(),
+            "   ".to_string(),
+            "Roboto".to_string(),
+            "ROBOTO".to_string(),
+            "Figtree".to_string(),
+        ];
+        let deduped = dedupe_family_names(&raw);
+        assert_eq!(deduped, vec!["Inter", "Roboto", "Figtree"]);
+
+        let snap = gdi_session_state();
+        assert_eq!(snap.live_family_count, snap.live_families.len());
+        assert!(snap.gdi_quota >= 10_000);
     }
 }

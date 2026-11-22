@@ -24,7 +24,8 @@ Active fonts use **session-only** staging under `%LOCALAPPDATA%\Fonths\gdi-maps`
 
 ## Highlights
 
-- **Session-Only Font Activation (Zero `C:\Windows\Fonts` Clutter):** Activates fonts on-demand via Windows GDI (`AddFontResourceExW` + batched HKCU + `WM_FONTCHANGE`) from `%LOCALAPPDATA%\Fonths\gdi-maps`, keeping your `Documents\Fonths` originals unlocked and cleanly unloading everything on exit.
+- **Automatic Fast GDI Session Restore & Authoritative State Management:** Fast GDI session restore is enabled automatically on reopen (`gdi-maps` pre-staged zero-copy re-Add, configurable in Settings), strictly deduplicates and bounds restore progress (`done ≤ total ≤ library count`), tracks live GDI families/faces/handles authoritatively in Rust (`gdi_session_state`), and cleanly unloads everything on exit without touching `C:\Windows\Fonts`.
+- **Up-to-Date Shipped Google Fonts Catalog (1,961 Families):** Ships the latest Google Fonts metadata snapshot (`1,961` families, `567` variable) out of the box—no immediate catalog update prompt on a fresh install—with optional live CDN revision sync and **Purge non-Google** cleanup.
 - **DirectWrite System Font Inspection (`windows 0.61`):** Read-only enumeration of `C:\Windows\Fonts` in ~1.7 ms, plus targeted partial-read SFNT parsing (`fast_parse.rs`, ~22× faster metadata reads) and multi-threaded indexing (`std::thread::scope`).
 - **Clean FontBase-Style Folder Layout:**
   - `Documents\Fonths\Providers\Google` — Downloaded Google Fonts catalog (with live CDN revision tracking & **Purge non-Google** cleanup)

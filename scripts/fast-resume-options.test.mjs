@@ -18,9 +18,10 @@ import {
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
 
-test("fastSessionResume pref defaults false and coerces truthy/falsy values", () => {
-  assert.equal(DEFAULT_DESKTOP_PREFS.fastSessionResume, false);
-  assert.equal(coerceDesktopPrefs(null).fastSessionResume, false);
+test("fastSessionResume pref defaults true (automatic on reopen) and honors explicit opt-out", () => {
+  assert.equal(DEFAULT_DESKTOP_PREFS.fastSessionResume, true);
+  assert.equal(coerceDesktopPrefs(null).fastSessionResume, true);
+  assert.equal(coerceDesktopPrefs({}).fastSessionResume, true);
   assert.equal(coerceDesktopPrefs({ fastSessionResume: 1 }).fastSessionResume, true);
   assert.equal(coerceDesktopPrefs({ fastSessionResume: false }).fastSessionResume, false);
 });

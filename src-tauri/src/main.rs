@@ -74,7 +74,7 @@ fn set_desktop_prefs(
     CLOSE_TO_TRAY.store(close_to_tray, Ordering::SeqCst);
     let _ = apply_start_with_windows(start_with_windows);
     activate::set_prefer_static_faces(prefer_static_faces.unwrap_or(false));
-    activate::set_fast_session_resume(fast_session_resume.unwrap_or(false));
+    activate::set_fast_session_resume(fast_session_resume.unwrap_or(true));
     delete_ops::set_permanent_delete(
         delete_mode
             .as_deref()
@@ -469,6 +469,7 @@ fn main() {
             activate::set_session_families,
             activate::session_families,
             activate::session_boot_state,
+            activate::gdi_session_state,
             activate::read_family_font,
             activate::list_family_font_files,
             activate::scan_disk_families,

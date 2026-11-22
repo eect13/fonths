@@ -336,11 +336,9 @@ fn metrics_from_face(face: &Face<'_>) -> FontMetricsOut {
 
 fn layout_from_face(face: &Face<'_>) -> FontLayout {
     let mut ot = HashSet::new();
-    for table in [face.tables().gsub, face.tables().gpos] {
-        if let Some(layout) = table {
-            for feat in layout.features {
-                ot.insert(feat.tag.to_string());
-            }
+    for layout in [face.tables().gsub, face.tables().gpos].into_iter().flatten() {
+        for feat in layout.features {
+            ot.insert(feat.tag.to_string());
         }
     }
     let mut ot_features: Vec<String> = ot.into_iter().collect();
@@ -879,7 +877,7 @@ fn system_font_dirs() -> Vec<std::path::PathBuf> {
         let windir = std::env::var("SYSTEMROOT")
             .or_else(|_| std::env::var("WINDIR"))
             .unwrap_or_else(|_| "C:\\Windows".into());
-        return vec![std::path::PathBuf::from(windir).join("Fonts")];
+        vec![std::path::PathBuf::from(windir).join("Fonts")]
     }
     #[cfg(not(windows))]
     {
@@ -990,13 +988,13 @@ fn walk_system_fonts() -> Vec<SystemFontOut> {
             walk_system_dir(&dir, &mut out, &mut seen, 0);
         }
     }
-    out.sort_by(|a, b| a.family.to_lowercase().cmp(&b.family.to_lowercase()));
+    out.sort_by_key(|a| a.family.to_lowercase());
     out
 }
 
 #[tauri::command]
 pub async fn list_system_fonts() -> Result<Vec<SystemFontOut>, String> {
-    tauri::async_runtime::spawn_blocking(move || list_system_fonts_blocking())
+    tauri::async_runtime::spawn_blocking(list_system_fonts_blocking)
         .await
         .map_err(|e| e.to_string())?
 }

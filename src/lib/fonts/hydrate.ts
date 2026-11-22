@@ -4,7 +4,7 @@ import { GOOGLE_FONTS } from "./catalog";
 import { loadCachedCatalog, scheduleCatalogSync } from "./google-api";
 import { idbGet, persistStorageOnGesture, requestPersistentStorage } from "./idb";
 import { refineLicense } from "./license";
-import { KNOWN_GDI_SESSION_INCAPABLE } from "./gdi-incapable";
+import { isKnownGdiSessionIncapable, KNOWN_GDI_SESSION_INCAPABLE } from "./gdi-incapable";
 import {
   blockPersistWrites,
   findFont,
@@ -235,10 +235,15 @@ export function useHydrateFonts() {
         // Drop persisted Activated until this-process Add confirms (avoid false Live).
         useFontStore.getState().restoreActivation([], []);
         const persistNames: string[] = [];
+        const seenPersist = new Set<string>();
         for (const id of wantIds) {
           const font = findFont(id, localFonts, google);
-          if (font && font.source !== "system") persistNames.push(font.family);
-          else if (!font && id.startsWith("g:")) persistNames.push(id.slice(2));
+          if (!font || font.source === "system") continue;
+          const famKey = font.family.trim().toLowerCase();
+          if (famKey && !seenPersist.has(famKey)) {
+            seenPersist.add(famKey);
+            persistNames.push(font.family.trim());
+          }
         }
         const liveIdsFromReadyNames = (readyNames: string[]): string[] => {
           const allow = new Set(readyNames.map((n) => n.trim().toLowerCase()).filter(Boolean));
@@ -248,18 +253,10 @@ export function useHydrateFonts() {
           const consider = (id: string) => {
             if (seen.has(id)) return;
             const font = findFont(id, localFonts, google);
-            if (!font) {
-              if (id.startsWith("g:")) {
-                const name = id.slice(2).trim().toLowerCase();
-                if (allow.has(name) && !seenFamilies.has(name)) {
-                  seen.add(id);
-                  seenFamilies.add(name);
-                  live.push(id);
-                }
-              }
-              return;
-            }
-            const famKey = font.family.toLowerCase();
+            // Strict count honesty: never synthesize phantom `g:` IDs for families outside the
+            // library — prevents Activated / Session GDI count from ever exceeding font count.
+            if (!font || font.source === "system") return;
+            const famKey = font.family.trim().toLowerCase();
             if (allow.has(famKey) && !seenFamilies.has(famKey)) {
               seen.add(id);
               seenFamilies.add(famKey);
@@ -268,11 +265,15 @@ export function useHydrateFonts() {
           };
           for (const id of wantIds) consider(id);
           const byFamily = new Map<string, string>();
-          for (const font of [...google, ...localFonts]) byFamily.set(font.family.toLowerCase(), font.id);
+          for (const font of [...google, ...localFonts]) {
+            const key = font.family.trim().toLowerCase();
+            if (key && !byFamily.has(key)) byFamily.set(key, font.id);
+          }
           for (const name of readyNames) {
             const key = name.trim().toLowerCase();
             if (!allow.has(key) || seenFamilies.has(key)) continue;
-            consider(byFamily.get(key) ?? `g:${name.trim()}`);
+            const matchedId = byFamily.get(key);
+            if (matchedId) consider(matchedId);
           }
           return live;
         };
@@ -287,9 +288,22 @@ export function useHydrateFonts() {
         const bootReady = boot.ready.slice();
         const sessionNames = bootReady;
         const bootSet = new Set(sessionNames.map((n) => n.trim().toLowerCase()));
-        const wantNames = Array.from(new Set([...persistNames, ...sessionNames]));
-        // already-Live this session (boot.ready / loaded) → skip re-walk.
-        let needRegister = wantNames.filter((n) => !bootSet.has(n.trim().toLowerCase()));
+        const settledNow = useFontStore.getState().settledFamilySet;
+        const wantNames: string[] = [];
+        const seenWant = new Set<string>();
+        for (const n of [...persistNames, ...sessionNames]) {
+          const t = n.trim();
+          const k = t.toLowerCase();
+          if (t && !seenWant.has(k)) {
+            seenWant.add(k);
+            wantNames.push(t);
+          }
+        }
+        // already-Live this session (boot.ready / loaded) or known GDI-incapable Settled → skip re-walk.
+        let needRegister = wantNames.filter((n) => {
+          const k = n.trim().toLowerCase();
+          return !bootSet.has(k) && !settledNow.has(k) && !isKnownGdiSessionIncapable(n);
+        });
         // 1.0.206l prefer waves: selected → favorites → viewport → first-page (scope) → recent → remainder.
         if (needRegister.length > 1) {
           const state = useFontStore.getState();

@@ -533,6 +533,29 @@ export async function rememberSessionFamilies(families: string[]): Promise<void>
   }
 }
 
+export type GdiSessionState = {
+  liveFamilies: string[];
+  liveFamilyCount: number;
+  liveFaceCount: number;
+  stagedMapCount: number;
+  gdiObjects: number;
+  gdiObjectsPeak: number;
+  gdiQuota: number;
+  fastResume: boolean;
+  bootRunning: boolean;
+  bootDone: boolean;
+};
+
+/** Query authoritative Rust in-process GDI session state (live families, faces, GDI handles). */
+export async function getGdiSessionState(): Promise<GdiSessionState | null> {
+  if (!(await inDesktopShell())) return null;
+  try {
+    return await tauriInvoke<GdiSessionState>("gdi_session_state");
+  } catch {
+    return null;
+  }
+}
+
 export async function listSessionFamilies(): Promise<string[]> {
   if (!(await inDesktopShell())) return [];
   try {
@@ -1546,13 +1569,18 @@ function applyPayload(p: {
     ? Math.max(p.skipped ?? 0, job.skipped)
     : (p.skipped ?? 0);
   const active = Boolean(p.running || p.paused);
+  const isRestoreSnap = /restoring/i.test(p.current ?? "");
+  const total = isRestoreSnap
+    ? Math.max(p.total, Math.min(done, p.total || done))
+    : Math.max(p.total, done, job.paused && job.total === p.total ? job.total : 0);
+  const clampedDone = total > 0 ? Math.min(Math.max(0, done), total) : Math.max(0, done);
   job = {
     running: p.running,
     paused: Boolean(p.paused),
     mode: active ? kind : "idle",
     owner: active ? kind : "idle",
-    done,
-    total: Math.max(p.total, p.done, job.paused || job.running ? job.total : 0),
+    done: clampedDone,
+    total,
     failed: p.failed,
     skipped,
     // 1.0.187: never `p.current || job.current` — Rust empty clear must stick (settled-idle hang).

@@ -47,12 +47,12 @@ test("the Arabic sample is the spec pangram with all 28 base letters", () => {
   for (const ch of base) assert.ok(letters.has(ch), `missing ${ch}`);
 });
 
-test("the shipped catalog marks the 50 Arab-primary Google families", () => {
+test("the shipped catalog marks the 51 Arab-primary Google families", () => {
   const cat = JSON.parse(read("src/lib/fonts/google-catalog.json"));
   const arab = Object.entries(cat.primaryScript ?? {})
     .filter(([, s]) => s === "Arab")
     .map(([f]) => f);
-  assert.equal(arab.length, 50);
+  assert.equal(arab.length, 51);
   for (const f of [
     "Alexandria",
     "Mada",

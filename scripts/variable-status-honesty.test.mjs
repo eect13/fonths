@@ -322,7 +322,7 @@ test("undersized Incomplete is allowlisted (Gidugu) — not all Google 16–96KB
   );
 });
 
-test("shipped catalogs: Google 565 variable + Fontsource-other TTF VFs (not Material Symbols)", async () => {
+test("shipped catalogs: Google 567 variable + Fontsource-other TTF VFs (not Material Symbols)", async () => {
   const { readFileSync } = await import("node:fs");
   const { fileURLToPath } = await import("node:url");
   const { dirname, join } = await import("node:path");
@@ -332,8 +332,8 @@ test("shipped catalogs: Google 565 variable + Fontsource-other TTF VFs (not Mate
   const gVar = gc.families.filter((r) => r[4] === true).length;
   const fsVar = fo.families.filter((r) => r[4] === true).map((r) => r[0]);
   const fsTtfVar = fsVar.filter((n) => !isWoff2OnlyVariableFamily(n));
-  assert.equal(gc.count, 1959);
-  assert.equal(gVar, 565);
+  assert.equal(gc.count, 1961);
+  assert.equal(gVar, 567);
   assert.ok(fo.count >= 146, `fontsource-other ${fo.count}`);
   assert.ok(fsTtfVar.includes("42dot Sans"));
   assert.ok(fsTtfVar.includes("Finlandica"));

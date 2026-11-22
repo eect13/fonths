@@ -375,7 +375,35 @@ All **11/11** live checks passed with `0` uncaught `pageErrors` (`consoleErrors=
    - `npm.cmd test`: `769` passed, `0` failed, `1` skipped (`FM_NOTO_TTC`).
    - `cargo test --offline`: `241` passed, `0` failed, `6` ignored.
    - `npm.cmd run build` & `npm.cmd run test:e2e`: `3/3` passed; `npm.cmd run test:desktop`: `PASS`.
+    - **Final Production Release Artifacts:**
+      - NSIS Setup EXE (`perMachine` elevated): `src-tauri\target\release\bundle\nsis\Fonths_1.0.0_x64-setup.exe` (`5,526,321` bytes, `2026-11-23 00:59:08`)
+      - MSI Installer: `src-tauri\target\release\bundle\msi\Fonths_1.0.0_x64_en-US.msi` (`6,512,640` bytes, `2026-11-23 00:58:55`)
+      - Executable: `src-tauri\target\release\fonths.exe` (`8,293,888` bytes, `2026-11-23 00:59:08`)
+
+## 17. Automatic Fast GDI Session Restore, Bounded Restore Counts, Authoritative GDI State, Latest CDN Catalog & Safe Syntax Upgrades
+
+1. **Automatic Fast GDI Session Restore on Reopen (`src/lib/desktop/prefs.ts`, `src-tauri/src/gfsource.rs`, `src-tauri/src/main.rs`, `src/components/font-studio/desktop-settings.tsx`):**
+   - Enabled `fastSessionResume` by default (`DEFAULT_DESKTOP_PREFS.fastSessionResume = true`, `coerceDesktopPrefs` defaults `undefined` to `true`, `main.rs` `set_desktop_prefs` defaults `None` to `true`, and `gfsource::fast_session_resume` defaults `true` unless opted out via `no-fast-resume` marker or `FM_FAST_RESUME=0`). Users can still disable it anytime in Settings.
+2. **Session GDI Restore Never Exceeds Font Count (`src-tauri/src/activate.rs`, `src/lib/fonts/hydrate.ts`, `src/lib/fonts/os-activate.ts`, `src/components/font-studio/download-bar.tsx`, `src/lib/fonts/store.ts`):**
+   - Added case-insensitive `dedupe_family_names()` across `load_session_families`, `save_session_families`, `filter_ready_families_parallel`, `partition_session_restore_targets`, `activate_families_on_disk_blocking`, `activate_on_disk_worker`, `register_on_disk_parallel_progress`, and `session_begin`.
+   - Made `register_on_disk_parallel_progress` strictly monotonic and bounded (`p.done = p.done.max(step_done).min(want_total)`), eliminating out-of-order thread progress regressions and count overruns, and clamped `session_begin` finish `p.done = ready_names.len().min(ready_targets.len())`.
+   - Fixed `hydrate.ts` (`liveIdsFromReadyNames`) and `store.ts` (`restoreActivation`) so phantom `g:<name>` IDs outside the library are never fabricated (preventing `Activated` / Session GDI counts from exceeding the library font count) and known GDI-incapable / settled families are never re-queued for redundant second-pass restore after `session_begin`.
+   - Fixed `os-activate.ts` (`applyPayload`) and `download-bar.tsx` so stale prior `job.total` values never ratchet onto session restore and restore totals clamp to `<= libraryFontCount`.
+3. **Authoritative GDI State Management (`src-tauri/src/activate.rs`, `src-tauri/src/main.rs`, `src-tauri/permissions/font-activate.toml`, `src/lib/fonts/os-activate.ts`, `src/components/font-studio/desktop-settings.tsx`):**
+   - Fixed `winfont::unregister` and `winfont::unregister_keep_stage` to prune unloaded paths and empty family keys from `by_family()` (`prune_path_from_by_family`).
+   - Made concurrent duplicate `winfont::register_detailed_with_fast` verify `is_session_live_mapped` instead of reporting a false `RegisterOutcome::Refused`.
+   - Added `winfont::live_family_names()`, `winfont::live_stats()`, and Tauri command `gdi_session_state` (`getGdiSessionState()`) surfaced cleanly in Settings.
+4. **Shipped CDN Catalog Refreshed to Latest (`src/lib/fonts/google-catalog.json`, `google-directory.json`, `fontsource-other.json`):**
+   - Regenerated shipped catalogs via `npm run regen:catalogs`: **1,961** Google Fonts (`567` variable, `51` Arab-primary) + **146** Fontsource exclusive = **2,107** total, eliminating the immediate `"Catalog updated — 2 new typefaces"` popup on fresh install.
+5. **Safe Modern Syntax Upgrades & GitHub Screenshot Tracking (`.gitignore`, `tsconfig.json`, `src-tauri/src/{activate,dwrite,namepatch,parse}.rs`, `docs/screenshots/*.png`):**
+   - Upgraded `tsconfig.json` target/lib to `ES2023` and applied safe Rust `clippy` modernizations (`is_ascii()`, inclusive range `.contains()`, `sort_by_key`, `flatten()`, redundant closure/bool cleanup).
+   - Fixed `.gitignore` (`screenshots/` → `/screenshots/`) so `docs/screenshots/{library,playground,smart-import,settings}.png` are tracked and rendered on GitHub.
+6. **Final Verification & Updated Production Release Artifacts (`Fonths-1.0.0`):**
+   - `npm.cmd run typecheck`: exit `0`; `npm.cmd run lint`: exit `0` (`0` errors, `0` warnings).
+   - `npm.cmd test`: `771` passed, `0` failed, `1` skipped (`FM_NOTO_TTC`), including `scripts/session-gdi-restore-bounds.test.mjs`.
+   - `cargo test --offline`: `242` passed, `0` failed, `6` ignored.
+   - `npm.cmd run build` & `npm.cmd run test:e2e`: `3/3` passed; `npm.cmd run test:desktop`: `PASS`.
    - **Final Production Release Artifacts:**
-     - NSIS Setup EXE (`perMachine` elevated): `src-tauri\target\release\bundle\nsis\Fonths_1.0.0_x64-setup.exe` (`5,526,321` bytes, `2026-11-23 00:59:08`)
-     - MSI Installer: `src-tauri\target\release\bundle\msi\Fonths_1.0.0_x64_en-US.msi` (`6,512,640` bytes, `2026-11-23 00:58:55`)
-     - Executable: `src-tauri\target\release\fonths.exe` (`8,293,888` bytes, `2026-11-23 00:59:08`)
+     - NSIS Setup EXE (`perMachine` elevated): `src-tauri\target\release\bundle\nsis\Fonths_1.0.0_x64-setup.exe` (`5,531,949` bytes, `2026-11-23 02:08:18`)
+     - MSI Installer: `src-tauri\target\release\bundle\msi\Fonths_1.0.0_x64_en-US.msi` (`6,529,024` bytes, `2026-11-23 02:08:05`)
+     - Executable: `src-tauri\target\release\fonths.exe` (`8,325,120` bytes, `2026-11-23 02:08:18`)

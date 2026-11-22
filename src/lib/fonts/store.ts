@@ -925,8 +925,13 @@ export const useFontStore = create<FontState>()(
         return removed;
       },
       restoreActivation: (liveIds, pendingIds) => {
-        const live = Array.from(new Set(liveIds));
-        const pending = Array.from(new Set(pendingIds.filter((id) => !live.includes(id))));
+        const local = get().localFonts;
+        const google = get().googleFonts;
+        const hasCatalog = local.length > 0 || google.length > 0;
+        const validId = (id: string) => !hasCatalog || Boolean(findFont(id, local, google));
+        const live = Array.from(new Set(liveIds.filter(validId)));
+        const liveSet = new Set(live);
+        const pending = Array.from(new Set(pendingIds.filter((id) => validId(id) && !liveSet.has(id))));
         // Fresh session restore — no stale pending-off from last Quit.
         set({ ...withActivated(live), ...withPending(pending), ...withPendingDeactivate([]) });
       },

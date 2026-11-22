@@ -28,6 +28,7 @@ import {
   cancelChromeA11y,
   cancelChromeVisibleLabel,
 } from "@/lib/fonts/docs-vf-sync-ownership.mjs";
+import { useFontStore } from "@/lib/fonts/store";
 
 function clampPct(n: number) {
   if (!Number.isFinite(n)) return 0;
@@ -53,6 +54,7 @@ const SETTLED_IDLE_AUTO_HIDE_MS = 16_000;
 
 export function DownloadBar() {
   const job = useSyncExternalStore(subscribeDownloadJob, getDownloadJob, getDownloadJob);
+  const libraryFontCount = useFontStore((s) => s.googleFonts.length + s.localFonts.length);
   const [, setTick] = useState(0);
   const [, setDocsHoldTick] = useState(0);
   const [cancelPromptOpen, setCancelPromptOpen] = useState(false);
@@ -65,7 +67,11 @@ export function DownloadBar() {
   const skipped = job.skipped ?? 0;
   // Progress is rust `done` (families processed). Do not use `skipped` as the
   // numerator — it double-counts already-on-disk + successful Add (4044/2253).
-  const total = Math.max(1, job.total, job.done);
+  // Session GDI restore must never display counts exceeding the library font count.
+  const isRestoreCurrent = /restoring/i.test(job.current);
+  const rawTotal = Math.max(1, job.total, job.done);
+  const total =
+    isRestoreCurrent && libraryFontCount > 0 ? Math.min(rawTotal, libraryFontCount) : rawTotal;
   const processed = Math.min(Math.max(0, job.done), total);
   const remaining = Math.max(0, total - processed);
   const empty =

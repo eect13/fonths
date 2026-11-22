@@ -33,6 +33,7 @@ commands.allow = [
   "set_session_families",
   "session_families",
   "session_boot_state",
+  "gdi_session_state",
   "read_family_font",
   "list_family_font_files",
   "scan_disk_families",

@@ -73,12 +73,12 @@ test("family skip-Add is this-process loaded only — never maps/sidecar", () =>
   assert.equal(familyMaySkipAddThisProcess(true, 8, 8, true), true);
 });
 
-test("catalog is 2100; Gidugu is in the catalog and is supposed to GDI-live", () => {
+test("catalog is current; Gidugu is in the catalog and is supposed to GDI-live", () => {
   const googleN = Array.isArray(google.families) ? google.families.length : 0;
   const otherN = Array.isArray(other.families) ? other.families.length : 0;
-  assert.equal(googleN, 1959);
+  assert.equal(googleN, 1961);
   assert.equal(otherN, 146);
-  assert.equal(googleN + otherN, 2105);
+  assert.equal(googleN + otherN, 2107);
   const names = [...google.families, ...other.families].map((f) =>
     Array.isArray(f) ? f[0] : typeof f === "string" ? f : f.family || f.name || "",
   );
