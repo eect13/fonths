@@ -1,0 +1,2419 @@
+import { toast } from "sonner";
+import { create } from "zustand";
+import { persist, createJSONStorage, type StateStorage } from "zustand/middleware";
+import { createPersistStorage, storageErrorMessage } from "./persist-storage";
+import { FONT_BY_ID, GOOGLE_FONTS, isGoogleCatalog } from "./catalog";
+import { notifyIfUnusual } from "./color-font";
+import { isKnownGdiSessionIncapable, isSoftGdiTryAddFirst, KNOWN_GDI_SESSION_INCAPABLE } from "./gdi-incapable";
+import { bytesNearlySame } from "./binary-diff";
+import { idbDelete, idbGet, idbPutMany } from "./idb";
+import { evictFamilyPreview, loadFont, unloadLocalFont } from "./loader";
+import { inferLocalStyle } from "./style-tags";
+import { bindAxesPersist, setLiveAxis } from "./live-axes";
+import {
+  cancelDownloadQueue,
+  clearSessionGdiRefused,
+  removeUploadFromDisk,
+  removeUploadsBatchFromDisk,
+  saveUploadToDisk,
+  syncFontOnSystem,
+  syncFontsOnSystem,
+  uninstallFontOnSystem,
+} from "./os-activate";
+import { saveLocalFontsMeta, scheduleSaveLocalFontsMeta } from "./persist-local";
+import type {
+  Collection,
+  DuplicateGroup,
+  FontLicense,
+  FontMetrics,
+  FontRecord,
+  LibraryFacet,
+  LibraryScope,
+  LibrarySort,
+  PreviewSettings,
+} from "./types";
+import { DEFAULT_PREVIEW, isFacetScope } from "./types";
+import { fontLicense, refineLicense, coerceLicense } from "./license";
+import { fontMime } from "./fs-drop";
+import { coerceDesktopPrefs, DEFAULT_DESKTOP_PREFS, type DesktopPrefs } from "@/lib/desktop/prefs";
+import { fontMatchesSearch, mergeMetrics, parseSearchQuery } from "./metrics";
+import { filterFontsWithIndex } from "./search-index";
+import { snapAxes } from "./axes";
+
+const STORAGE_KEY = "font-manager:v1";
+/** Persist version. v1 key kept so existing libraries don't vanish. v3 adds facet. */
+
+/** False until rehydrate finishes. Earlier writes saved the empty defaults over the library. */
+let persistReady = false;
+/** Set when the saved library failed to load: writes stay off for the session. */
+let persistBlocked = false;
+
+/** Saved library failed to load — never let this session's defaults overwrite it. */
+export function blockPersistWrites() {
+  persistBlocked = true;
+  persistReady = false;
+}
+
+function persistStorage(): StateStorage {
+  return createPersistStorage({
+    storage: () => (typeof localStorage === "undefined" ? null : localStorage),
+    canWrite: () => persistReady,
+    onWriteError: (err) => {
+      console.error("[font-manager] localStorage write failed", err);
+      const { title, description } = storageErrorMessage(err);
+      toast.error(title, { id: "persist-write-error", description, duration: 12_000 });
+    },
+  });
+}
+
+export interface FontSet {
+  id: string;
+  name: string;
+  families: string[];
+  updatedAt: number;
+}
+
+interface PersistedSlice {
+  favorites: string[];
+  activated: string[];
+  pendingActivate: string[];
+  /** Deactivate queued — stay Live in chrome until unload confirms (symmetric with pendingActivate). */
+  pendingDeactivate: string[];
+  collections: Collection[];
+  fontSets: FontSet[];
+  customTags: Record<string, string[]>;
+  localFonts: FontRecord[];
+  preview: PreviewSettings;
+  scope: LibraryScope;
+  facet: LibraryFacet;
+  query: string;
+  selectedId: string | null;
+  inspectorOpen: boolean;
+  previewAxes: Record<string, Record<string, number>>;
+  autoHideDuplicates: boolean;
+  recentIds: string[];
+  featurePrefs: Record<string, Record<string, boolean>>;
+  desktopPrefs: DesktopPrefs;
+}
+
+export interface UploadJobState {
+  active: boolean;
+  paused: boolean;
+  cancelled: boolean;
+  done: number;
+  total: number;
+  added: number;
+  skipped: number;
+  failed: number;
+  current: string;
+}
+
+const DEFAULT_UPLOAD_JOB: UploadJobState = {
+  active: false,
+  paused: false,
+  cancelled: false,
+  done: 0,
+  total: 0,
+  added: 0,
+  skipped: 0,
+  failed: 0,
+  current: "",
+};
+
+interface FontState extends PersistedSlice {
+  hydrated: boolean;
+  googleFonts: FontRecord[];
+  catalogLive: boolean;
+  scope: LibraryScope;
+  facet: LibraryFacet;
+  query: string;
+  selectedId: string | null;
+  inspectorOpen: boolean;
+  uploadBusy: boolean;
+  uploadJob: UploadJobState;
+  diskFamilies: string[];
+  diskFamilySet: Set<string>;
+  /** Known GDI-incapable on disk (Add=0) — calm Settled, never Activated. */
+  settledFamilies: string[];
+  settledFamilySet: Set<string>;
+  systemFonts: FontRecord[];
+  systemBusy: boolean;
+  activatedSet: Set<string>;
+  pendingActivate: string[];
+  pendingSet: Set<string>;
+  pendingDeactivate: string[];
+  pendingDeactivateSet: Set<string>;
+  /** Pending-off exceeded N seconds (Word-locked) — Live stays; UI shows retry. */
+  unloadStuckIds: string[];
+  unloadStuckSet: Set<string>;
+  setHydrated: (value: boolean) => void;
+  setGoogleFonts: (fonts: FontRecord[]) => void;
+  patchFontAxes: (id: string, axes: { tag: string; name: string; min: number; max: number; def: number }[]) => void;
+  patchFontMetrics: (id: string, metrics: FontMetrics) => void;
+  setCatalogLive: (value: boolean) => void;
+  setScope: (scope: LibraryScope) => void;
+  setFacet: (facet: LibraryFacet) => void;
+  setQuery: (query: string) => void;
+  setPreview: (patch: Partial<PreviewSettings>) => void;
+  toggleFavorite: (id: string) => void;
+  toggleActivated: (id: string) => void;
+  setActivatedMany: (ids: string[], on: boolean) => void;
+  toggleActivateSet: (ids: string[]) => boolean;
+  markLiveActivated: (ids: string[]) => void;
+  queuePendingActivate: (ids: string[]) => void;
+  clearPendingActivate: (ids?: string[]) => void;
+  queuePendingDeactivate: (ids: string[]) => void;
+  clearPendingDeactivate: (ids?: string[]) => void;
+  /** Unload confirmed — drop Live + pending-off for these ids. */
+  confirmDeactivated: (ids: string[]) => void;
+  pruneActivatedToFamilies: (families: string[]) => number;
+  restoreActivation: (liveIds: string[], pendingIds: string[]) => void;
+  selectFont: (id: string | null) => void;
+  setInspectorOpen: (open: boolean) => void;
+  setFeaturePref: (fontId: string, tag: string, on: boolean) => void;
+  setDesktopPrefs: (patch: Partial<DesktopPrefs>) => void;
+  saveFontSet: (name: string, families?: string[]) => string;
+  deleteFontSet: (id: string) => void;
+  setPreviewAxis: (id: string, tag: string, value: number) => void;
+  setDiskFamilies: (names: string[]) => void;
+  addDiskFamilies: (names: string[]) => void;
+  /** P0: variable badge/facet = on-disk *-variable-* only; clear axes without VF. */
+  applyDiskStatusHonesty: (rows: { name: string; has_variable?: boolean; hasVariable?: boolean; settled?: boolean; incomplete?: boolean }[]) => void;
+  setSettledFamilies: (names: string[]) => void;
+  addSettledFamilies: (names: string[]) => void;
+  setSystemFonts: (fonts: FontRecord[]) => void;
+  setSystemBusy: (value: boolean) => void;
+  autoHideDuplicates: boolean;
+  duplicateHideIds: string[];
+  setAutoHideDuplicates: (on: boolean) => void;
+  addCollection: (name: string, parentId?: string | null) => string;
+  setCollectionWatch: (id: string, watchPath: string | undefined, autoActivate?: boolean) => void;
+  setCollectionAutoActivate: (id: string, autoActivate: boolean) => void;
+  setCollectionImportFilter: (
+    id: string,
+    importFilter: import("./import-options").SavedImportRule | undefined,
+  ) => void;
+  renameCollection: (id: string, name: string) => void;
+  deleteCollection: (
+    id: string,
+    opts?: { deleteFromDisk?: boolean },
+  ) => { folders: number; fonts: number };
+  moveCollection: (id: string, parentId: string | null) => void;
+  toggleInCollection: (collectionId: string, fontId: string) => void;
+  addToCollection: (collectionId: string, fontId: string) => void;
+  setLicense: (id: string, license: FontLicense) => void;
+  addTag: (fontId: string, tag: string) => void;
+  removeTag: (fontId: string, tag: string) => void;
+  importFiles: (
+    files: File[],
+    opts?: {
+      collectionName?: string;
+      collectionId?: string;
+      originPaths?: string[];
+      autoActivate?: boolean;
+    },
+  ) => Promise<{ added: number; duplicates: number; failed: number; collectionId?: string }>;
+  importOriginPaths: (
+    paths: string[],
+    opts?: { collectionName?: string; collectionId?: string },
+  ) => Promise<{ added: number; duplicates: number; failed: number; collectionId?: string }>;
+  removeLocalFont: (id: string) => Promise<void>;
+  removeLocalFontsBatch: (ids: string[], opts?: { deleteFromDisk?: boolean }) => Promise<number>;
+  clearLocalFonts: () => Promise<number>;
+  resetLibrary: () => Promise<number>;
+  pauseUpload: () => void;
+  resumeUpload: () => void;
+  cancelUpload: () => void;
+}
+
+function uid(prefix: string) {
+  return `${prefix}-${crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`}`;
+}
+
+/** Delete IDB blobs and unload local FontFaces in small chunks so large wipes never lock the UI. */
+async function cleanupLocalFacesChunked(fonts: FontRecord[], keepFamilies?: Set<string>) {
+  const CHUNK = 48;
+  const evicted = new Set<string>();
+  for (const font of fonts) {
+    const key = font.family.toLowerCase();
+    if (!evicted.has(key) && !keepFamilies?.has(key)) {
+      evicted.add(key);
+      evictFamilyPreview(font.family);
+    }
+  }
+  for (let i = 0; i < fonts.length; i += CHUNK) {
+    const slice = fonts.slice(i, i + CHUNK);
+    await Promise.all(
+      slice.map(async (f) => {
+        await unloadLocalFont(f.id).catch(() => undefined);
+        await idbDelete(f.id).catch(() => undefined);
+      }),
+    );
+    if (i + CHUNK < fonts.length) {
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+}
+
+function folderPathForOrigin(originPath: string, collectionName?: string): string[] {
+  const parts = originPath.replace(/\\/g, "/").split("/").filter(Boolean);
+  parts.pop();
+  const name = collectionName?.trim();
+  if (!name) return parts.slice(-2);
+  const hit = parts.findIndex((p) => p.toLowerCase() === name.toLowerCase());
+  if (hit >= 0) return parts.slice(hit);
+  return [name];
+}
+
+function folderPathForFile(file: File, fallbackRoot?: string): string[] {
+  const rel = (file.webkitRelativePath || "").replace(/\\/g, "/");
+  const parts = rel.split("/").filter(Boolean);
+  if (parts.length > 1) return parts.slice(0, -1);
+  const root = fallbackRoot?.trim();
+  return root ? [root] : [];
+}
+
+function ensureFolderPath(
+  collections: Collection[],
+  parentId: string | null,
+  names: string[],
+): { collections: Collection[]; leafId: string | null } {
+  let pid: string | null = parentId;
+  let leaf: string | null = parentId;
+  let next = collections;
+  for (const raw of names) {
+    const name = raw.trim();
+    if (!name) continue;
+    const hit = next.find((c) => c.name === name && (c.parentId ?? null) === pid);
+    if (hit) {
+      leaf = hit.id;
+      pid = hit.id;
+      continue;
+    }
+    const id = uid("c");
+    next = [
+      ...next,
+      { id, name, fontIds: [], createdAt: Date.now(), parentId: pid },
+    ];
+    leaf = id;
+    pid = id;
+  }
+  return { collections: next, leafId: leaf };
+}
+
+const BUILTIN_FOLDER_IDS = new Set(["c-editorial", "c-geometric", "c-humanist", "c-code"]);
+
+/** Drop catalog-seed folders (those sorts live under Tags). Keep user folders. */
+function withoutBuiltinFolders(list: Collection[] | undefined): Collection[] {
+  if (!list?.length) return [];
+  return list
+    .filter((c) => !BUILTIN_FOLDER_IDS.has(c.id))
+    .map((c) => ({
+      ...c,
+      parentId: c.parentId && BUILTIN_FOLDER_IDS.has(c.parentId) ? null : (c.parentId ?? null),
+    }));
+}
+
+const DEFAULT_ACTIVATED: string[] = [];
+
+const LEGACY_SEED_ACTIVATED = new Set(["g:Inter", "g:Playfair Display", "g:JetBrains Mono"]);
+
+function withActivated(activated: string[]) {
+  return { activated, activatedSet: new Set(activated) };
+}
+
+function withPending(pendingActivate: string[]) {
+  return { pendingActivate, pendingSet: new Set(pendingActivate) };
+}
+
+function withPendingDeactivate(pendingDeactivate: string[]) {
+  return { pendingDeactivate, pendingDeactivateSet: new Set(pendingDeactivate) };
+}
+
+function withUnloadStuck(unloadStuckIds: string[]) {
+  return { unloadStuckIds, unloadStuckSet: new Set(unloadStuckIds) };
+}
+
+/** Pending-off honesty timeout (Word may lock Remove). Keep Live; never fake Off. */
+const PENDING_OFF_TIMEOUT_MS = 8_000;
+const pendingOffTimers = new Map<string, number>();
+
+function armPendingOffTimeout(ids: string[], get: () => any, set: (fn: any) => void) {
+  for (const id of ids) {
+    const prev = pendingOffTimers.get(id);
+    if (prev) window.clearTimeout(prev);
+    const handle = window.setTimeout(() => {
+      pendingOffTimers.delete(id);
+      const s = get();
+      if (!s.pendingDeactivateSet.has(id)) return;
+      // Still pending-off — surface stuck; keep Live honest.
+      set((st: any) => ({
+        ...withUnloadStuck(Array.from(new Set([...st.unloadStuckIds, id]))),
+      }));
+      toast.message("Still unloading", {
+        id: `unload-stuck-${id}`,
+        description:
+          "Windows has not confirmed Remove yet (Word/Adobe may be locking the face). Live stays on — retry Deactivate when the app releases the font.",
+        duration: 12_000,
+      });
+    }, PENDING_OFF_TIMEOUT_MS);
+    pendingOffTimers.set(id, handle);
+  }
+}
+
+function clearPendingOffTimeout(ids: string[]) {
+  for (const id of ids) {
+    const prev = pendingOffTimers.get(id);
+    if (prev) window.clearTimeout(prev);
+    pendingOffTimers.delete(id);
+  }
+}
+
+
+function withDisk(names: string[]) {
+  const diskFamilies: string[] = [];
+  const diskFamilySet = new Set<string>();
+  for (const raw of names) {
+    const t = raw.trim();
+    if (!t) continue;
+    const key = t.toLowerCase();
+    if (diskFamilySet.has(key)) continue;
+    diskFamilySet.add(key);
+    diskFamilies.push(t);
+  }
+  return { diskFamilies, diskFamilySet };
+}
+
+function withSettled(names: string[]) {
+  const settledFamilies: string[] = [];
+  const settledFamilySet = new Set<string>();
+  for (const raw of names) {
+    const t = raw.trim();
+    if (!t) continue;
+    const key = t.toLowerCase();
+    if (settledFamilySet.has(key)) continue;
+    settledFamilySet.add(key);
+    settledFamilies.push(t);
+  }
+  return { settledFamilies, settledFamilySet };
+}
+
+function stripLegacySeedActivation(activated: string[] | undefined, localCount: number): string[] {
+  const list = activated ?? [];
+  if (localCount > 0) return list;
+  if (!list.length) return list;
+  if (list.every((id) => LEGACY_SEED_ACTIVATED.has(id))) return [];
+  return list;
+}
+
+
+function familyKey(name: string) {
+  return name.trim().toLowerCase();
+}
+
+function indexByFamily(fonts: FontRecord[]): Map<string, FontRecord[]> {
+  const map = new Map<string, FontRecord[]>();
+  for (const font of fonts) {
+    const key = familyKey(font.family);
+    if (!key) continue;
+    const list = map.get(key);
+    if (list) list.push(font);
+    else map.set(key, [font]);
+  }
+  return map;
+}
+
+function liveRivalFonts(
+  font: FontRecord,
+  localFonts: FontRecord[],
+  googleFonts: FontRecord[],
+  activated: Set<string>,
+  pending: Set<string>,
+): FontRecord[] {
+  const key = familyKey(font.family);
+  if (!key) return [];
+  // Any other card id with the same family name (Google ↔ Fontsource ↔ local).
+  // Never allow dual Live badges for one family name.
+  const out: FontRecord[] = [];
+  for (const other of [...localFonts, ...googleFonts]) {
+    if (other.id === font.id) continue;
+    if (familyKey(other.family) !== key) continue;
+    if (activated.has(other.id) || pending.has(other.id)) out.push(other);
+  }
+  return out;
+}
+
+/** True when this family name is already Live or pending under any card id. */
+function familyAlreadyLiveOrPending(
+  font: FontRecord,
+  localFonts: FontRecord[],
+  googleFonts: FontRecord[],
+  live: Set<string>,
+  pending: Set<string>,
+): boolean {
+  if (live.has(font.id) || pending.has(font.id)) return true;
+  return liveRivalFonts(font, localFonts, googleFonts, live, pending).length > 0;
+}
+
+/**
+ * Catalog wins in a mixed batch (CSS / badge preference).
+ * 1.0.204: never return GDI evict — exclusive Activate must not Remove→Add thrash.
+ * If the family name is already Live/pending from any source, skip (Activate = no-op).
+ */
+function pickExclusiveActivate(
+  incoming: FontRecord[],
+  localFonts: FontRecord[],
+  googleFonts: FontRecord[],
+  live: Set<string>,
+  pending: Set<string>,
+): { chosen: FontRecord[]; evict: FontRecord[] } {
+  const catalogIn: FontRecord[] = [];
+  const catalogFam = new Set<string>();
+  const localIn: FontRecord[] = [];
+  for (const font of incoming) {
+    // Already Live/pending under this id or a same-name rival → no-op (no Remove+Add).
+    if (familyAlreadyLiveOrPending(font, localFonts, googleFonts, live, pending)) continue;
+    if (font.source === "google") {
+      catalogIn.push(font);
+      catalogFam.add(familyKey(font.family));
+    } else {
+      localIn.push(font);
+    }
+  }
+  const catalogIdx = indexByFamily(googleFonts);
+  const chosenLocal: FontRecord[] = [];
+  const seenLocal = new Set<string>();
+  for (const font of localIn) {
+    const key = familyKey(font.family);
+    if (!key || catalogFam.has(key) || seenLocal.has(key)) continue;
+    const catalogHit = catalogIdx.get(key);
+    if (catalogHit?.some((f) => live.has(f.id) || pending.has(f.id))) continue;
+    seenLocal.add(key);
+    chosenLocal.push(font);
+  }
+  // Exclusive CSS/badge can stay catalog-preferred; GDI never Remove→Add for rivals.
+  return { chosen: [...catalogIn, ...chosenLocal], evict: [] };
+}
+
+/** Soft Settled Power → Retry Add at most once per process (1.0.206e/f). */
+const softSettledRetryTried = new Set<string>();
+
+/** True after soft Settled Power Retry was used this process (tooltip honesty). */
+export function softSettledRetryAlreadyTried(family: string): boolean {
+  return softSettledRetryTried.has(family.trim().toLowerCase());
+}
+
+/** Temporary snapshot of activated IDs while startup boot-restore is in flight so localStorage isn't wiped mid-restore. */
+let bootRestoringIds: string[] | null = null;
+export function setBootRestoringIds(ids: string[] | null) {
+  bootRestoringIds = ids ? Array.from(new Set(ids)) : null;
+}
+export function isBootRestoringId(id: string): boolean {
+  return Boolean(bootRestoringIds?.includes(id));
+}
+
+async function waitWhileUploadPaused(get: () => FontState): Promise<boolean> {
+  while (get().uploadJob.paused && !get().uploadJob.cancelled) {
+    await new Promise((r) => setTimeout(r, 80));
+  }
+  return get().uploadJob.cancelled;
+}
+
+export const useFontStore = create<FontState>()(
+  persist(
+    (set, get) => ({
+      hydrated: false,
+      googleFonts: GOOGLE_FONTS.slice(),
+      catalogLive: false,
+      favorites: [],
+      ...withActivated(DEFAULT_ACTIVATED.slice()),
+      ...withPending([]),
+      ...withPendingDeactivate([]),
+      ...withUnloadStuck([]),
+      collections: [],
+      fontSets: [],
+      customTags: {},
+      localFonts: [],
+      preview: DEFAULT_PREVIEW,
+      scope: "all",
+      facet: "",
+      query: "",
+      selectedId: null,
+      inspectorOpen: false,
+      uploadBusy: false,
+      uploadJob: { ...DEFAULT_UPLOAD_JOB },
+      pauseUpload: () => {
+        set((s) => (s.uploadJob.active ? { uploadJob: { ...s.uploadJob, paused: true } } : s));
+        void import("./os-activate").then((m) => m.setUploadQueuePaused(true));
+      },
+      resumeUpload: () => {
+        set((s) => (s.uploadJob.active ? { uploadJob: { ...s.uploadJob, paused: false } } : s));
+        void import("./os-activate").then((m) => m.setUploadQueuePaused(false));
+      },
+      cancelUpload: () => {
+        set((s) =>
+          s.uploadJob.active ? { uploadJob: { ...s.uploadJob, cancelled: true, paused: false } } : s,
+        );
+        void import("./os-activate").then((m) => m.cancelUploadDiskQueue());
+      },
+      previewAxes: {},
+      ...withDisk([]),
+      ...withSettled([]),
+      systemFonts: [],
+      systemBusy: false,
+      autoHideDuplicates: false,
+      duplicateHideIds: [],
+      recentIds: [],
+      featurePrefs: {},
+      desktopPrefs: { ...DEFAULT_DESKTOP_PREFS },
+      setHydrated: (value) => {
+        // Flip before set() so the hydrated write itself persists.
+        if (value && !persistBlocked) persistReady = true;
+        set({ hydrated: value });
+      },
+      setGoogleFonts: (fonts) =>
+        set((s) => {
+          const prevById = new Map(s.googleFonts.map((f) => [f.id, f] as const));
+          const googleFonts = fonts.map((font) => {
+            const prev = prevById.get(font.id);
+            if (!prev) return font;
+            return {
+              ...font,
+              ...(prev.licenseUserSet
+                ? { license: prev.license, licenseName: prev.licenseName, licenseUserSet: true as const }
+                : {}),
+              // Keep disk-VF honesty across catalog refresh even before axes are probed.
+              ...(prev.variable
+                ? {
+                    variable: true as const,
+                    ...(prev.axes?.length ? { axes: prev.axes } : {}),
+                  }
+                : {}),
+            };
+          });
+          const ids = new Set(googleFonts.map((f) => f.id));
+          for (const f of s.localFonts) ids.add(f.id);
+          const activated = s.activated.filter(
+            (id) => ids.has(id) || id.startsWith("g:") || id.startsWith("l-"),
+          );
+          return { googleFonts, ...withActivated(activated) };
+        }),
+      patchFontAxes: (id, axes) =>
+        set((s) => {
+          // Real fvar from a loaded VF file → Variable. Empty axes must not keep a catalog lie.
+          const patch = (font: FontRecord) =>
+            font.id !== id
+              ? font
+              : {
+                  ...font,
+                  axes: axes.length ? snapAxes(axes) : undefined,
+                  variable: axes.length > 0,
+                };
+          const gi = s.googleFonts.findIndex((f) => f.id === id);
+          if (gi >= 0) {
+            const googleFonts = s.googleFonts.slice();
+            googleFonts[gi] = patch(googleFonts[gi]!);
+            return { googleFonts };
+          }
+          const li = s.localFonts.findIndex((f) => f.id === id);
+          if (li >= 0) {
+            const localFonts = s.localFonts.slice();
+            localFonts[li] = patch(localFonts[li]!);
+            return { localFonts };
+          }
+          const si = s.systemFonts.findIndex((f) => f.id === id);
+          if (si < 0) return s;
+          const systemFonts = s.systemFonts.slice();
+          systemFonts[si] = patch(systemFonts[si]!);
+          return { systemFonts };
+        }),
+      patchFontMetrics: (id, metrics) =>
+        set((s) => {
+          const patch = (font: FontRecord) =>
+            font.id !== id ? font : { ...font, metrics: mergeMetrics(font.metrics, metrics) };
+          const gi = s.googleFonts.findIndex((f) => f.id === id);
+          if (gi >= 0) {
+            const googleFonts = s.googleFonts.slice();
+            googleFonts[gi] = patch(googleFonts[gi]!);
+            return { googleFonts };
+          }
+          const li = s.localFonts.findIndex((f) => f.id === id);
+          if (li >= 0) {
+            const localFonts = s.localFonts.slice();
+            localFonts[li] = patch(localFonts[li]!);
+            return { localFonts };
+          }
+          const si = s.systemFonts.findIndex((f) => f.id === id);
+          if (si < 0) return s;
+          const systemFonts = s.systemFonts.slice();
+          systemFonts[si] = patch(systemFonts[si]!);
+          return { systemFonts };
+        }),
+      setCatalogLive: (value) => set({ catalogLive: value }),
+      setScope: (scope) => {
+        if (isFacetScope(scope)) {
+          set((s) => ({
+            scope: isFacetScope(s.scope) ? "all" : s.scope,
+            facet: s.facet === scope ? "" : scope,
+          }));
+          return;
+        }
+        set((s) => ({ scope, facet: s.scope === scope ? s.facet : "" }));
+      },
+      setFacet: (facet) =>
+        set((s) => ({ facet: s.facet === facet ? "" : facet })),
+      setQuery: (query) => set({ query }),
+      setPreview: (patch) =>
+        set((s) => ({ preview: { ...s.preview, ...patch } })),
+      toggleFavorite: (id) =>
+        set((s) => ({
+          favorites: s.favorites.includes(id)
+            ? s.favorites.filter((x) => x !== id)
+            : [...s.favorites, id],
+        })),
+      toggleActivated: (id) => {
+        const live = get().activatedSet.has(id);
+        const pending = get().pendingSet.has(id);
+        const pendingOff = get().pendingDeactivateSet.has(id);
+        const font = findFont(id, get().localFonts, get().googleFonts);
+        if (font?.source === "system") {
+          return;
+        }
+        if (pending || pendingOff) {
+          return;
+        }
+        // Settled Power: hard Gidugu = no-op; soft emoji = explicit Retry Add (one try/process).
+        if (font && !live) {
+          const famKey = font.family.trim().toLowerCase();
+          if (get().settledFamilySet.has(famKey)) {
+            if (isKnownGdiSessionIncapable(font.family)) {
+              return; // hard Settled → no-op
+            }
+            if (isSoftGdiTryAddFirst(font.family)) {
+              if (softSettledRetryTried.has(famKey)) {
+                return; // one Retry Add per process
+              }
+              softSettledRetryTried.add(famKey);
+              // 1.0.206g: set pending + drop Settled *synchronously* so a double-click
+              // hits the pending gate and cannot bypass the soft one-try Retry path
+              // while await clearSessionGdiRefused races (Skye P2).
+              set((s) => ({
+                ...withPending([...s.pendingActivate, id]),
+                ...withSettled(s.settledFamilies.filter((n) => n.trim().toLowerCase() !== famKey)),
+              }));
+              // 1.0.206f: clear Rust session_gdi_refused BEFORE Activate so soft
+              // early-skip does not return AddReturnedZero without Add (Skye P1 HOLD).
+              void (async () => {
+                await clearSessionGdiRefused(font.family);
+                const st = get();
+                // Abort if user toggled off / became Live / pending cleared while waiting.
+                if (st.activatedSet.has(id) || st.pendingDeactivateSet.has(id) || !st.pendingSet.has(id)) {
+                  return;
+                }
+                notifyIfUnusual(font, "activate");
+                void syncFontOnSystem(font, true);
+              })();
+              return;
+            } else {
+              return;
+            }
+          }
+        }
+        if (live) {
+          // Symmetric pending-off: keep Live until unload confirms.
+          set((s) => ({
+            ...withPendingDeactivate(Array.from(new Set([...s.pendingDeactivate, id]))),
+            ...withPending(s.pendingActivate.filter((x) => x !== id)),
+            ...withUnloadStuck(s.unloadStuckIds.filter((x) => x !== id)),
+          }));
+          armPendingOffTimeout([id], get, set);
+          if (font) void syncFontOnSystem(font, false);
+          return;
+        }
+        if (font) {
+          // Family already Live from any source → Activate = no-op (no Remove→Add thrash).
+          if (
+            familyAlreadyLiveOrPending(
+              font,
+              get().localFonts,
+              get().googleFonts,
+              get().activatedSet,
+              get().pendingSet,
+            )
+          ) {
+            return;
+          }
+        }
+        // Google and local both pending until register/download confirms (P0 honesty).
+        set((s) => ({ ...withPending([...s.pendingActivate, id]) }));
+        if (font) {
+          notifyIfUnusual(font, "activate");
+          void syncFontOnSystem(font, true);
+        }
+      },
+      setActivatedMany: (ids, on) => {
+        if (!ids.length) return;
+        const local = get().localFonts;
+        const google = get().googleFonts;
+        if (!on) {
+          const live = get().activatedSet;
+          const pendingOff = get().pendingDeactivateSet;
+          const pack: FontRecord[] = [];
+          const offIds: string[] = [];
+          for (const id of ids) {
+            if (!live.has(id) && !get().pendingSet.has(id)) continue;
+            if (pendingOff.has(id)) continue;
+            const font = findFont(id, local, google);
+            if (!font || font.source === "system") continue;
+            pack.push(font);
+            offIds.push(id);
+          }
+          if (!offIds.length) return;
+          // Keep Live until unload confirms (pending-off honesty).
+          set((s) => ({
+            ...withPendingDeactivate(Array.from(new Set([...s.pendingDeactivate, ...offIds]))),
+            ...withPending(s.pendingActivate.filter((id) => !new Set(offIds).has(id))),
+            ...withUnloadStuck(s.unloadStuckIds.filter((id) => !new Set(offIds).has(id))),
+          }));
+          armPendingOffTimeout(offIds, get, set);
+          if (pack.length) void syncFontsOnSystem(pack, false);
+          return;
+        }
+        const live = get().activatedSet;
+        const pending = get().pendingSet;
+        const hide =
+          get().autoHideDuplicates && get().duplicateHideIds.length
+            ? new Set(get().duplicateHideIds)
+            : null;
+        const incoming: FontRecord[] = [];
+        const settled = get().settledFamilySet;
+        for (const id of ids) {
+          if (live.has(id) || pending.has(id)) continue;
+          if (hide?.has(id)) continue;
+          const font = findFont(id, local, google);
+          if (!font || font.source === "system") continue;
+          // 1.0.205 P0: Activate All must not queue Settled / known Add=0.
+          if (settled.has(font.family.trim().toLowerCase())) continue;
+          // 1.0.206b: skip allowlist even when settled set not hydrated yet.
+          if (isKnownGdiSessionIncapable(font.family)) continue;
+          incoming.push(font);
+        }
+        // evict always [] in 1.0.204 — no chained Remove→Add.
+        const { chosen } = pickExclusiveActivate(incoming, local, google, live, pending);
+        const queuedIds: string[] = [];
+        const pack: FontRecord[] = [];
+        for (const font of chosen) {
+          pack.push(font);
+          queuedIds.push(font.id);
+        }
+        // Do not bump activated[] here — wait for markLiveActivated after GDI/register.
+        if (queuedIds.length) {
+          set((s) => withPending(Array.from(new Set([...s.pendingActivate, ...queuedIds]))));
+        }
+        if (pack.length) {
+          const unusual = pack.find((f) => f.colorKind && f.colorKind !== "none");
+          if (unusual) notifyIfUnusual(unusual, "activate");
+          void syncFontsOnSystem(pack, true);
+        }
+      },
+      toggleActivateSet: (ids) => {
+        if (!ids.length) return false;
+        const current = get().activatedSet;
+        const allOn = ids.every((id) => current.has(id));
+        get().setActivatedMany(ids, !allOn);
+        return !allOn;
+      },
+      markLiveActivated: (ids) => {
+        if (!ids.length) return;
+        const pending = get().pendingSet;
+        const live = get().activatedSet;
+        const add = ids.filter((id) => pending.has(id) && !live.has(id));
+        if (!add.length) {
+          const leftover = get().pendingActivate.filter((id) => !ids.includes(id) || live.has(id));
+          if (leftover.length !== get().pendingActivate.length) set(withPending(leftover));
+          return;
+        }
+        const liveFamKeys = new Set<string>();
+        const curLocals = get().localFonts;
+        const curGoog = get().googleFonts;
+        for (const id of add) {
+          const f = findFont(id, curLocals, curGoog);
+          if (f) liveFamKeys.add(f.family.trim().toLowerCase());
+        }
+        set((s) => ({
+          ...withActivated(Array.from(new Set([...s.activated, ...add]))),
+          ...withPending(s.pendingActivate.filter((id) => !add.includes(id))),
+          ...withPendingDeactivate(s.pendingDeactivate.filter((id) => !add.includes(id))),
+          ...(liveFamKeys.size
+            ? withSettled(s.settledFamilies.filter((n) => !liveFamKeys.has(n.trim().toLowerCase())))
+            : {}),
+        }));
+        const locals = get().localFonts;
+        const goog = get().googleFonts;
+        const liveNow = get().activatedSet;
+        const pendingNow = get().pendingSet;
+        const evict: FontRecord[] = [];
+        const drop = new Set<string>();
+        for (const id of add) {
+          const font = findFont(id, locals, goog);
+          if (!font) continue;
+          for (const rival of liveRivalFonts(font, locals, goog, liveNow, pendingNow)) {
+            if (drop.has(rival.id)) continue;
+            drop.add(rival.id);
+            evict.push(rival);
+          }
+        }
+        if (evict.length) {
+          set((s) => ({
+            ...withActivated(s.activated.filter((id) => !drop.has(id))),
+            ...withPending(s.pendingActivate.filter((id) => !drop.has(id))),
+          }));
+        }
+      },
+      queuePendingActivate: (ids) => {
+        if (!ids.length) return;
+        set((s) => withPending(Array.from(new Set([...s.pendingActivate, ...ids]))));
+      },
+      clearPendingActivate: (ids) => {
+        if (!ids) {
+          set(withPending([]));
+          return;
+        }
+        const drop = new Set(ids);
+        set((s) => withPending(s.pendingActivate.filter((id) => !drop.has(id))));
+      },
+      queuePendingDeactivate: (ids) => {
+        if (!ids.length) return;
+        set((s) =>
+          withPendingDeactivate(Array.from(new Set([...s.pendingDeactivate, ...ids]))),
+        );
+      },
+      clearPendingDeactivate: (ids) => {
+        if (!ids) {
+          set(withPendingDeactivate([]));
+          return;
+        }
+        const drop = new Set(ids);
+        set((s) => withPendingDeactivate(s.pendingDeactivate.filter((id) => !drop.has(id))));
+      },
+      confirmDeactivated: (ids) => {
+        if (!ids.length) return;
+        const drop = new Set(ids);
+        if (bootRestoringIds) {
+          bootRestoringIds = bootRestoringIds.filter((id) => !drop.has(id));
+        }
+        clearPendingOffTimeout(ids);
+        set((s) => ({
+          ...withActivated(s.activated.filter((id) => !drop.has(id))),
+          ...withPending(s.pendingActivate.filter((id) => !drop.has(id))),
+          ...withPendingDeactivate(s.pendingDeactivate.filter((id) => !drop.has(id))),
+          ...withUnloadStuck(s.unloadStuckIds.filter((id) => !drop.has(id))),
+        }));
+      },
+      pruneActivatedToFamilies: (families) => {
+        const allow = new Set(families.map((n) => n.trim().toLowerCase()));
+        const local = get().localFonts;
+        const google = get().googleFonts;
+        const next = get().activated.filter((id) => {
+          const font = findFont(id, local, google);
+          if (!font) return false;
+          if (font.source === "local") return true;
+          return allow.has(font.family.toLowerCase());
+        });
+        const removed = get().activated.length - next.length;
+        if (removed > 0) set(withActivated(next));
+        return removed;
+      },
+      restoreActivation: (liveIds, pendingIds) => {
+        const live = Array.from(new Set(liveIds));
+        const pending = Array.from(new Set(pendingIds.filter((id) => !live.includes(id))));
+        // Fresh session restore — no stale pending-off from last Quit.
+        set({ ...withActivated(live), ...withPending(pending), ...withPendingDeactivate([]) });
+      },
+      selectFont: (id) =>
+        set((s) => ({
+          selectedId: id,
+          inspectorOpen: Boolean(id),
+          recentIds: id ? [id, ...s.recentIds.filter((x) => x !== id)].slice(0, 40) : s.recentIds,
+        })),
+      setInspectorOpen: (open) =>
+        set({ inspectorOpen: open, selectedId: open ? get().selectedId : null }),
+      setFeaturePref: (fontId, tag, on) =>
+        set((s) => ({
+          featurePrefs: {
+            ...s.featurePrefs,
+            [fontId]: { ...(s.featurePrefs[fontId] ?? {}), [tag]: on },
+          },
+        })),
+      setDesktopPrefs: (patch) =>
+        set((s) => ({ desktopPrefs: { ...s.desktopPrefs, ...patch } })),
+      saveFontSet: (name, families) => {
+        const cleanName = name.trim();
+        if (!cleanName) return "";
+        const s = get();
+        let list = families;
+        if (!list) {
+          const seen = new Set<string>();
+          const active: string[] = [];
+          const byId = new Map<string, FontRecord>();
+          for (const f of s.localFonts) byId.set(f.id, f);
+          for (const f of s.googleFonts) byId.set(f.id, f);
+          for (const id of s.activated) {
+            const f = byId.get(id);
+            if (!f || f.source === "system") continue;
+            const k = f.family.trim().toLowerCase();
+            if (!seen.has(k)) {
+              seen.add(k);
+              active.push(f.family.trim());
+            }
+          }
+          list = active;
+        }
+        const existing = s.fontSets.find(
+          (w) => w.name.trim().toLowerCase() === cleanName.toLowerCase(),
+        );
+        const id = existing?.id ?? `set-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+        const entry: FontSet = {
+          id,
+          name: cleanName,
+          families: list,
+          updatedAt: Date.now(),
+        };
+        set((cur) => ({
+          fontSets: existing
+            ? cur.fontSets.map((w) => (w.id === id ? entry : w))
+            : [...cur.fontSets, entry],
+        }));
+        return id;
+      },
+      deleteFontSet: (id) =>
+        set((s) => ({ fontSets: s.fontSets.filter((w) => w.id !== id) })),
+      setPreviewAxis: (id, tag, value) => {
+        setLiveAxis(id, tag, value);
+      },
+      setDiskFamilies: (names) => set(withDisk(names)),
+      setSettledFamilies: (names) => set(withSettled(names)),
+      addSettledFamilies: (names) =>
+        set((s) => {
+          if (!names.length) return s;
+          return withSettled([...s.settledFamilies, ...names]);
+        }),
+      applyDiskStatusHonesty: (rows) =>
+        set((s) => {
+          const vf = new Set<string>();
+          const settledNames: string[] = [];
+          for (const row of rows) {
+            const n = row.name.trim();
+            if (!n) continue;
+            if (row.has_variable ?? row.hasVariable) {
+              vf.add(n.toLowerCase());
+            }
+            if (row.settled) settledNames.push(n);
+          }
+          // Hard allowlist seed across disk honesty replace (Activate All skip).
+          // Soft emoji Settled comes from Scan rows (`settled:true` only with `.settled-add-zero` provenance) —
+          // never always-seed soft (would skip try-Add / cold-boot "Library complete" lie).
+          for (const e of KNOWN_GDI_SESSION_INCAPABLE) settledNames.push(e.family);
+          const googleFonts = s.googleFonts.map((font) => {
+            const onDiskVf = vf.has(font.family.trim().toLowerCase());
+            if (onDiskVf) {
+              return { ...font, variable: true };
+            }
+            // Not on disk as VF — never catalog.variable / live API alone.
+            if (!font.variable && !font.axes?.length) return font;
+            return { ...font, variable: false, axes: undefined };
+          });
+          return { googleFonts, ...withSettled(settledNames) };
+        }),
+      addDiskFamilies: (names) =>
+        set((s) => {
+          if (!names.length) return s;
+          return withDisk([...s.diskFamilies, ...names]);
+        }),
+      setSystemFonts: (fonts) => set({ systemFonts: fonts, systemBusy: false }),
+      setSystemBusy: (value) => set({ systemBusy: value }),
+      setAutoHideDuplicates: (on) => {
+        if (!on) {
+          set({ autoHideDuplicates: false, duplicateHideIds: [] });
+          return;
+        }
+        const hide = familyDuplicateHideIds(get().localFonts, get().googleFonts, get().systemFonts);
+        set({ autoHideDuplicates: true, duplicateHideIds: hide });
+        if (hide.length) get().setActivatedMany(hide, false);
+      },
+      addCollection: (name, parentId = null) => {
+        const id = uid("c");
+        set((s) => ({
+          collections: [
+            ...s.collections,
+            {
+              id,
+              name: name.trim() || "Untitled collection",
+              fontIds: [],
+              createdAt: Date.now(),
+              parentId: parentId ?? null,
+            },
+          ],
+        }));
+        return id;
+      },
+      setCollectionWatch: (id, watchPath, autoActivate) => {
+        set((s) => ({
+          collections: s.collections.map((c) =>
+            c.id === id
+              ? {
+                  ...c,
+                  watchPath,
+                  autoActivate: autoActivate ?? c.autoActivate,
+                }
+              : c,
+          ),
+        }));
+        if (watchPath) void import("./watch-folder").then((m) => m.refreshWatchedFolders());
+      },
+      setCollectionAutoActivate: (id, autoActivate) =>
+        set((s) => ({
+          collections: s.collections.map((c) => (c.id === id ? { ...c, autoActivate } : c)),
+        })),
+      setCollectionImportFilter: (id, importFilter) =>
+        set((s) => ({
+          collections: s.collections.map((c) => (c.id === id ? { ...c, importFilter } : c)),
+        })),
+      renameCollection: (id, name) =>
+        set((s) => ({
+          collections: s.collections.map((c) =>
+            c.id === id ? { ...c, name: name.trim() || c.name } : c,
+          ),
+        })),
+      deleteCollection: (id, opts) => {
+        const s = get();
+        const impact = folderDeleteImpact(s.collections, s.localFonts, id);
+        if (!impact.folderIds.length) return { folders: 0, fonts: 0 };
+        const folderIds = new Set(impact.folderIds);
+        const removeLocal = new Set(impact.localFontIds);
+        const parentId = s.collections.find((c) => c.id === id)?.parentId ?? null;
+        const nextScope =
+          typeof s.scope === "string" &&
+          s.scope.startsWith("collection:") &&
+          folderIds.has(s.scope.slice("collection:".length))
+            ? parentId && !folderIds.has(parentId)
+              ? (`collection:${parentId}` as const)
+              : "all"
+            : s.scope;
+        const nextTags = { ...s.customTags };
+        for (const fontId of impact.localFontIds) delete nextTags[fontId];
+        const doomed = s.localFonts.filter((f) => removeLocal.has(f.id));
+        const remaining = s.localFonts.filter((f) => !removeLocal.has(f.id));
+        const keepFamilies = new Set(remaining.map((f) => f.family.toLowerCase()));
+        set({
+          collections: s.collections.filter((c) => !folderIds.has(c.id)),
+          localFonts: remaining,
+          favorites: s.favorites.filter((x) => !removeLocal.has(x)),
+          ...withActivated(s.activated.filter((x) => !removeLocal.has(x))),
+          selectedId: s.selectedId && removeLocal.has(s.selectedId) ? null : s.selectedId,
+          inspectorOpen: s.selectedId && removeLocal.has(s.selectedId) ? false : s.inspectorOpen,
+          customTags: nextTags,
+          scope: nextScope,
+        });
+        if (doomed.length) {
+          void (async () => {
+            await cleanupLocalFacesChunked(doomed, keepFamilies);
+            await saveLocalFontsMeta(get().localFonts).catch(() => undefined);
+            if (opts?.deleteFromDisk) {
+              await removeUploadsBatchFromDisk(doomed, { keepFamilies });
+            } else {
+              await syncFontsOnSystem(doomed, false);
+            }
+          })();
+        }
+        return { folders: impact.folderIds.length, fonts: impact.localFontIds.length };
+      },
+      moveCollection: (id, parentId) =>
+        set((s) => {
+          if (id === parentId) return s;
+          if (parentId && wouldCreateCycle(s.collections, id, parentId)) return s;
+          return {
+            collections: s.collections.map((c) =>
+              c.id === id ? { ...c, parentId } : c,
+            ),
+          };
+        }),
+      toggleInCollection: (collectionId, fontId) =>
+        set((s) => ({
+          collections: s.collections.map((c) => {
+            if (c.id !== collectionId) return c;
+            const has = c.fontIds.includes(fontId);
+            return {
+              ...c,
+              fontIds: has
+                ? c.fontIds.filter((x) => x !== fontId)
+                : [...c.fontIds, fontId],
+            };
+          }),
+        })),
+      addToCollection: (collectionId, fontId) =>
+        set((s) => ({
+          collections: s.collections.map((c) => {
+            if (c.id !== collectionId || c.fontIds.includes(fontId)) return c;
+            return { ...c, fontIds: [...c.fontIds, fontId] };
+          }),
+        })),
+      setLicense: (id, license) =>
+        set((s) => {
+          const patch = (font: FontRecord) =>
+            font.id === id ? { ...font, license, licenseUserSet: true } : font;
+          const li = s.localFonts.findIndex((f) => f.id === id);
+          if (li >= 0) {
+            const localFonts = s.localFonts.slice();
+            localFonts[li] = patch(localFonts[li]!);
+            return { localFonts };
+          }
+          const gi = s.googleFonts.findIndex((f) => f.id === id);
+          if (gi < 0) return s;
+          const googleFonts = s.googleFonts.slice();
+          googleFonts[gi] = patch(googleFonts[gi]!);
+          return { googleFonts };
+        }),
+      addTag: (fontId, tag) => {
+        // Dynamically normalize & split comma/semicolon tags without importing circular helpers.
+        const parsed = tag
+          .split(/[,;]+/)
+          .map((p) =>
+            p
+              .trim()
+              .replace(/^#+/, "")
+              .toLowerCase()
+              .replace(/\s+/g, "-")
+              .replace(/-+/g, "-")
+              .replace(/^-|-$/g, ""),
+          )
+          .filter(Boolean);
+        if (!parsed.length) return;
+        set((s) => {
+          const font = findFont(fontId, s.localFonts, s.googleFonts);
+          const builtIn = new Set((font?.tags ?? []).map((t) => t.toLowerCase()));
+          const current = s.customTags[fontId] ?? [];
+          const existing = new Set(current.map((t) => t.toLowerCase()));
+          const additions: string[] = [];
+          for (const t of parsed) {
+            if (!builtIn.has(t) && !existing.has(t) && !additions.includes(t)) {
+              additions.push(t);
+            }
+          }
+          if (!additions.length) return s;
+          return {
+            customTags: { ...s.customTags, [fontId]: [...current, ...additions] },
+          };
+        });
+      },
+      removeTag: (fontId, tag) =>
+        set((s) => {
+          const dropKey = tag.trim().toLowerCase();
+          const filtered = (s.customTags[fontId] ?? []).filter(
+            (t) => t.trim().toLowerCase() !== dropKey,
+          );
+          const next = { ...s.customTags };
+          if (filtered.length) next[fontId] = filtered;
+          else delete next[fontId];
+          return { customTags: next };
+        }),
+      importFiles: async (files, opts) => {
+        const fileArr = Array.from(files);
+        void import("./os-activate").then((m) => m.setUploadQueuePaused(false));
+        set({
+          uploadBusy: true,
+          uploadJob: {
+            active: true,
+            paused: false,
+            cancelled: false,
+            done: 0,
+            total: fileArr.length,
+            added: 0,
+            skipped: 0,
+            failed: 0,
+            current: fileArr[0]?.name ?? "",
+          },
+        });
+        let added = 0;
+        let duplicates = 0;
+        let failed = 0;
+        const existingHashes = new Set(
+          get().localFonts.map((f) => f.checksum).filter(Boolean) as string[],
+        );
+        const newIds: string[] = [];
+        const folderOf = new Map<string, string[]>();
+
+        try {
+          const { parseFilesPool, PARSE_WAVE } = await import("./parse-pool");
+          let collectionId = opts?.collectionId;
+          let primed = false;
+          for (let waveStart = 0; waveStart < fileArr.length; waveStart += PARSE_WAVE) {
+            if (await waitWhileUploadPaused(get)) break;
+            const wave = fileArr.slice(waveStart, waveStart + PARSE_WAVE);
+            const originSlice = opts?.originPaths?.slice(waveStart, waveStart + PARSE_WAVE);
+            const currentLabel = wave[0]?.name ?? "";
+            set((s) => ({ uploadJob: { ...s.uploadJob, current: currentLabel } }));
+            const parsedList = await parseFilesPool(wave);
+            if (await waitWhileUploadPaused(get)) break;
+            for (const item of parsedList) {
+              if (!item.ok) continue;
+              item.faces = item.faces.map((parsed) => {
+                const refined = refineLicense(parsed, {
+                  fileName: item.file.name,
+                  relativePath: item.file.webkitRelativePath,
+                  collectionName: opts?.collectionName,
+                });
+                return { ...parsed, ...refined };
+              });
+            }
+
+            const waveRecords: FontRecord[] = [];
+            const waveBlobs: { id: string; blob: Blob }[] = [];
+            const waveIds: string[] = [];
+            const savedDisk = new Set<string>();
+            for (let i = 0; i < parsedList.length; i += 1) {
+              const item = parsedList[i]!;
+              const file = wave[i];
+              if (!item.ok) {
+                failed += 1;
+                continue;
+              }
+              for (const parsed of item.faces) {
+                if (existingHashes.has(parsed.checksum)) {
+                  duplicates += 1;
+                  continue;
+                }
+                const id = uid("l");
+                existingHashes.add(parsed.checksum);
+                if (!originSlice?.[i]) {
+                  waveBlobs.push({
+                    id,
+                    blob: new Blob([parsed.buffer], { type: fontMime(parsed.fileName) }),
+                  });
+                }
+                const record: FontRecord = {
+                  id,
+                  family: parsed.family,
+                  fullName: parsed.fullName && parsed.fullName !== parsed.family ? parsed.fullName : undefined,
+                  source: "local",
+                  category: parsed.category,
+                  weights: [parsed.weight],
+                  italic: parsed.italic,
+                  variable: parsed.variable,
+                  axes: parsed.axes.length ? snapAxes(parsed.axes) : undefined,
+                  otFeatures: parsed.otFeatures.length ? parsed.otFeatures : undefined,
+                  instances: parsed.instances.length ? parsed.instances : undefined,
+                  varStorage: parsed.varStorage || undefined,
+                  tags: parsed.tags.length
+                    ? parsed.tags
+                    : inferLocalStyle({
+                        family: parsed.family,
+                        fullName: parsed.fullName,
+                        fileName: parsed.fileName,
+                        sFamilyClass: parsed.metrics?.sFamilyClass,
+                        panose: parsed.metrics?.panose,
+                        widthClass: parsed.metrics?.widthClass,
+                        isFixedPitch: parsed.metrics?.isFixedPitch,
+                        hasLigatures: parsed.otFeatures.includes("liga") || parsed.otFeatures.includes("rlig"),
+                        axes: parsed.axes,
+                      }).tags,
+                  popularity: 9999,
+                  fileName: parsed.fileName,
+                  fileSize: parsed.fileSize,
+                  checksum: parsed.checksum,
+                  version: parsed.version,
+                  glyphCount: parsed.glyphCount,
+                  cssFamily: parsed.family,
+                  addedAt: Date.now(),
+                  license: parsed.license,
+                  licenseName: parsed.licenseName || undefined,
+                  kerningKey: parsed.kerningKey,
+                  colorKind: parsed.colorKind,
+                  script: parsed.script,
+                  originPath: originSlice?.[i],
+                  metrics: parsed.metrics,
+                };
+                waveRecords.push(record);
+                waveIds.push(id);
+                newIds.push(id);
+                added += 1;
+                folderOf.set(
+                  id,
+                  folderPathForFile(file ?? ({ webkitRelativePath: "" } as File), opts?.collectionName),
+                );
+                // Per face: every face of a TTC/OTC is its own extracted SFNT + file name.
+                const diskKey = `${parsed.family}\u0000${parsed.fileName || file?.name || ""}`;
+                if (!originSlice?.[i] && file && !savedDisk.has(diskKey)) {
+                  savedDisk.add(diskKey);
+                  void saveUploadToDisk({
+                    family: parsed.family,
+                    fileName: parsed.fileName || file.name,
+                    buffer: parsed.buffer,
+                  });
+                }
+              }
+            }
+
+            if (waveBlobs.length) {
+              try {
+                await idbPutMany(waveBlobs);
+              } catch {
+                const drop = new Set(waveBlobs.map((b) => b.id));
+                failed += drop.size;
+                added -= drop.size;
+                for (let i = waveRecords.length - 1; i >= 0; i -= 1) {
+                  if (drop.has(waveRecords[i]!.id)) waveRecords.splice(i, 1);
+                }
+              }
+            }
+
+            if (waveRecords.length) {
+              const dropName = opts?.collectionName?.trim();
+              if (collectionId) {
+                const exists = get().collections.some((c) => c.id === collectionId);
+                if (!exists) collectionId = undefined;
+              }
+              set((s) => {
+                let collections = s.collections.slice();
+                const parentName = collectionId
+                  ? collections.find((c) => c.id === collectionId)?.name
+                  : undefined;
+                let rootId = collectionId ?? null;
+                for (const record of waveRecords) {
+                  let names = folderOf.get(record.id) ?? [];
+                  if (collectionId && parentName && names[0] === parentName) {
+                    names = names.slice(1);
+                  }
+                  if (!names.length && dropName && !collectionId) names = [dropName];
+                  if (!names.length && !collectionId) continue;
+                  const nested = ensureFolderPath(collections, collectionId ?? null, names);
+                  collections = nested.collections;
+                  const leaf = nested.leafId;
+                  if (!rootId && names.length) {
+                    const top = collections.find(
+                      (c) => c.name === names[0] && (c.parentId ?? null) === null,
+                    );
+                    rootId = top?.id ?? leaf;
+                  }
+                  if (leaf) {
+                    collections = collections.map((c) =>
+                      c.id === leaf
+                        ? { ...c, fontIds: Array.from(new Set([...c.fontIds, record.id])) }
+                        : c,
+                    );
+                  }
+                }
+                collectionId = rootId ?? collectionId;
+                const shouldAutoActivate =
+                  opts?.autoActivate !== undefined
+                    ? opts.autoActivate
+                    : !opts?.originPaths?.length;
+                return {
+                  localFonts: [...waveRecords, ...s.localFonts],
+                  ...(shouldAutoActivate
+                    ? withActivated(Array.from(new Set([...s.activated, ...waveIds])))
+                    : {}),
+                  collections,
+                  scope: collectionId ? (`collection:${collectionId}` as const) : s.scope,
+                };
+              });
+              if (!primed) {
+                primed = true;
+                const local = get().localFonts;
+                const google = get().googleFonts;
+                waveIds.slice(0, 2).forEach((id) => {
+                  const font = findFont(id, local, google);
+                  if (font) void loadFont(font);
+                });
+              }
+            }
+            set((s) => ({
+              uploadJob: {
+                ...s.uploadJob,
+                done: Math.min(fileArr.length, waveStart + wave.length),
+                added,
+                skipped: duplicates,
+                failed,
+              },
+            }));
+            await new Promise((r) => setTimeout(r, 0));
+          }
+
+          if (
+            opts?.originPaths?.length &&
+            newIds.length &&
+            get().collections.find((c) => c.id === collectionId)?.autoActivate
+          ) {
+            get().setActivatedMany(newIds, true);
+          }
+
+          if (newIds.length) {
+            await saveLocalFontsMeta(get().localFonts).catch(() => undefined);
+          }
+
+          return { added, duplicates, failed, collectionId };
+        } finally {
+          set({ uploadBusy: false, uploadJob: { ...DEFAULT_UPLOAD_JOB } });
+        }
+      },
+      importOriginPaths: async (paths, opts) => {
+        const fileArr = paths.filter(Boolean);
+        set({
+          uploadBusy: true,
+          uploadJob: {
+            active: true,
+            paused: false,
+            cancelled: false,
+            done: 0,
+            total: fileArr.length,
+            added: 0,
+            skipped: 0,
+            failed: 0,
+            current: fileArr[0]?.split(/[\\/]/).pop() ?? "",
+          },
+        });
+        let added = 0;
+        let duplicates = 0;
+        let failed = 0;
+        const existingHashes = new Set(
+          get().localFonts.map((f) => f.checksum).filter(Boolean) as string[],
+        );
+        const newIds: string[] = [];
+        try {
+          const { indexFontPaths, fontMetricsFromLayout } = await import("./native-parse");
+          const { PARSE_WAVE } = await import("./parse-pool");
+          let collectionId = opts?.collectionId;
+          for (let waveStart = 0; waveStart < fileArr.length; waveStart += PARSE_WAVE) {
+            if (await waitWhileUploadPaused(get)) break;
+            const wave = fileArr.slice(waveStart, waveStart + PARSE_WAVE);
+            const currentLabel = wave[0]?.split(/[\\/]/).pop() ?? "";
+            set((s) => ({ uploadJob: { ...s.uploadJob, current: currentLabel } }));
+            const indexed = await indexFontPaths(wave);
+            if (await waitWhileUploadPaused(get)) break;
+            const seenPath = new Set(indexed.map((row) => row.path));
+            for (const p of wave) {
+              if (!seenPath.has(p)) failed += 1;
+            }
+            const waveRecords: FontRecord[] = [];
+            const waveIds: string[] = [];
+            for (const row of indexed) {
+              if (existingHashes.has(row.checksum)) {
+                duplicates += 1;
+                continue;
+              }
+              existingHashes.add(row.checksum);
+              const id = uid("l");
+              const layoutMetrics = row.metrics
+                ? fontMetricsFromLayout({
+                    axes: row.axes,
+                    otFeatures: row.otFeatures,
+                    variable: row.variable,
+                    glyphCount: row.glyphCount,
+                    metrics: row.metrics,
+                  })
+                : undefined;
+              const style = inferLocalStyle({
+                family: row.family,
+                fullName: row.fullName,
+                fileName: row.fileName,
+                sFamilyClass: layoutMetrics?.sFamilyClass,
+                panose: layoutMetrics?.panose,
+                widthClass: layoutMetrics?.widthClass,
+                isFixedPitch: layoutMetrics?.isFixedPitch,
+                hasLigatures: row.otFeatures.includes("liga") || row.otFeatures.includes("rlig"),
+                axes: row.axes,
+              });
+              const tags =
+                (row.variable || row.axes.length > 0) && !style.tags.includes("variable")
+                  ? [...style.tags, "variable"]
+                  : style.tags;
+              waveRecords.push({
+                id,
+                family: row.family,
+                fullName: row.fullName && row.fullName !== row.family ? row.fullName : undefined,
+                source: "local",
+                category: style.category,
+                weights: [row.weight || 400],
+                italic: row.italic,
+                variable: row.variable,
+                axes: row.axes.length ? row.axes : undefined,
+                otFeatures: row.otFeatures.length ? row.otFeatures : undefined,
+                tags,
+                popularity: 9999,
+                fileName: row.fileName,
+                fileSize: row.fileSize,
+                checksum: row.checksum,
+                glyphCount: row.glyphCount,
+                cssFamily: row.family,
+                addedAt: Date.now(),
+                license: "unknown",
+                originPath: row.path,
+                faceIndex: row.faceIndex || undefined,
+                metrics: layoutMetrics,
+              });
+              waveIds.push(id);
+              newIds.push(id);
+              added += 1;
+            }
+            if (waveRecords.length) {
+              if (collectionId) {
+                const exists = get().collections.some((c) => c.id === collectionId);
+                if (!exists) collectionId = undefined;
+              }
+              set((s) => {
+                let collections = s.collections.slice();
+                const parentName = collectionId
+                  ? collections.find((c) => c.id === collectionId)?.name
+                  : undefined;
+                let rootId = collectionId ?? null;
+                for (const record of waveRecords) {
+                  let names = folderPathForOrigin(record.originPath ?? "", opts?.collectionName);
+                  if (collectionId && parentName && names[0] === parentName) names = names.slice(1);
+                  if (!names.length && opts?.collectionName && !collectionId) names = [opts.collectionName];
+                  if (!names.length && !collectionId) continue;
+                  const nested = ensureFolderPath(collections, collectionId ?? null, names);
+                  collections = nested.collections;
+                  const leaf = nested.leafId;
+                  if (!rootId && names.length) {
+                    const top = collections.find(
+                      (c) => c.name === names[0] && (c.parentId ?? null) === null,
+                    );
+                    rootId = top?.id ?? leaf;
+                  }
+                  if (leaf) {
+                    collections = collections.map((c) =>
+                      c.id === leaf
+                        ? { ...c, fontIds: Array.from(new Set([...c.fontIds, record.id])) }
+                        : c,
+                    );
+                  }
+                }
+                collectionId = rootId ?? collectionId;
+                return {
+                  localFonts: [...waveRecords, ...s.localFonts],
+                  collections,
+                  scope: collectionId ? (`collection:${collectionId}` as const) : s.scope,
+                };
+              });
+            }
+            set((s) => ({
+              uploadJob: {
+                ...s.uploadJob,
+                done: Math.min(fileArr.length, waveStart + wave.length),
+                added,
+                skipped: duplicates,
+                failed,
+              },
+            }));
+            await new Promise((r) => setTimeout(r, 0));
+          }
+          if (
+            newIds.length &&
+            get().collections.find((c) => c.id === collectionId)?.autoActivate
+          ) {
+            get().setActivatedMany(newIds, true);
+          }
+          if (newIds.length) {
+            await saveLocalFontsMeta(get().localFonts).catch(() => undefined);
+          }
+          return { added, duplicates, failed, collectionId };
+        } finally {
+          set({ uploadBusy: false, uploadJob: { ...DEFAULT_UPLOAD_JOB } });
+        }
+      },
+      removeLocalFont: async (id) => {
+        const font = get().localFonts.find((f) => f.id === id);
+        if (!font) return;
+        const hasSiblingFaces = get().localFonts.some(
+          (f) =>
+            f.id !== id &&
+            !f.originPath &&
+            f.family.toLowerCase() === font.family.toLowerCase(),
+        );
+        if (!hasSiblingFaces) evictFamilyPreview(font.family);
+        await unloadLocalFont(id).catch(() => undefined);
+        if (!font.originPath) {
+          const ok = await removeUploadFromDisk(font, hasSiblingFaces);
+          if (!ok) return;
+        } else {
+          await uninstallFontOnSystem(font).catch(() => undefined);
+        }
+        await idbDelete(id).catch(() => undefined);
+        set((s) => ({
+          localFonts: s.localFonts.filter((f) => f.id !== id),
+          favorites: s.favorites.filter((x) => x !== id),
+          ...withActivated(s.activated.filter((x) => x !== id)),
+          selectedId: s.selectedId === id ? null : s.selectedId,
+          collections: s.collections.map((c) => ({
+            ...c,
+            fontIds: c.fontIds.filter((fid) => fid !== id),
+          })),
+        }));
+        await saveLocalFontsMeta(get().localFonts).catch(() => undefined);
+      },
+      removeLocalFontsBatch: async (ids, opts) => {
+        const remove = new Set(ids);
+        if (!remove.size) return 0;
+        const s0 = get();
+        const doomed = s0.localFonts.filter((f) => remove.has(f.id));
+        if (!doomed.length) return 0;
+        const remaining = s0.localFonts.filter((f) => !remove.has(f.id));
+        const keepFamilies = new Set(remaining.map((f) => f.family.toLowerCase()));
+        await cleanupLocalFacesChunked(doomed, keepFamilies);
+        set((s) => ({
+          localFonts: s.localFonts.filter((f) => !remove.has(f.id)),
+          favorites: s.favorites.filter((id) => !remove.has(id)),
+          ...withActivated(s.activated.filter((id) => !remove.has(id))),
+          selectedId: s.selectedId && remove.has(s.selectedId) ? null : s.selectedId,
+          inspectorOpen: s.selectedId && remove.has(s.selectedId) ? false : s.inspectorOpen,
+          collections: s.collections.map((c) => ({
+            ...c,
+            fontIds: c.fontIds.filter((id) => !remove.has(id)),
+          })),
+          customTags: Object.fromEntries(
+            Object.entries(s.customTags).filter(([key]) => !remove.has(key)),
+          ),
+        }));
+        await saveLocalFontsMeta(get().localFonts).catch(() => undefined);
+        if (opts?.deleteFromDisk !== false) {
+          await removeUploadsBatchFromDisk(doomed, { keepFamilies });
+        } else {
+          await syncFontsOnSystem(doomed, false);
+        }
+        return doomed.length;
+      },
+      clearLocalFonts: async () => {
+        if (get().uploadBusy) get().cancelUpload();
+        cancelDownloadQueue();
+        const fonts = get().localFonts.slice();
+        const ids = fonts.map((f) => f.id);
+        if (!ids.length) {
+          await saveLocalFontsMeta([]).catch(() => undefined);
+          return 0;
+        }
+        await cleanupLocalFacesChunked(fonts);
+        const remove = new Set(ids);
+        set((s) => ({
+          localFonts: [],
+          favorites: s.favorites.filter((id) => !remove.has(id)),
+          ...withActivated(s.activated.filter((id) => !remove.has(id))),
+          selectedId: s.selectedId && remove.has(s.selectedId) ? null : s.selectedId,
+          inspectorOpen: s.selectedId && remove.has(s.selectedId) ? false : s.inspectorOpen,
+          collections: s.collections.map((c) => ({
+            ...c,
+            fontIds: c.fontIds.filter((id) => !remove.has(id)),
+          })),
+          customTags: Object.fromEntries(
+            Object.entries(s.customTags).filter(([key]) => !remove.has(key)),
+          ),
+          scope: s.scope === "uploaded" ? "all" : s.scope,
+        }));
+        await saveLocalFontsMeta([]).catch(() => undefined);
+        await removeUploadsBatchFromDisk(fonts);
+        return ids.length;
+      },
+      resetLibrary: async () => {
+        if (get().uploadBusy) get().cancelUpload();
+        cancelDownloadQueue();
+        const snap = get();
+        const activeIds = Array.from(
+          new Set([...snap.activated, ...snap.pendingActivate]),
+        );
+        const prev = activeIds
+          .map((id) => findFont(id, snap.localFonts, snap.googleFonts))
+          .filter((f): f is FontRecord => Boolean(f));
+        for (const font of prev) {
+          evictFamilyPreview(font.family);
+        }
+        const n = await get().clearLocalFonts();
+        set({
+          collections: [],
+          favorites: [],
+          ...withActivated(DEFAULT_ACTIVATED.slice()),
+          preview: DEFAULT_PREVIEW,
+          scope: "all",
+          facet: "",
+          query: "",
+          selectedId: null,
+          inspectorOpen: false,
+          customTags: {},
+        });
+        const remainingNonLocal = prev.filter(
+          (f) => f.source !== "local" && f.source !== "system",
+        );
+        if (remainingNonLocal.length) {
+          await syncFontsOnSystem(remainingNonLocal, false);
+        }
+        return n;
+      },
+    }),
+    {
+      name: STORAGE_KEY,
+      version: 6,
+      storage: createJSONStorage(() => persistStorage()),
+      skipHydration: true,
+      migrate: (persisted, from) => {
+        const p = (persisted ?? {}) as Partial<PersistedSlice> & Record<string, unknown>;
+        const base: PersistedSlice = {
+          favorites: Array.isArray(p.favorites) ? p.favorites : [],
+          activated: Array.isArray(p.activated) ? p.activated : [],
+          pendingActivate: Array.isArray(p.pendingActivate) ? p.pendingActivate : [],
+          pendingDeactivate: [],
+          collections: withoutBuiltinFolders(Array.isArray(p.collections) ? p.collections : []),
+          fontSets: Array.isArray(p.fontSets) ? p.fontSets : [],
+          customTags: p.customTags && typeof p.customTags === "object" ? p.customTags : {},
+          localFonts: Array.isArray(p.localFonts) ? p.localFonts : [],
+          preview: { ...DEFAULT_PREVIEW, ...(p.preview as PreviewSettings | undefined) },
+          previewAxes: p.previewAxes && typeof p.previewAxes === "object" ? p.previewAxes : {},
+          scope: (typeof p.scope === "string" ? p.scope : "all") as LibraryScope,
+          facet: typeof p.facet === "string" ? (p.facet as LibraryFacet) : "",
+          query: typeof p.query === "string" ? p.query : "",
+          selectedId: p.selectedId === null || typeof p.selectedId === "string" ? p.selectedId : null,
+          inspectorOpen: Boolean(p.inspectorOpen),
+          autoHideDuplicates: Boolean(p.autoHideDuplicates),
+          recentIds: Array.isArray(p.recentIds) ? p.recentIds.filter((id) => typeof id === "string").slice(0, 40) : [],
+          featurePrefs:
+            p.featurePrefs && typeof p.featurePrefs === "object" ? p.featurePrefs : {},
+          desktopPrefs: coerceDesktopPrefs(p.desktopPrefs),
+        };
+        if (from < 3 && isFacetScope(String(base.scope))) {
+          base.facet = base.scope as LibraryFacet;
+          base.scope = "all";
+        }
+        if (from < 4 && base.activated.length > 0 && (base.scope === "all" || !base.scope)) {
+          base.scope = "activated";
+        }
+        return base;
+      },
+      merge: (persisted, current) => {
+        const p = (persisted ?? {}) as Partial<PersistedSlice>;
+        const raw = stripLegacySeedActivation(p.activated ?? current.activated, (p.localFonts ?? current.localFonts).length);
+        const known = new Set((p.localFonts ?? current.localFonts).map((f) => f.id));
+        for (const f of current.googleFonts) known.add(f.id);
+        // Keep `l-` IDs through initial localStorage merge because v5 localFonts arrive asynchronously from IndexedDB.
+        const activated = raw.filter((id) => known.has(id) || id.startsWith("g:") || id.startsWith("l-"));
+        const pendingActivate = (p.pendingActivate ?? []).filter(
+          (id) => (known.has(id) || id.startsWith("g:") || id.startsWith("l-")) && !activated.includes(id),
+        );
+        return {
+          ...current,
+          ...p,
+          ...withActivated(activated),
+          ...withPending(pendingActivate),
+          ...withPendingDeactivate([]),
+          query: typeof p.query === "string" ? p.query : current.query,
+          selectedId: p.selectedId === null || typeof p.selectedId === "string" ? p.selectedId : current.selectedId,
+          inspectorOpen: typeof p.inspectorOpen === "boolean" ? p.inspectorOpen : current.inspectorOpen,
+          collections: withoutBuiltinFolders(p.collections ?? current.collections),
+          fontSets: Array.isArray(p.fontSets) ? p.fontSets : current.fontSets,
+          localFonts: (p.localFonts ?? current.localFonts).map((f) => {
+            if (f.licenseUserSet) {
+              return { ...f, license: coerceLicense(f.license) };
+            }
+            const names = (p.collections ?? current.collections)
+              .filter((c) => c.fontIds.includes(f.id))
+              .map((c) => c.name);
+            const refined = refineLicense(
+              {
+                license: f.license ?? "unknown",
+                licenseName: f.licenseName,
+                fileName: f.fileName,
+              },
+              { collectionNames: names, fileName: f.fileName },
+            );
+            return {
+              ...f,
+              license: refined.license,
+              licenseName: refined.licenseName || f.licenseName,
+            };
+          }),
+          preview: {
+            ...DEFAULT_PREVIEW,
+            ...p.preview,
+            sort: p.preview?.sort ?? "name-asc",
+            align: p.preview?.align ?? "left",
+            italic: Boolean(p.preview?.italic),
+          },
+          previewAxes: p.previewAxes && typeof p.previewAxes === "object" ? p.previewAxes : {},
+          scope: (() => {
+            const next = isFacetScope(String(p.scope ?? "")) ? "all" : (p.scope ?? current.scope ?? "all");
+            if (activated.length === 0 && next === "activated") return "all";
+            if (next === "google") return "gfonts";
+            return next;
+          })(),
+          facet:
+            typeof p.facet === "string" && p.facet
+              ? (p.facet as LibraryFacet)
+              : isFacetScope(String(p.scope ?? ""))
+                ? (p.scope as LibraryFacet)
+                : "",
+          autoHideDuplicates: Boolean(p.autoHideDuplicates),
+          duplicateHideIds: p.autoHideDuplicates
+            ? familyDuplicateHideIds(p.localFonts ?? current.localFonts, current.googleFonts, current.systemFonts)
+            : [],
+          recentIds: Array.isArray(p.recentIds) ? p.recentIds.filter((id) => typeof id === "string").slice(0, 40) : current.recentIds,
+          featurePrefs: p.featurePrefs && typeof p.featurePrefs === "object" ? p.featurePrefs : current.featurePrefs,
+          desktopPrefs: coerceDesktopPrefs(p.desktopPrefs ?? current.desktopPrefs),
+        };
+      },
+      partialize: (s): PersistedSlice => ({
+        favorites: s.favorites,
+        activated:
+          bootRestoringIds && bootRestoringIds.length > 0
+            ? Array.from(new Set([...s.activated, ...bootRestoringIds]))
+            : s.activated,
+        pendingActivate: [],
+        pendingDeactivate: [],
+        collections: s.collections,
+        fontSets: s.fontSets,
+        customTags: s.customTags,
+        // v5: upload catalog lives in IndexedDB (20k × JSON blows localStorage 5MB).
+        localFonts: [],
+        preview: s.preview,
+        previewAxes: s.previewAxes,
+        scope: s.scope,
+        facet: s.facet,
+        query: s.query,
+        selectedId: s.selectedId,
+        inspectorOpen: s.inspectorOpen,
+        autoHideDuplicates: s.autoHideDuplicates,
+        recentIds: s.recentIds,
+        featurePrefs: s.featurePrefs,
+        desktopPrefs: s.desktopPrefs,
+      }),
+    },
+  ),
+);
+
+bindAxesPersist((axes) => {
+  useFontStore.setState({ previewAxes: axes });
+});
+
+useFontStore.subscribe((s, prev) => {
+  if (s.localFonts !== prev.localFonts) scheduleSaveLocalFontsMeta(s.localFonts);
+});
+
+export function allFonts(
+  localFonts: FontRecord[],
+  googleFonts: FontRecord[] = GOOGLE_FONTS,
+): FontRecord[] {
+  if (!localFonts.length) return googleFonts;
+  if (!googleFonts.length) return localFonts;
+  return [...localFonts, ...googleFonts];
+}
+
+/** Narrow the array *before* filter/sort so 20k locals are not copied when viewing Google Fonts / Activated. */
+export function poolForScope(
+  scope: LibraryScope,
+  localFonts: FontRecord[],
+  googleFonts: FontRecord[],
+  systemFonts: FontRecord[] = [],
+  liveIds: readonly string[] = [],
+): FontRecord[] {
+  if (scope === "system") return systemFonts;
+  if (scope === "uploaded") return localFonts;
+  if (scope === "gfonts" || scope === "google") return googleFonts;
+  if (scope === "recent") return allFonts(localFonts, googleFonts).concat(systemFonts);
+  // Activated drawer/facet: O(live), never allFonts(~22k) on every GDI tick.
+  if (scope === "activated") {
+    if (!liveIds.length) return [];
+    const googleOnly = liveIds.every((id) => id.startsWith("g:"));
+    const localById = googleOnly ? null : new Map(localFonts.map((f) => [f.id, f]));
+    const googleById = new Map(googleFonts.map((f) => [f.id, f]));
+    const systemById = systemFonts.length ? new Map(systemFonts.map((f) => [f.id, f])) : null;
+    const out: FontRecord[] = [];
+    const seen = new Set<string>();
+    for (const id of liveIds) {
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      // Prefer store googleFonts (disk VF honesty) over static FONT_BY_ID (variable:false).
+      const font =
+        localById?.get(id) ??
+        googleById.get(id) ??
+        systemById?.get(id) ??
+        (id.startsWith("g:") ? FONT_BY_ID.get(id) : undefined) ??
+        FONT_BY_ID.get(id);
+      if (font) out.push(font);
+    }
+    return out;
+  }
+  return allFonts(localFonts, googleFonts);
+}
+
+export function findFont(
+  id: string,
+  localFonts: FontRecord[],
+  googleFonts: FontRecord[] = GOOGLE_FONTS,
+): FontRecord | undefined {
+  if (id.startsWith("g:")) {
+    return FONT_BY_ID.get(id) ?? googleFonts.find((f) => f.id === id);
+  }
+  if (id.startsWith("s:")) {
+    return useFontStore.getState().systemFonts.find((f) => f.id === id);
+  }
+  return (
+    localFonts.find((f) => f.id === id) ??
+    googleFonts.find((f) => f.id === id) ??
+    FONT_BY_ID.get(id)
+  );
+}
+
+export function tagsFor(font: FontRecord, customTags: Record<string, string[]>): string[] {
+  const extra = customTags[font.id] ?? [];
+  return Array.from(new Set([...font.tags, ...extra]));
+}
+
+export function familyDuplicateHideIds(
+  localFonts: FontRecord[],
+  googleFonts: FontRecord[],
+  systemFonts: FontRecord[] = [],
+): string[] {
+  const catalog = new Set(
+    [...googleFonts, ...systemFonts].map((f) => f.family.toLowerCase()),
+  );
+  const seen = new Set<string>();
+  const hide: string[] = [];
+  for (const font of localFonts) {
+    const key = font.family.toLowerCase();
+    if (catalog.has(key) || seen.has(key)) hide.push(font.id);
+    else seen.add(key);
+  }
+  return hide;
+}
+
+export function hideIdsFromDuplicateGroups(groups: DuplicateGroup[]): string[] {
+  const hide: string[] = [];
+  for (const group of groups) {
+    const keep =
+      group.fonts.find((f) => f.source === "system") ??
+      group.fonts.find((f) => f.source === "google") ??
+      [...group.fonts].sort((a, b) => (b.fileSize ?? 0) - (a.fileSize ?? 0))[0];
+    if (!keep) continue;
+    for (const font of group.fonts) {
+      if (font.id !== keep.id && font.source === "local") hide.push(font.id);
+    }
+  }
+  return hide;
+}
+
+function sourceRank(source: FontRecord["source"]) {
+  if (source === "system") return 0;
+  if (source === "google") return 1;
+  return 2;
+}
+
+export async function findDuplicates(
+  localFonts: FontRecord[],
+  googleFonts: FontRecord[] = [],
+  systemFonts: FontRecord[] = [],
+): Promise<DuplicateGroup[]> {
+  const groups: DuplicateGroup[] = [];
+  const grouped = new Set<string>();
+
+  const byHash = new Map<string, FontRecord[]>();
+  for (const font of localFonts) {
+    if (!font.checksum) continue;
+    const list = byHash.get(font.checksum) ?? [];
+    list.push(font);
+    byHash.set(font.checksum, list);
+  }
+  for (const [hash, fonts] of byHash) {
+    if (fonts.length < 2) continue;
+    groups.push({ key: `hash:${hash}`, reason: "checksum", fonts, diffBytes: 0 });
+    fonts.forEach((f) => grouped.add(f.id));
+  }
+
+  const rest = localFonts.filter((f) => !grouped.has(f.id));
+  const bySize = new Map<number, FontRecord[]>();
+  for (const font of rest) {
+    const size = font.fileSize ?? 0;
+    if (size <= 0) continue;
+    const list = bySize.get(size) ?? [];
+    list.push(font);
+    bySize.set(size, list);
+  }
+
+  const toLoad = [...bySize.values()].filter((list) => list.length >= 2).flat();
+  const buffers = new Map<string, Uint8Array>();
+  await Promise.all(
+    toLoad.map(async (font) => {
+      const blob = await idbGet(font.id).catch(() => undefined);
+      if (!blob) return;
+      const buf = new Uint8Array(await blob.arrayBuffer());
+      if (buf.byteLength) buffers.set(font.id, buf);
+    }),
+  );
+
+  let cmp = 0;
+  // Cap per-size-bucket pairwise byte diffs so 100k libraries with identical stub
+  // sizes cannot go O(B^2); checksum grouping above already catches exact matches in O(N).
+  const MAX_BUCKET_PAIRWISE = 32;
+  for (const [size, fonts] of bySize) {
+    if (fonts.length < 2 || fonts.length > MAX_BUCKET_PAIRWISE) continue;
+    const parent = fonts.map((_, i) => i);
+    const diffs = new Map<string, number>();
+    const find = (i: number): number => {
+      let p = i;
+      while (parent[p] !== p) p = parent[p]!;
+      let c = i;
+      while (parent[c] !== p) {
+        const n = parent[c]!;
+        parent[c] = p;
+        c = n;
+      }
+      return p;
+    };
+    const unite = (i: number, j: number) => {
+      const a = find(i);
+      const b = find(j);
+      if (a !== b) parent[a] = b;
+    };
+
+    for (let i = 0; i < fonts.length; i += 1) {
+      const left = buffers.get(fonts[i]!.id);
+      if (!left) continue;
+      for (let j = i + 1; j < fonts.length; j += 1) {
+        const right = buffers.get(fonts[j]!.id);
+        if (!right) continue;
+        cmp += 1;
+        if (cmp % 8 === 0) await new Promise<void>((r) => setTimeout(r, 0));
+        const { near, diffs: n } = bytesNearlySame(left, right);
+        if (!near) continue;
+        unite(i, j);
+        const edge = `${Math.min(i, j)}:${Math.max(i, j)}`;
+        diffs.set(edge, n);
+      }
+    }
+
+    const clusters = new Map<number, FontRecord[]>();
+    for (let i = 0; i < fonts.length; i += 1) {
+      const root = find(i);
+      const list = clusters.get(root) ?? [];
+      list.push(fonts[i]!);
+      clusters.set(root, list);
+    }
+    for (const [root, list] of clusters) {
+      if (list.length < 2) continue;
+      let worst = 0;
+      for (let i = 0; i < fonts.length; i += 1) {
+        if (find(i) !== root) continue;
+        for (let j = i + 1; j < fonts.length; j += 1) {
+          if (find(j) !== root) continue;
+          worst = Math.max(worst, diffs.get(`${i}:${j}`) ?? 0);
+        }
+      }
+      groups.push({
+        key: `bin:${size}:${list.map((f) => f.id).join(",")}`,
+        reason: worst === 0 ? "checksum" : "binary",
+        fonts: list,
+        diffBytes: worst,
+      });
+      list.forEach((f) => grouped.add(f.id));
+    }
+  }
+
+  // O(N) family index (replaces prior O(N^2) localFonts.filter inside names loop).
+  const googleByFamily = new Map<string, FontRecord>();
+  for (const font of googleFonts) {
+    const key = font.family.trim().toLowerCase();
+    if (key && !googleByFamily.has(key)) googleByFamily.set(key, font);
+  }
+  const systemByFamily = new Map<string, FontRecord>();
+  for (const font of systemFonts) {
+    const key = font.family.trim().toLowerCase();
+    if (key && !systemByFamily.has(key)) systemByFamily.set(key, font);
+  }
+  const localByFamily = new Map<string, FontRecord[]>();
+  for (const font of localFonts) {
+    const key = font.family.trim().toLowerCase();
+    if (!key) continue;
+    let bucket = localByFamily.get(key);
+    if (!bucket) {
+      bucket = [font];
+      localByFamily.set(key, bucket);
+    } else {
+      bucket.push(font);
+    }
+  }
+
+  const names = new Set<string>([
+    ...googleByFamily.keys(),
+    ...systemByFamily.keys(),
+    ...localByFamily.keys(),
+  ]);
+  for (const name of names) {
+    const sys = systemByFamily.get(name);
+    const google = googleByFamily.get(name);
+    const locals = localByFamily.get(name) ?? [];
+    const fonts = [sys, google, ...locals].filter((f): f is FontRecord => Boolean(f));
+    const sources = new Set(fonts.map((f) => f.source));
+    if (fonts.length >= 2 && sources.size >= 2) {
+      fonts.sort((a, b) => sourceRank(a.source) - sourceRank(b.source) || a.id.localeCompare(b.id));
+      groups.push({ key: `fam:${name}`, reason: "family-weight", fonts });
+      continue;
+    }
+    // Also detect same-family + same-weight + same-italic duplicate local uploads
+    // (e.g. two copies/versions of a custom font in different folders) without
+    // falsely grouping distinct weights like Regular (400) + Bold (700).
+    if (locals.length >= 2) {
+      const byStyle = new Map<string, FontRecord[]>();
+      for (const f of locals) {
+        if (grouped.has(f.id)) continue;
+        const styleKey = `${f.weights?.[0] ?? 400}:${f.italic ? "i" : "r"}`;
+        const list = byStyle.get(styleKey) ?? [];
+        list.push(f);
+        byStyle.set(styleKey, list);
+      }
+      for (const [styleKey, sameStyle] of byStyle) {
+        if (sameStyle.length < 2) continue;
+        sameStyle.sort((a, b) => (b.fileSize ?? 0) - (a.fileSize ?? 0) || a.id.localeCompare(b.id));
+        groups.push({ key: `local-fam:${name}:${styleKey}`, reason: "family-weight", fonts: sameStyle });
+      }
+    }
+  }
+
+  return groups;
+}
+
+export function matchesQuery(
+  font: FontRecord,
+  query: string,
+  customTags: Record<string, string[]>,
+): boolean {
+  return fontMatchesSearch(font, parseSearchQuery(query), customTags);
+}
+
+export function filterLibrary(
+  fonts: FontRecord[],
+  scope: LibraryScope,
+  query: string,
+  favorites: string[],
+  activated: string[],
+  collections: Collection[],
+  customTags: Record<string, string[]>,
+  facet: LibraryFacet | string = "",
+  recentIds: readonly string[] = [],
+): FontRecord[] {
+  let list = fonts;
+  const where = isFacetScope(scope) ? "all" : scope;
+  if (where === "activated") {
+    const on = new Set(activated);
+    list = list.filter((f) => on.has(f.id));
+  } else if (where === "favorites") {
+    const fav = new Set(favorites);
+    list = list.filter((f) => fav.has(f.id));
+  } else if (where === "uploaded") list = list.filter((f) => f.source === "local");
+  else if (where === "recent") {
+    const byId = new Map(list.map((f) => [f.id, f]));
+    list = recentIds.map((id) => byId.get(id)).filter((f): f is FontRecord => Boolean(f));
+  }
+  else if (where === "google" || where === "gfonts") list = list.filter(isGoogleCatalog);
+  else if (where === "system") {
+    list = list.filter((f) => f.source === "system");
+  }
+  else if (where.startsWith("collection:")) {
+    const ids = collectFolderFontIds(collections, where.slice(11));
+    list = list.filter((f) => ids.has(f.id));
+  }
+  const cut = facet || (isFacetScope(scope) ? scope : "");
+  if (cut.startsWith("category:")) {
+    const cat = cut.slice(9);
+    list = list.filter((f) => f.category === cat);
+  } else if (cut.startsWith("tag:")) {
+    const tag = cut.slice(4).toLowerCase();
+    list = list.filter((f) => tagsFor(f, customTags).some((t) => t.toLowerCase() === tag));
+  } else if (cut.startsWith("license:")) {
+    const license = cut.slice(8) as FontLicense;
+    list = list.filter((f) => fontLicense(f) === license);
+  }
+  if (query.trim()) list = filterFontsWithIndex(list, query, customTags);
+  return list;
+}
+
+const collator = new Intl.Collator(undefined, { sensitivity: "base" });
+
+/**
+ * Fast library sort: uses Intl.Collator for standard libraries (<=5k) and switches
+ * to a pre-lowercased Schwartzian key sort for massive 10k-100k libraries (~10x faster).
+ */
+export function sortLibrary(fonts: FontRecord[], sort: LibrarySort = "name-asc"): FontRecord[] {
+  if (fonts.length <= 1) return [...fonts];
+  if (fonts.length > 5000) {
+    const keyed = fonts.map((font) => ({
+      font,
+      fam: font.family.toLowerCase(),
+      id: font.id,
+      pop: font.popularity,
+      added: font.addedAt ?? 0,
+    }));
+    keyed.sort((a, b) => {
+      switch (sort) {
+        case "name-desc":
+          return (b.fam < a.fam ? -1 : b.fam > a.fam ? 1 : 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+        case "popular":
+          return a.pop - b.pop || (a.fam < b.fam ? -1 : a.fam > b.fam ? 1 : 0);
+        case "recent":
+          return b.added - a.added || (a.fam < b.fam ? -1 : a.fam > b.fam ? 1 : 0);
+        case "name-asc":
+        default:
+          return (a.fam < b.fam ? -1 : a.fam > b.fam ? 1 : 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+      }
+    });
+    return keyed.map((k) => k.font);
+  }
+  const copy = [...fonts];
+  copy.sort((a, b) => {
+    switch (sort) {
+      case "name-desc":
+        return collator.compare(b.family, a.family) || a.id.localeCompare(b.id);
+      case "popular":
+        return a.popularity - b.popularity || collator.compare(a.family, b.family);
+      case "recent":
+        return (b.addedAt ?? 0) - (a.addedAt ?? 0) || collator.compare(a.family, b.family);
+      case "name-asc":
+      default:
+        return collator.compare(a.family, b.family) || a.id.localeCompare(b.id);
+    }
+  });
+  return copy;
+}
+
+export function collectionIsWatched(collections: Collection[], id: string): boolean {
+  const byId = new Map(collections.map((c) => [c.id, c]));
+  let current: string | null = id;
+  while (current) {
+    const node = byId.get(current);
+    if (!node) return false;
+    if (node.watchPath) return true;
+    current = node.parentId;
+  }
+  return false;
+}
+
+export function collectFolderTreeIds(collections: Collection[], id: string): string[] {
+  const ids: string[] = [];
+  const walk = (folderId: string) => {
+    ids.push(folderId);
+    for (const child of collections) {
+      if (child.parentId === folderId) walk(child.id);
+    }
+  };
+  walk(id);
+  return ids;
+}
+
+export function folderDeleteImpact(
+  collections: Collection[],
+  localFonts: FontRecord[],
+  id: string,
+): { folderIds: string[]; localFontIds: string[]; folderName: string } {
+  const folderIds = collections.some((c) => c.id === id) ? collectFolderTreeIds(collections, id) : [];
+  const folderIdSet = new Set(folderIds);
+  const remainingIds = new Set(
+    collections.filter((c) => !folderIdSet.has(c.id)).flatMap((c) => c.fontIds),
+  );
+  const inDeleted = new Set<string>();
+  for (const c of collections) {
+    if (folderIdSet.has(c.id)) c.fontIds.forEach((fontId) => inDeleted.add(fontId));
+  }
+  const localSet = new Set(localFonts.map((f) => f.id));
+  const localFontIds = [...inDeleted].filter((fontId) => localSet.has(fontId) && !remainingIds.has(fontId));
+  return {
+    folderIds,
+    localFontIds,
+    folderName: collections.find((c) => c.id === id)?.name ?? "Folder",
+  };
+}
+
+export function collectFolderFontIds(collections: Collection[], id: string): Set<string> {
+  return new Set(folderFontStats(collections).get(id)?.ids ?? []);
+}
+
+/** Apply auto-hide duplicate ids to folder/collection badge stats (shared). */
+export function folderStatsWithAutoHide(
+  collections: Collection[],
+  hideDupIds: string[],
+): Map<string, { count: number; ids: string[] }> {
+  const raw = folderFontStats(collections);
+  if (!hideDupIds.length) return raw;
+  const hide = new Set(hideDupIds);
+  const next = new Map<string, { count: number; ids: string[] }>();
+  for (const [id, stat] of raw) {
+    const ids = stat.ids.filter((fid) => !hide.has(fid));
+    next.set(id, { count: ids.length, ids });
+  }
+  return next;
+}
+
+export function folderFontStats(
+  collections: Collection[],
+): Map<string, { count: number; ids: string[] }> {
+  const byParent = new Map<string | null, Collection[]>();
+  const byId = new Map<string, Collection>();
+  for (const c of collections) {
+    byId.set(c.id, c);
+    const parent = c.parentId ?? null;
+    const list = byParent.get(parent) ?? [];
+    list.push(c);
+    byParent.set(parent, list);
+  }
+  const map = new Map<string, { count: number; ids: string[] }>();
+  const walk = (folderId: string): string[] => {
+    const cached = map.get(folderId);
+    if (cached) return cached.ids;
+    const col = byId.get(folderId);
+    if (!col) return [];
+    const ids = new Set(col.fontIds);
+    for (const child of byParent.get(folderId) ?? []) {
+      for (const fontId of walk(child.id)) ids.add(fontId);
+    }
+    const list = [...ids];
+    map.set(folderId, { count: list.length, ids: list });
+    return list;
+  };
+  const known = new Set(collections.map((c) => c.id));
+  for (const c of collections) {
+    if (!c.parentId || !known.has(c.parentId)) walk(c.id);
+  }
+  return map;
+}
+
+export function folderTree(collections: Collection[]): { folder: Collection; depth: number }[] {
+  const byParent = new Map<string | null, Collection[]>();
+  for (const c of collections) {
+    const parent = c.parentId ?? null;
+    const list = byParent.get(parent) ?? [];
+    list.push(c);
+    byParent.set(parent, list);
+  }
+  for (const list of byParent.values()) {
+    list.sort((a, b) => a.name.localeCompare(b.name));
+  }
+  const ids = new Set(collections.map((c) => c.id));
+  const rows: { folder: Collection; depth: number }[] = [];
+  const walk = (parentId: string | null, depth: number) => {
+    for (const folder of byParent.get(parentId) ?? []) {
+      rows.push({ folder, depth });
+      walk(folder.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+  for (const c of collections) {
+    if (c.parentId && !ids.has(c.parentId) && !rows.some((r) => r.folder.id === c.id)) {
+      rows.push({ folder: { ...c, parentId: null }, depth: 0 });
+    }
+  }
+  return rows;
+}
+
+function wouldCreateCycle(collections: Collection[], id: string, parentId: string): boolean {
+  let current: string | null = parentId;
+  const seen = new Set<string>();
+  while (current) {
+    if (current === id) return true;
+    if (seen.has(current)) return true;
+    seen.add(current);
+    current = collections.find((c) => c.id === current)?.parentId ?? null;
+  }
+  return false;
+}

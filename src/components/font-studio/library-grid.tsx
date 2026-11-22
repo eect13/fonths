@@ -1,0 +1,286 @@
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { RotateCcw, Trash2 } from "lucide-react";
+import { FontCard } from "./font-card";
+import { ActiveSetGuard } from "./active-set-guard";
+import { UploadsResetDialog } from "./uploads-reset-dialog";
+import { Button } from "@/components/ui/button";
+import { inDesktopShell, isDesktopShellSync } from "@/lib/desktop/open-fonts";
+import { primeGooglePreview } from "@/lib/fonts/loader";
+import { loadSystemFonts } from "@/lib/fonts/system-fonts";
+import { filterLibrary, poolForScope, sortLibrary, useFontStore } from "@/lib/fonts/store";
+import { computeVirtualWindow } from "@/lib/fonts/virtual-window";
+import type { Collection, FontRecord } from "@/lib/fonts/types";
+import { useUiDensity } from "@/lib/ui-density";
+
+const EMPTY_IDS: string[] = [];
+const EMPTY_COLS: Collection[] = [];
+const EMPTY_FONTS: FontRecord[] = [];
+
+const COL_MIN = 280;
+
+function scopeNeedsActivated(scope: string) {
+  return scope === "activated";
+}
+
+function useScroller() {
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState({ width: 960, height: 640, scrollTop: 0 });
+
+  useEffect(() => {
+    const boxEl = boxRef.current;
+    if (!boxEl) return;
+    const scroller = (boxEl.closest("[data-library-scroll]") as HTMLElement | null) ?? boxEl;
+    let raf = 0;
+    const measure = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        setBox({
+          width: scroller.clientWidth || window.innerWidth,
+          height: scroller.clientHeight || Math.max(320, window.innerHeight - 220),
+          scrollTop: scroller.scrollTop,
+        });
+      });
+    };
+    measure();
+    const onScroll = () => measure();
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    const ro = new ResizeObserver(measure);
+    ro.observe(scroller);
+    window.addEventListener("resize", measure);
+    return () => {
+      cancelAnimationFrame(raf);
+      scroller.removeEventListener("scroll", onScroll);
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
+
+  return { boxRef, box };
+}
+
+export function LibraryGrid() {
+  const localFonts = useFontStore((s) => s.localFonts);
+  const googleFonts = useFontStore((s) => s.googleFonts);
+  const scope = useFontStore((s) => s.scope);
+  const query = useFontStore((s) => s.query);
+  const deferredQuery = useDeferredValue(query);
+  const customTags = useFontStore((s) => s.customTags);
+  const preview = useFontStore((s) => s.preview);
+  const activated = useFontStore((s) => s.activated);
+  const favorites = useFontStore((s) => (s.scope === "favorites" ? s.favorites : EMPTY_IDS));
+  const collections = useFontStore((s) =>
+    s.scope.startsWith("collection:") ? s.collections : EMPTY_COLS,
+  );
+  const systemFonts = useFontStore((s) =>
+    s.scope === "system" || s.scope === "recent" ? s.systemFonts : EMPTY_FONTS,
+  );
+  const systemBusy = useFontStore((s) => s.systemBusy);
+  const hideDupIds = useFontStore((s) => (s.autoHideDuplicates ? s.duplicateHideIds : EMPTY_IDS));
+  const facet = useFontStore((s) => s.facet);
+  const recentIds = useFontStore((s) => (s.scope === "recent" ? s.recentIds : EMPTY_IDS));
+  const { boxRef, box } = useScroller();
+  const [uploadsOpen, setUploadsOpen] = useState(false);
+  const [desktopShell, setDesktopShell] = useState(isDesktopShellSync);
+  const list = preview.view === "list";
+  const { layout: densityLayout } = useUiDensity();
+  const GAP = densityLayout.gap;
+  const GRID_H = densityLayout.gridH;
+  const LIST_H = densityLayout.listH;
+  const sortMode =
+    scope === "system" && (preview.sort ?? "name-asc") === "popular" ? "name-asc" : (preview.sort ?? "name-asc");
+
+  useEffect(() => {
+    const boxEl = boxRef.current;
+    if (!boxEl) return;
+    const scroller = (boxEl.closest("[data-library-scroll]") as HTMLElement | null) ?? boxEl;
+    scroller.scrollTop = 0;
+  }, [boxRef, scope, facet, deferredQuery]);
+
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      if (isDesktopShellSync()) {
+        if (alive) setDesktopShell(true);
+        return true;
+      }
+      const next = await inDesktopShell();
+      if (alive && next) setDesktopShell(true);
+      return next;
+    };
+    void tick();
+    const t1 = window.setTimeout(() => void tick(), 80);
+    const t2 = window.setTimeout(() => void tick(), 400);
+    return () => {
+      alive = false;
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
+  }, []);
+
+  // Activated scope = live activated[] only (never pendingActivate, never downloadBusy freeze).
+  const liveIds = useMemo(() => {
+    if (!scopeNeedsActivated(scope)) return EMPTY_IDS;
+    return activated;
+  }, [scope, activated]);
+
+  const fonts = useMemo(
+    () => {
+      const skip = hideDupIds.length ? new Set(hideDupIds) : null;
+      const localPool =
+        scope === "gfonts" || scope === "google" || scope === "system" ? EMPTY_FONTS : localFonts;
+      const list = filterLibrary(
+        poolForScope(scope, localPool, googleFonts, systemFonts, liveIds),
+        scope,
+        deferredQuery,
+        favorites,
+        liveIds,
+        collections,
+        customTags,
+        facet,
+        recentIds,
+      );
+      const next = skip ? list.filter((f) => !skip.has(f.id)) : list;
+      return scope === "recent" ? next : sortLibrary(next, sortMode);
+    },
+    [localFonts, googleFonts, systemFonts, scope, deferredQuery, favorites, liveIds, collections, customTags, sortMode, hideDupIds, facet, recentIds],
+  );
+
+  const inner = Math.max(280, box.width - 24);
+  const cols = list ? 1 : Math.max(1, Math.floor((inner + GAP) / (COL_MIN + GAP)));
+  const rowH = list ? LIST_H : GRID_H;
+  const { totalH, start, end, offsetY } = computeVirtualWindow({
+    totalItems: fonts.length,
+    cols,
+    rowH,
+    gap: GAP,
+    scrollTop: box.scrollTop,
+    viewportH: box.height,
+    overscan: 2,
+  });
+  const shown = fonts.slice(start, end);
+  const prefetchEnd = Math.min(fonts.length, end + cols * 3);
+  const primeSlice = fonts.slice(start, prefetchEnd);
+  const primeIds = primeSlice.map((font) => font.id).join("|");
+  const primeSliceRef = useRef(primeSlice);
+  primeSliceRef.current = primeSlice;
+
+  useEffect(() => {
+    void primeGooglePreview(primeSliceRef.current);
+  }, [primeIds]);
+
+  useEffect(() => {
+    if (scope === "system") void loadSystemFonts();
+  }, [scope]);
+
+  const uploadedBar =
+    scope === "uploaded" ? (
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2 md:px-4">
+        <p className="text-sm text-muted-foreground">
+          {localFonts.length
+            ? `${localFonts.length.toLocaleString()} uploaded typeface${localFonts.length === 1 ? "" : "s"}`
+            : "No uploaded typefaces"}
+        </p>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            className="h-7 px-2.5"
+            onClick={() => setUploadsOpen(true)}
+          >
+            <RotateCcw />
+            Reset library
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="destructive"
+            className="h-7 px-2.5"
+            disabled={!localFonts.length}
+            onClick={() => setUploadsOpen(true)}
+          >
+            <Trash2 />
+            Clear uploads
+          </Button>
+        </div>
+      </div>
+    ) : null;
+
+  const systemBar =
+    scope === "system" ? (
+      <div className="border-b border-border px-3 py-2 md:px-4">
+        <p className="text-sm text-muted-foreground">
+          {desktopShell
+            ? "Fonts already on this computer (Arial, Calibri, Segoe, …). View and favorite them here. Fonths will not uninstall or deactivate them."
+            : "System fonts list here in the installed desktop app — this website has no OS font folder. Fonths will not uninstall them."}
+        </p>
+      </div>
+    ) : null;
+
+  if (fonts.length === 0) {
+    return (
+      <div ref={boxRef} className="flex flex-1 flex-col">
+        {uploadedBar}
+        {systemBar}
+        <div className="fm-empty-pane flex flex-1 flex-col items-center justify-center text-center">
+          <p className="font-heading text-3xl">
+            {scope === "system" && (systemBusy || desktopShell) && !query.trim()
+              ? systemBusy
+                ? "Reading system fonts"
+                : "Nothing in this drawer"
+              : "Nothing in this drawer"}
+          </p>
+          <p className="mt-2 max-w-sm text-sm text-muted-foreground">
+            {scope === "uploaded"
+              ? "Drop a folder of TTF, OTF, or WOFF files here, or use Files / Folder in the header."
+              : scope === "system"
+                ? query.trim()
+                  ? "No system fonts match this search. Clear the search box in the header."
+                  : systemBusy
+                    ? "Reading families already installed on this computer. Fonths will not uninstall them."
+                    : desktopShell
+                      ? "No typefaces were found among system fonts. Fonths will not uninstall them."
+                      : "Arial, Calibri, Segoe and the rest of the OS fonts show here in the installed desktop app — this website has none. Fonths will not uninstall them."
+                : scopeNeedsActivated(scope)
+                  ? facet
+                    ? "No activated typefaces match this filter. Clear the chip above the grid, or pick another license / style / tag."
+                    : "Nothing is activated yet. Open All typefaces and click Activate on a card."
+                  : "Try another filter, or use Folder to add a whole directory of TTF, OTF, or WOFF files."}
+          </p>
+        </div>
+        <UploadsResetDialog open={uploadsOpen} onOpenChange={setUploadsOpen} />
+      </div>
+    );
+  }
+
+  return (
+    <div ref={boxRef} className="flex flex-col">
+      <ActiveSetGuard />
+      {uploadedBar}
+      {systemBar}
+      <div className="relative w-full" style={{ height: totalH }}>
+        <div
+          className={list ? "fm-library-surface flex flex-col" : "fm-library-surface grid"}
+          style={
+            list
+              ? { transform: `translateY(${offsetY}px)` }
+              : {
+                  transform: `translateY(${offsetY}px)`,
+                  gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+                }
+          }
+        >
+          {shown.map((font) => (
+            <FontCard key={font.id} font={font} preview={preview} layout={preview.view} />
+          ))}
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center justify-center gap-2 px-4 pb-8 pt-1 text-xs text-muted-foreground">
+        <span>
+          {fonts.length.toLocaleString()} typeface{fonts.length === 1 ? "" : "s"} · scroll to browse
+        </span>
+      </div>
+      <UploadsResetDialog open={uploadsOpen} onOpenChange={setUploadsOpen} />
+    </div>
+  );
+}

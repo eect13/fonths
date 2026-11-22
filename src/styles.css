@@ -1,0 +1,502 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@theme {
+  --color-background: #0c0c0d;
+  --color-foreground: #f2efe8;
+  --color-card: #151516;
+  --color-popover: #151516;
+  --color-popover-foreground: #f2efe8;
+  --color-primary: #c8cdd6;
+  --color-primary-foreground: #0c0c0d;
+  --color-secondary: #1c1c1e;
+  --color-secondary-foreground: #f2efe8;
+  --color-muted: #1c1c1e;
+  --color-muted-foreground: #8e8b84;
+  --color-accent: #222226;
+  --color-accent-foreground: #f2efe8;
+  --color-destructive: #a84a3b;
+  --color-destructive-foreground: #f2efe8;
+  --color-border: #2a2a2c;
+  --color-input: #2a2a2c;
+  --color-ring: #c8cdd6;
+  --color-paper: #f4f0e8;
+  --color-ink: #161513;
+  --color-newsprint: #e4dcc8;
+  --color-newsprint-fg: #2a261c;
+  --color-blueprint: #1a2744;
+  --color-blueprint-fg: #d6e4f0;
+  --color-success: #6f8f6a;
+
+  --font-sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-heading: Georgia, "Times New Roman", serif;
+  --font-mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius: 12px;
+
+  --shadow-border: 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --shadow-border-hover: 0 0 0 1px rgba(255, 255, 255, 0.13);
+
+  --width-sidebar: 17rem;
+  --width-inspector: 22rem;
+}
+
+/* UI density (1.0.206p/q/r) — Comfortable default; Compact tightens primary + secondary
+   chrome (library/sidebar/toolbar/inspector + download bar + shell header +
+   dialogs/sheets + empty panes + Desktop Settings). */
+:root,
+:root[data-ui-density="comfortable"] {
+  --fm-lib-gap: 0.5rem;
+  --fm-lib-pad: 0.625rem;
+  --fm-lib-pad-md: 0.75rem;
+  --fm-card-h-grid: 14.5rem;
+  --fm-card-h-list: 9.5rem;
+  --fm-card-meta-h: 2.75rem;
+  --fm-card-spec-py-grid: 0.75rem;
+  --fm-card-spec-py-list: 0.5rem;
+  --fm-sidebar-row-h: 2rem;
+  --fm-sidebar-nav-py: 0.75rem;
+  --fm-toolbar-py: 0.375rem;
+  --fm-toolbar-px: 0.75rem;
+  --fm-toolbar-px-md: 1rem;
+  --fm-toolbar-gap: 0.375rem;
+  --fm-inspector-pad: 1.25rem;
+  --fm-inspector-pad-sm: 0.75rem;
+  --fm-inspector-gap: 1.5rem;
+  --fm-download-py: 0.375rem;
+  --fm-download-px: 0.75rem;
+  --fm-download-gap: 0.375rem;
+  --fm-shell-header-py: 0.375rem;
+  --fm-shell-header-px: 0.5rem;
+  --fm-shell-header-gap: 0.5rem;
+  --fm-dialog-pad: 1.5rem;
+  --fm-dialog-gap: 1rem;
+  --fm-dialog-header-mb: 1rem;
+  --fm-sheet-pad: 1.25rem;
+  --fm-empty-py: 5rem;
+  --fm-empty-px: 1.5rem;
+  --fm-settings-pad: 0.75rem;
+  --fm-settings-gap: 0.5rem;
+  --fm-settings-row-py: 0.625rem;
+}
+
+:root[data-ui-density="compact"] {
+  --fm-lib-gap: 0.25rem;
+  --fm-lib-pad: 0.375rem;
+  --fm-lib-pad-md: 0.5rem;
+  --fm-card-h-grid: 11rem;
+  --fm-card-h-list: 7.5rem;
+  --fm-card-meta-h: 2rem;
+  --fm-card-spec-py-grid: 0.375rem;
+  --fm-card-spec-py-list: 0.25rem;
+  --fm-sidebar-row-h: 1.625rem;
+  --fm-sidebar-nav-py: 0.5rem;
+  --fm-toolbar-py: 0.25rem;
+  --fm-toolbar-px: 0.5rem;
+  --fm-toolbar-px-md: 0.75rem;
+  --fm-toolbar-gap: 0.25rem;
+  --fm-inspector-pad: 0.75rem;
+  --fm-inspector-pad-sm: 0.5rem;
+  --fm-inspector-gap: 0.875rem;
+  --fm-download-py: 0.25rem;
+  --fm-download-px: 0.5rem;
+  --fm-download-gap: 0.25rem;
+  --fm-shell-header-py: 0.25rem;
+  --fm-shell-header-px: 0.375rem;
+  --fm-shell-header-gap: 0.375rem;
+  --fm-dialog-pad: 1rem;
+  --fm-dialog-gap: 0.625rem;
+  --fm-dialog-header-mb: 0.625rem;
+  --fm-sheet-pad: 0.75rem;
+  --fm-empty-py: 2.5rem;
+  --fm-empty-px: 1rem;
+  --fm-settings-pad: 0.5rem;
+  --fm-settings-gap: 0.375rem;
+  --fm-settings-row-py: 0.375rem;
+}
+
+.fm-library-surface {
+  gap: var(--fm-lib-gap);
+  padding: var(--fm-lib-pad);
+}
+@media (min-width: 768px) {
+  .fm-library-surface {
+    padding: var(--fm-lib-pad-md);
+  }
+}
+
+.fm-font-card.fm-layout-grid {
+  height: var(--fm-card-h-grid);
+}
+.fm-font-card.fm-layout-list {
+  height: var(--fm-card-h-list);
+}
+.fm-card-meta {
+  height: var(--fm-card-meta-h);
+}
+.fm-spec-pane.fm-spec-grid {
+  padding-top: var(--fm-card-spec-py-grid);
+  padding-bottom: var(--fm-card-spec-py-grid);
+}
+.fm-spec-pane.fm-spec-list {
+  padding-top: var(--fm-card-spec-py-list);
+  padding-bottom: var(--fm-card-spec-py-list);
+}
+
+.fm-sidebar-row {
+  height: var(--fm-sidebar-row-h);
+}
+.fm-sidebar-nav {
+  padding-top: var(--fm-sidebar-nav-py);
+  padding-bottom: var(--fm-sidebar-nav-py);
+}
+
+.fm-preview-toolbar {
+  gap: var(--fm-toolbar-gap);
+  padding: var(--fm-toolbar-py) var(--fm-toolbar-px);
+}
+@media (min-width: 768px) {
+  .fm-preview-toolbar {
+    padding-left: var(--fm-toolbar-px-md);
+    padding-right: var(--fm-toolbar-px-md);
+  }
+}
+
+.fm-inspector-head {
+  padding: var(--fm-inspector-pad);
+  padding-bottom: var(--fm-inspector-pad-sm);
+}
+.fm-inspector-body {
+  padding-left: var(--fm-inspector-pad);
+  padding-right: var(--fm-inspector-pad);
+}
+.fm-inspector-body > :not([hidden]) ~ :not([hidden]) {
+  margin-top: var(--fm-inspector-gap);
+}
+
+.fm-download-bar {
+  gap: var(--fm-download-gap);
+  padding: var(--fm-download-py) var(--fm-download-px);
+}
+
+.fm-shell-header {
+  gap: var(--fm-shell-header-gap);
+  padding-top: var(--fm-shell-header-py);
+  padding-bottom: var(--fm-shell-header-py);
+  padding-left: var(--fm-shell-header-px);
+  padding-right: var(--fm-shell-header-px);
+}
+@media (min-width: 768px) {
+  .fm-shell-header {
+    padding-left: 0;
+    padding-right: 0.75rem;
+  }
+}
+
+.fm-dialog-content {
+  padding: var(--fm-dialog-pad);
+}
+.fm-dialog-header {
+  margin-bottom: var(--fm-dialog-header-mb);
+}
+.fm-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fm-dialog-gap);
+}
+.fm-dialog-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--fm-dialog-gap);
+}
+.fm-sheet-header {
+  padding: var(--fm-sheet-pad);
+  padding-right: calc(var(--fm-sheet-pad) + 1.75rem);
+}
+.fm-empty-pane {
+  padding: var(--fm-empty-py) var(--fm-empty-px);
+}
+.fm-settings-stack {
+  display: grid;
+  gap: var(--fm-settings-gap);
+}
+.fm-settings-row {
+  padding: var(--fm-settings-row-py) var(--fm-settings-pad);
+}
+.fm-settings-opts {
+  gap: var(--fm-settings-gap);
+}
+
+html {
+  color-scheme: dark;
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+  --color-background: #f3efe6;
+  --color-foreground: #161513;
+  --color-card: #faf8f3;
+  --color-popover: #faf8f3;
+  --color-popover-foreground: #161513;
+  --color-primary: #1c1c1e;
+  --color-primary-foreground: #f3efe6;
+  --color-secondary: #e8e3d8;
+  --color-secondary-foreground: #161513;
+  --color-muted: #e8e3d8;
+  --color-muted-foreground: #6a6761;
+  --color-accent: #e0dbd0;
+  --color-accent-foreground: #161513;
+  --color-destructive: #b44a3a;
+  --color-destructive-foreground: #faf8f3;
+  --color-border: #d9d3c6;
+  --color-input: #d9d3c6;
+  --color-ring: #1c1c1e;
+  --color-success: #4f7a4a;
+  --shadow-border: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 1px 2px -1px rgba(0, 0, 0, 0.06);
+  --shadow-border-hover: 0 0 0 1px rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.08);
+}
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  * {
+    border-color: var(--color-border);
+  }
+
+  html,
+  body,
+  #app {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    transition:
+      background-color 200ms ease,
+      color 200ms ease;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  input[type="range"] {
+    accent-color: var(--color-primary);
+    height: 1.5rem;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.sidebar-nav,
+.fm-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--color-foreground) 22%, transparent) transparent;
+}
+
+.sidebar-nav::-webkit-scrollbar,
+.fm-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.sidebar-nav::-webkit-scrollbar-track,
+.fm-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-nav::-webkit-scrollbar-thumb,
+.fm-scroll::-webkit-scrollbar-thumb {
+  background-color: color-mix(in oklab, var(--color-foreground) 18%, transparent);
+  background-clip: content-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
+}
+
+.sidebar-nav::-webkit-scrollbar-thumb:hover,
+.fm-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in oklab, var(--color-foreground) 36%, transparent);
+}
+
+/* Isolated specimen styles so library/inspector italic is not overridden by Tailwind or a parent. */
+.fm-spec {
+  font-synthesis: none;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+}
+.fm-spec.fm-spec-roman {
+  font-style: normal;
+  font-synthesis: none !important;
+}
+.fm-spec.fm-spec-italic {
+  font-style: italic;
+  font-synthesis: none !important;
+}
+.fm-spec.fm-spec-italic.fm-spec-real {
+  font-synthesis: none !important;
+}
+.fm-spec.fm-spec-variable {
+  font-optical-sizing: auto;
+}
+
+.fm-spec-pane {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  align-items: center;
+  overflow: hidden;
+}
+
+.fm-spec.fm-spec-fit {
+  overflow: hidden;
+  width: 100%;
+  max-height: 100%;
+  display: block;
+  text-overflow: clip;
+}
+
+.fm-font-card {
+  transition: box-shadow 180ms ease-out, transform 180ms ease-out;
+}
+.fm-font-card:hover {
+  box-shadow: var(--shadow-border-hover);
+  transform: translateY(-1px);
+}
+/* The Open overlay fills the card and overflow:hidden clips its own ring (2.4.7),
+   so draw the focus ring on the card itself. */
+.fm-font-card:has(> .fm-card-open:focus-visible) {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+.fm-weight-slider {
+  touch-action: none;
+  -webkit-appearance: none;
+  appearance: none;
+  caret-color: transparent;
+}
+.fm-weight-slider::-webkit-slider-runnable-track {
+  height: 5px;
+  border-radius: 999px;
+  background: color-mix(in oklab, currentColor 32%, transparent);
+}
+.fm-weight-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  margin-top: -6.5px;
+  border-radius: 999px;
+  background: currentColor;
+  border: 2px solid var(--color-paper);
+  box-shadow: 0 0 0 1px color-mix(in oklab, currentColor 35%, transparent);
+}
+.fm-weight-slider::-moz-range-track {
+  height: 5px;
+  border-radius: 999px;
+  background: color-mix(in oklab, currentColor 32%, transparent);
+}
+.fm-weight-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: currentColor;
+  border: 2px solid var(--color-paper);
+  box-shadow: 0 0 0 1px color-mix(in oklab, currentColor 35%, transparent);
+}
+
+.fm-axis-pop {
+  color: inherit;
+  background: color-mix(in oklab, currentColor 8%, transparent);
+  border: 1px solid color-mix(in oklab, currentColor 14%, transparent);
+  opacity: 0;
+  transform: translateY(10px) scale(0.96);
+  transform-origin: center bottom;
+  pointer-events: none;
+  transition: opacity 160ms ease-out, transform 160ms ease-out;
+}
+.group:hover .fm-axis-pop,
+.group:focus-within .fm-axis-pop,
+.fm-axis-pop[data-open="true"] {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+.fm-axis-pop .fm-weight-slider {
+  height: 1.5rem;
+}
+.fm-axis-pop .fm-weight-slider::-webkit-slider-runnable-track {
+  height: 3px;
+  background: color-mix(in oklab, currentColor 26%, transparent);
+}
+.fm-axis-pop .fm-weight-slider::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  margin-top: -5.5px;
+  background: currentColor;
+  border: 2px solid color-mix(in oklab, currentColor 6%, transparent);
+  box-shadow: none;
+}
+.fm-axis-pop .fm-weight-slider::-moz-range-track {
+  height: 3px;
+  background: color-mix(in oklab, currentColor 26%, transparent);
+}
+.fm-axis-pop .fm-weight-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  background: currentColor;
+  border: 2px solid color-mix(in oklab, currentColor 6%, transparent);
+  box-shadow: none;
+}
+
+.fm-job-track {
+  height: 4px;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--color-foreground) 12%, transparent);
+}
+.fm-job-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-primary);
+  transition: width 280ms ease-out;
+}
+.fm-job-fill-paused {
+  background: color-mix(in oklab, var(--color-primary) 55%, var(--color-muted-foreground));
+}
+
+
