@@ -12,7 +12,7 @@ const pkgLock = JSON.parse(read("package-lock.json"));
 const tauriConf = JSON.parse(read("src-tauri/tauri.conf.json"));
 const cargoToml = read("src-tauri/Cargo.toml");
 const versionTs = read("src/version.ts");
-const mainRs = read("src-tauri/src/main.rs");
+const mainRs = read("src-tauri/src/lib.rs");
 const dwriteRs = read("src-tauri/src/dwrite.rs");
 const parseRs = read("src-tauri/src/parse.rs");
 const stageRs = read("src-tauri/src/session_stage.rs");
@@ -23,12 +23,12 @@ const loaderTs = read("src/lib/fonts/loader.ts");
 const desktopSettingsTsx = read("src/components/font-studio/desktop-settings.tsx");
 
 test("2.0.0 version metadata synced across Cargo, Tauri, npm, and version.ts", () => {
-  assert.equal(pkg.version, "1.0.0");
-  assert.equal(pkgLock.version, "1.0.0");
-  assert.equal(pkgLock.packages[""].version, "1.0.0");
-  assert.equal(tauriConf.version, "1.0.0");
-  assert.match(cargoToml, /version = "1\.0\.0"/);
-  assert.match(versionTs, /export const APP_VERSION = "1\.0\.0";/);
+  assert.equal(pkg.version, "2.0.0");
+  assert.equal(pkgLock.version, "2.0.0");
+  assert.equal(pkgLock.packages[""].version, "2.0.0");
+  assert.equal(tauriConf.version, "2.0.0");
+  assert.match(cargoToml, /version = "2\.0\.0"/);
+  assert.match(versionTs, /export const APP_VERSION = "2\.0\.0";/);
 });
 
 test("DirectWrite dependencies and read-only system font collection guard are wired", () => {

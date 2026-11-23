@@ -31,7 +31,7 @@ test("cmap glyph cap is 8192", () => {
 });
 
 test("close-to-tray + startup prefs", () => {
-  const main = readFileSync(join(root, "src-tauri/src/main.rs"), "utf8");
+  const main = readFileSync(join(root, "src-tauri/src/lib.rs"), "utf8");
   assert.match(main, /CLOSE_TO_TRAY/);
   assert.match(main, /set_desktop_prefs/);
   assert.match(main, /set_prefer_static_faces/);

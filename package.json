@@ -1,7 +1,7 @@
 {
   "name": "fonths",
-  "version": "1.0.0",
-  "description": "Fonths — Desktop typeface manager: Google Fonts, local uploads, session activation, glyph inspector, and variable axes.",
+  "version": "2.0.0",
+  "description": "Fonths 2.0 — High-performance Tauri v2 + Rust + Skia (FreeType + HarfBuzz) + Fontations typeface manager.",
   "sideEffects": false,
   "type": "module",
   "engines": {

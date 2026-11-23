@@ -25,7 +25,7 @@ const activateQueueSrc = readFileSync(
 );
 const gdiMirror = readFileSync(join(root, "src/lib/fonts/gdi-incapable.ts"), "utf8");
 const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
-const mainRs = readFileSync(join(root, "src-tauri/src/main.rs"), "utf8");
+const mainRs = readFileSync(join(root, "src-tauri/src/lib.rs"), "utf8");
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const readme = readFileSync(join(root, "README.md"), "utf8");
@@ -41,12 +41,12 @@ function familyRow(name) {
 }
 
 test("206u keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "1.0.0");
-  assert.match(version, /1\.0\.0/);
+  assert.equal(pkg.version, "2.0.0");
+  assert.match(version, /2\.0\.0/);
   const tauri = JSON.parse(
     readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"),
   );
-  assert.equal(tauri.version, "1.0.0");
+  assert.equal(tauri.version, "2.0.0");
 });
 
 test("docs mark 206u Fixed; VF-primary; Refresh Documents; tip-sha; no tip-install/pack", () => {

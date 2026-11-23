@@ -13,13 +13,13 @@ const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const cargo = readFileSync(join(root, "src-tauri/Cargo.toml"), "utf8");
 const tauriConf = readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8");
 const perm = readFileSync(join(root, "src-tauri/permissions/font-activate.toml"), "utf8");
-const mainRs = readFileSync(join(root, "src-tauri/src/main.rs"), "utf8");
+const mainRs = readFileSync(join(root, "src-tauri/src/lib.rs"), "utf8");
 
 test("version is 1.0.206", () => {
-  assert.equal(pkg.version, "1.0.0");
-  assert.match(version, /1\.0\.0/);
-  assert.match(cargo, /version = "1\.0\.0"/);
-  assert.match(tauriConf, /"version": "1\.0\.0"/);
+  assert.equal(pkg.version, "2.0.0");
+  assert.match(version, /2\.0\.0/);
+  assert.match(cargo, /version = "2\.0\.0"/);
+  assert.match(tauriConf, /"version": "2\.0\.0"/);
 });
 
 test("boot seeds GDI-incapable allowlist into settled", () => {

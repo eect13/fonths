@@ -571,10 +571,10 @@ export const FontCard = memo(function FontCard({
     if (isDesktopShellSync() && font.source !== "system") {
       items.push({
         kind: "item",
-        label: font.source === "local" ? "Open Uploads Folder" : "Open Google Fonts Folder",
+        label: font.source === "local" ? "Open Fonths Folder" : "Open Google Fonts Folder",
         icon: <FolderOpen className="size-3.5" />,
         onSelect: () => {
-          void openActivatedFolder(font.source === "local" ? "uploads" : "google");
+          void openActivatedFolder(font.source === "local" ? undefined : "google");
         },
       });
     }

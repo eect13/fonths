@@ -143,6 +143,37 @@ try {
   const dw = await p1.evaluate(() => window.__TAURI_INTERNALS__.invoke("dwrite_engine_info"));
   assert.equal(dw.engine, "DirectWrite");
   assert.equal(typeof dw.elevated, "boolean");
+
+  // Skia + Fontations v2.0.0 backend verification: zero-copy scan_font_directory + Skia RGBA8888 render_font_preview
+  const fixturesDir = join(root, "tests", "fixtures");
+  const skiaScanned = await p1.evaluate(
+    (dirPath) => window.__TAURI_INTERNALS__.invoke("scan_font_directory", { dirPath }),
+    fixturesDir,
+  );
+  assert.ok(Array.isArray(skiaScanned) && skiaScanned.length >= 2, "Expected scan_font_directory to return >= 2 fixtures");
+  const interMeta = skiaScanned.find((f) => /inter/i.test(f.family_name));
+  assert.ok(interMeta && interMeta.is_variable && interMeta.axes.some((a) => a.tag === "wght"), "Expected variable Inter metadata from read-fonts");
+  const skiaPixels = await p1.evaluate(
+    async (fontPath) => {
+      const buf = await window.__TAURI_INTERNALS__.invoke("render_font_preview", {
+        fontPath,
+        text: "Fonths 2.0 Skia",
+        fontSize: 32,
+        width: 256,
+        height: 64,
+        colorHex: "#111111",
+        features: { liga: 1 },
+        variations: { wght: 700 },
+      });
+      const bytes = new Uint8ClampedArray(buf);
+      let opaque = 0;
+      for (let i = 3; i < bytes.length; i += 4) if (bytes[i] > 0) opaque += 1;
+      return { byteLength: bytes.byteLength, opaque };
+    },
+    interMeta.path,
+  );
+  assert.equal(skiaPixels.byteLength, 256 * 64 * 4, "Expected raw RGBA8888 byte length from Skia render_font_preview");
+  assert.ok(skiaPixels.opaque > 50, `Expected non-zero rendered alpha pixels from Skia, got ${skiaPixels.opaque}`);
   assert.ok(dw.systemFontCount > 0);
 
   // Google Fonts -> ... -> Activate all must NOT pre-download before confirm; Cancel starts nothing

@@ -8,7 +8,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
 const store = readFileSync(join(root, "src/lib/fonts/store.ts"), "utf8");
 const osActivate = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf8");
-const mainRs = readFileSync(join(root, "src-tauri/src/main.rs"), "utf8");
+const mainRs = readFileSync(join(root, "src-tauri/src/lib.rs"), "utf8");
 const perms = readFileSync(join(root, "src-tauri/permissions/font-activate.toml"), "utf8");
 const fontCard = readFileSync(join(root, "src/components/font-studio/font-card.tsx"), "utf8");
 const activateToggle = readFileSync(
@@ -26,8 +26,8 @@ const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
 const barClear = readFileSync(join(root, "scripts/settled-idle-bar-clear.test.mjs"), "utf8");
 
 test("206f keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "1.0.0");
-  assert.match(version, /1\.0\.0/);
+  assert.equal(pkg.version, "2.0.0");
+  assert.match(version, /2\.0\.0/);
 });
 
 test("P1 soft Retry clears session_gdi_refused before Activate", () => {

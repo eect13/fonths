@@ -19,7 +19,7 @@ test("Fast GDI session restore is automatic on fresh install and respects explic
   assert.match(gfsource, /pub const NO_FAST_RESUME_MARKER: &str = "no-fast-resume";/);
   assert.match(gfsource, /NO_FAST_RESUME_MARKER\)\.exists\(\)/);
 
-  const mainRs = fs.readFileSync(path.join(root, "src-tauri/src/main.rs"), "utf8");
+  const mainRs = fs.readFileSync(path.join(root, "src-tauri/src/lib.rs"), "utf8");
   assert.match(mainRs, /set_fast_session_resume\(fast_session_resume\.unwrap_or\(true\)\)/);
 });
 

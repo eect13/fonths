@@ -1,9 +1,13 @@
 [package]
 name = "fonths"
-version = "1.0.0"
-description = "Fonths — browse Google Fonts, activate typefaces for other apps, and inspect glyphs"
+version = "2.0.0"
+description = "Fonths — high-performance Tauri v2 + Skia (FreeType + HarfBuzz) + Fontations typeface manager"
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.87"
+
+[lib]
+name = "fonths_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -18,12 +22,18 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 ttf-parser = "0.25"
 sha2 = "0.10"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+skia-safe = { version = "0.157", features = ["textlayout", "embed-freetype", "freetype-woff2"] }
+read-fonts = "0.47"
+lru = "0.19"
+memmap2 = "0.9"
+wuff = "0.2"
+tokio = { version = "1", features = ["sync"] }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61", features = ["Win32_Graphics_DirectWrite", "Win32_Foundation"] }
+windows = { version = "0.61", features = ["Win32_Graphics_DirectWrite", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
 windows-core = "0.61"
 
 [profile.release]

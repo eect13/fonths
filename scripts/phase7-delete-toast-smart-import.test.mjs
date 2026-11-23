@@ -277,7 +277,7 @@ test("Google Download Cancel, Emoji GDI fallback, Fast Reopen & Watch Folder dif
   assert.match(actRs, /clear_session_gdi_refused\(family\);/);
   assert.match(actRs, /std::thread::scope\(\|s\|/);
 
-  const mainRs = fs.readFileSync(path.join(ROOT, "src-tauri/src/main.rs"), "utf8");
+  const mainRs = fs.readFileSync(path.join(ROOT, "src-tauri/src/lib.rs"), "utf8");
   assert.match(mainRs, /wait_for_relaunch_parent_pid/);
   assert.match(mainRs, /--relaunch-after-pid/);
   assert.match(mainRs, /handle\.exit\(0\)/);

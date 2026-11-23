@@ -1,8 +1,17 @@
-# Fonths 1.0.0
+# Fonths 2.0.0
 
-A fast, native Windows desktop font manager built with **Tauri v2 (Rust)**, **DirectWrite**, and **React 19** that lets you browse, inspect, organize, and activate Google Fonts and local typefaces in **Adobe Photoshop / Illustrator / InDesign, Microsoft Word, Affinity, and Figma**—**without permanently installing them into `C:\Windows\Fonts`**.
+A high-performance, cross-platform-ready Windows desktop font manager built with **Tauri v2 (Rust)**, **Skia (`skia-safe` with embedded FreeType + HarfBuzz)**, **Google Fontations (`read-fonts` + `memmap2`)**, **DirectWrite**, and **React 19** that lets you scan, render with 100% OpenType fidelity, inspect, organize, and temporarily activate Google Fonts and local typefaces in **Adobe Photoshop / Illustrator / InDesign, Microsoft Word, Affinity, and Figma**—**without permanently installing them into `C:\Windows\Fonts`**.
 
-Active fonts use **session-only** staging under `%LOCALAPPDATA%\Fonths\gdi-maps` with batched HKCU session registration and `WM_FONTCHANGE` broadcasts, so quitting cleanly unloads all session fonts (leaving zero leftovers in Adobe and keeping `C:\Windows\Fonts` untouched).
+Active fonts use **temporary system-wide Windows GDI activation** (`AddFontResourceExW` with `FONT_RESOURCE_CHARACTERISTICS(0)` + `SendNotifyMessageW(HWND_BROADCAST, WM_FONTCHANGE)`) and session-only staging under `%LOCALAPPDATA%\Fonths\gdi-maps`, with automatic cleanup hooked into `RunEvent::Exit` so quitting cleanly unloads every activated font and leaves `C:\Windows\Fonts` untouched.
+
+---
+
+## Core Architecture (v2.0.0)
+
+- **Zero-Copy OpenType Metadata & Feature Scanner (`src-tauri/src/scanner.rs`):** Recursively scans `.ttf`, `.otf`, `.ttc`, and `.woff2` directories using `read-fonts` (Google Fontations) + `memmap2` without OS installation, extracting `family_name`, `subfamily_name`, `postscript_name`, `is_variable`, full `fvar` `axes` (`tag`, `min`, `default`, `max`), and deduplicated GSUB + GPOS `opentype_features` (`liga`, `dlig`, `ss01–ss20`, `smcp`, `onum`, `kern`, etc.).
+- **Dedicated Skia Render Worker & LRU Cache (`src-tauri/src/renderer.rs`):** Spawns a dedicated background OS thread owning `FontMgr::custom_empty().unwrap_or_else(FontMgr::new)` and an `LruCache<String, skia_safe::Typeface>` (capacity 100), servicing async `render_font_preview` requests via `std::sync::mpsc` + `tokio::sync::oneshot`. Applies variable axes via `FontArguments` (`VariationPosition`) and OpenType features via HarfBuzz (`TextStyle::add_font_feature`), rendering directly to `surfaces::raster_n32_premul` and returning raw **RGBA8888** pixel bytes over `tauri::ipc::Response` (zero PNG encoding overhead) for HTML5 `<canvas>` `ImageData` blitting.
+- **Temporary System-Wide Windows Activation (`src-tauri/src/activator.rs`):** Tracks active font paths in a `Mutex<HashSet<String>>` inside Tauri managed state (`ActivatorState`), exposes `activate_font` (`AddFontResourceExW` + `WM_FONTCHANGE`) and `deactivate_font` (`RemoveFontResourceExW` + `WM_FONTCHANGE`) with cross-platform `#[cfg(not(windows))]` stubs, and automatically deactivates all active fonts on `RunEvent::Exit` in `src-tauri/src/lib.rs`.
+- **Skia Studio UI (`/skia` — `src/components/font-studio/skia-studio.tsx` & `skia-font-canvas.tsx`):** Native folder picker (`@tauri-apps/plugin-dialog`) → scrollable font cards with HTML `<canvas>` RGBA8888 previews → global sample text input & font-size slider → per-card Activate toggle → live Inspector panel with toggles for all detected `opentype_features` and sliders for variable axes.
 
 ---
 
@@ -76,8 +85,8 @@ npm run build
 npx tauri build
 ```
 Installers are written to:
-- `src-tauri/target/release/bundle/nsis/Fonths_1.0.0_x64-setup.exe`
-- `src-tauri/target/release/bundle/msi/Fonths_1.0.0_x64_en-US.msi`
+- `src-tauri/target/release/bundle/nsis/Fonths_2.0.0_x64-setup.exe`
+- `src-tauri/target/release/bundle/msi/Fonths_2.0.0_x64_en-US.msi`
 
 See [docs/DIRECTWRITE-MIGRATION-2.0.0.md](docs/DIRECTWRITE-MIGRATION-2.0.0.md) for architecture details, benchmarks, and the full engineering changelog.
 

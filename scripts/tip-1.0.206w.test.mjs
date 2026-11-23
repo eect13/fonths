@@ -41,9 +41,9 @@ function cancelFn() {
 }
 
 test("206w keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "1.0.0");
-  assert.equal(tauri.version, "1.0.0");
-  assert.match(version, /1\.0\.0/);
+  assert.equal(pkg.version, "2.0.0");
+  assert.equal(tauri.version, "2.0.0");
+  assert.match(version, /2\.0\.0/);
 });
 
 test("P0 assert matrix: Scanning Documents is not docs-owned without sticky", () => {

@@ -332,7 +332,7 @@ test("Rust indexer overlays STAT names; STAT values tests-only; no rayon; no fon
   assert.match(rust, /include_bytes!\("\.\.\/\.\.\/tests\/fixtures\/Inter-opsz-wght\.ttf"\)/);
   assert.match(rust, /include_bytes!\("\.\.\/\.\.\/tests\/fixtures\/two-face\.ttc"\)/);
   assert.match(rust, /Do not rayon without a profiler/);
-  assert.doesNotMatch(cargo, /fontspector|fontbakery|skrifa|read-fonts/);
+  assert.doesNotMatch(cargo, /fontspector|fontbakery|skrifa/);
   const depBlob = JSON.stringify({ ...pkg.dependencies, ...pkg.devDependencies });
   assert.doesNotMatch(depBlob, /fontspector|fontbakery/i);
 });

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const activateRs = readFileSync(new URL("../src-tauri/src/activate.rs", import.meta.url), "utf8");
-const mainRs = readFileSync(new URL("../src-tauri/src/main.rs", import.meta.url), "utf8");
+const mainRs = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
 const cargo = readFileSync(new URL("../src-tauri/Cargo.toml", import.meta.url), "utf8");
 const caps = readFileSync(new URL("../src-tauri/capabilities/default.json", import.meta.url), "utf8");
 const acl = readFileSync(new URL("../src-tauri/permissions/font-activate.toml", import.meta.url), "utf8");
@@ -15,9 +15,9 @@ const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url),
 const version = readFileSync(new URL("../src/version.ts", import.meta.url), "utf8");
 
 test("1.0.207 version pins", () => {
-  assert.equal(pkg.version, "1.0.0");
-  assert.match(version, /APP_VERSION = "1\.0\.0"/);
-  assert.match(cargo, /version = "1\.0\.0"/);
+  assert.equal(pkg.version, "2.0.0");
+  assert.match(version, /APP_VERSION = "2\.0\.0"/);
+  assert.match(cargo, /version = "2\.0\.0"/);
 });
 
 test("docs refresh uses its own cancel flag, not Activate cancel", () => {

@@ -26,9 +26,9 @@ const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206ac keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "1.0.0");
-  assert.equal(tauri.version, "1.0.0");
-  assert.match(version, /1\.0\.0/);
+  assert.equal(pkg.version, "2.0.0");
+  assert.equal(tauri.version, "2.0.0");
+  assert.match(version, /2\.0\.0/);
 });
 
 test("P0: docs Cancel defers teardown off Invoke stack (no sync hang)", () => {

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const mainRs = readFileSync(join(root, "src-tauri/src/main.rs"), "utf8");
+const mainRs = readFileSync(join(root, "src-tauri/src/lib.rs"), "utf8");
 const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
 const permission = readFileSync(
   join(root, "src-tauri/permissions/font-activate.toml"),
@@ -76,9 +76,9 @@ function frontendInvokeCommands() {
 }
 
 test("206v keeps ProductVersion 1.0.206 and TIP_SHA path", () => {
-  assert.equal(pkg.version, "1.0.0");
-  assert.equal(tauri.version, "1.0.0");
-  assert.match(version, /1\.0\.0/);
+  assert.equal(pkg.version, "2.0.0");
+  assert.equal(tauri.version, "2.0.0");
+  assert.match(version, /2\.0\.0/);
   assert.match(writeTipSha, /TIP_SHA\.txt/);
   assert.match(beforeBuild, /write-tip-sha\.mjs|TIP_SHA/);
 });

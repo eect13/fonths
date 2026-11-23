@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
-const mainRs = readFileSync(join(root, "src-tauri/src/main.rs"), "utf8");
+const mainRs = readFileSync(join(root, "src-tauri/src/lib.rs"), "utf8");
 const osActivate = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf8");
 const downloadBar = readFileSync(
   join(root, "src/components/font-studio/download-bar.tsx"),
@@ -27,9 +27,9 @@ const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206ae keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "1.0.0");
-  assert.equal(tauri.version, "1.0.0");
-  assert.match(version, /1\.0\.0/);
+  assert.equal(pkg.version, "2.0.0");
+  assert.equal(tauri.version, "2.0.0");
+  assert.match(version, /2\.0\.0/);
 });
 
 test("P0: docs VF emit throttle ≥800ms + every-N dirs", () => {

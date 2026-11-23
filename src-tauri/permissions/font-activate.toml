@@ -2,6 +2,10 @@
 identifier = "allow-font-activate"
 description = "Write activated fonts to Documents/Fonths and register them with the OS"
 commands.allow = [
+  "scan_font_directory",
+  "render_font_preview",
+  "activate_font",
+  "deactivate_font",
   "activation_folder",
   "install_font_file",
   "unload_font_family",

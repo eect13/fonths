@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { Code2, Copy, Grid3x3, HelpCircle, Library, Menu, Search, SplitSquareHorizontal, X } from "lucide-react";
+import { Code2, Copy, Cpu, Grid3x3, HelpCircle, Library, Menu, Search, SplitSquareHorizontal, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -37,6 +37,13 @@ import { APP_BUILD_SHA, APP_NAME, APP_VERSION } from "@/version";
 
 const NAV = [
   { to: "/", label: "Library", icon: Library, match: (p: string) => p === "/", beta: false },
+  {
+    to: "/skia",
+    label: "Skia Studio",
+    icon: Cpu,
+    match: (p: string) => p.startsWith("/skia"),
+    beta: false,
+  },
   {
     to: "/playground",
     label: "Playground",
@@ -297,7 +304,7 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
         </div>
 
         <nav
-          className="grid grid-cols-4 border-t border-border bg-card lg:hidden"
+          className="grid grid-cols-5 border-t border-border bg-card lg:hidden"
           inert={hideLibraryA11y || undefined}
         >
           {NAV.map((item) => {

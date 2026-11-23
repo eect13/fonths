@@ -111,7 +111,7 @@ const playgroundSrc = readFileSync(join(root, "src/components/font-studio/playgr
 const cardSrc = readFileSync(join(root, "src/components/font-studio/font-card.tsx"), "utf8");
 
 test("version.ts APP_VERSION is 1.0.207", () => {
-  assert.match(versionSrc, /export const APP_VERSION = "1\.0\.0"/);
+  assert.match(versionSrc, /export const APP_VERSION = "2\.0\.0"/);
 });
 
 test("italicPreviewStyle does not emit full-axis FVS (no variationCss call)", () => {

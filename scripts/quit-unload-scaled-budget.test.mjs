@@ -6,13 +6,13 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
-const mainRs = readFileSync(join(root, "src-tauri/src/main.rs"), "utf8");
+const mainRs = readFileSync(join(root, "src-tauri/src/lib.rs"), "utf8");
 const versionTs = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 
 test("1.0.207: version is 1.0.207 (quit unload budget from 1.0.189 kept)", () => {
-  assert.equal(pkg.version, "1.0.0");
-  assert.match(versionTs, /APP_VERSION\s*=\s*"1\.0\.0"/);
+  assert.equal(pkg.version, "2.0.0");
+  assert.match(versionTs, /APP_VERSION\s*=\s*"2\.0\.0"/);
 });
 
 test("1.0.189: quit_unload_budget_for scales 15ms/path clamp 12s–180s", () => {
