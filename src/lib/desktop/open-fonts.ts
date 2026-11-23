@@ -154,7 +154,7 @@ export async function pickFontFolder(): Promise<{ files: File[]; name: string } 
 }
 
 export async function pickWatchFolder(): Promise<
-  | { path: string; name: string; files: File[]; originPaths: string[]; blocked?: string }
+  | { path: string; name: string; files: File[]; originPaths: string[]; originSizes?: number[]; blocked?: string }
   | "web"
   | null
 > {
@@ -169,10 +169,10 @@ export async function pickWatchFolder(): Promise<
   if (!dir || Array.isArray(dir)) return null;
   const blocked = forbiddenWatchReason(dir);
   if (blocked) {
-    return { path: dir, name: baseName(dir), files: [], originPaths: [], blocked };
+    return { path: dir, name: baseName(dir), files: [], originPaths: [], originSizes: [], blocked };
   }
   const listed = await listWatchFolder(dir);
-  return { path: dir, name: baseName(dir), files: [], originPaths: listed.paths };
+  return { path: dir, name: baseName(dir), files: [], originPaths: listed.paths, originSizes: listed.sizes };
 }
 
 export type WatchListing = {

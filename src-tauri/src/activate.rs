@@ -825,7 +825,62 @@ fn gdi_map_dest_for(src: &Path) -> Option<PathBuf> {
     Some(gdi_maps_root()?.join(gdi_map_file_name(src)))
 }
 
+static STAGE_ROTATE_SEQ: AtomicU64 = AtomicU64::new(1);
+
+fn is_transient_lock_error(err: &std::io::Error) -> bool {
+    err.kind() == ErrorKind::PermissionDenied || matches!(err.raw_os_error(), Some(32) | Some(33))
+}
+
+fn copy_with_lock_retry(src: &Path, dst: &Path) -> std::io::Result<u64> {
+    let mut last_err = None;
+    for attempt in 0..3u8 {
+        match fs::copy(src, dst) {
+            Ok(n) => return Ok(n),
+            Err(e) if attempt < 2 && is_transient_lock_error(&e) => {
+                last_err = Some(e);
+                thread::sleep(Duration::from_millis(40));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| std::io::Error::new(ErrorKind::Other, "copy locked")))
+}
+
+fn rotated_stage_path(dest: &Path) -> PathBuf {
+    let seq = STAGE_ROTATE_SEQ.fetch_add(1, Ordering::Relaxed);
+    let stem = dest.file_stem().and_then(|s| s.to_str()).unwrap_or("font");
+    let ext = dest.extension().and_then(|s| s.to_str()).unwrap_or("ttf");
+    dest.with_file_name(format!("{stem}-r{}-{seq}.{ext}", std::process::id()))
+}
+
+fn commit_stage_tmp(tmp: &Path, dest: &Path) -> Option<PathBuf> {
+    if fs::rename(tmp, dest).is_ok() && dest.is_file() {
+        return Some(dest.to_path_buf());
+    }
+    if fs::copy(tmp, dest).is_ok() {
+        let _ = fs::remove_file(tmp);
+        if dest.is_file() {
+            return Some(dest.to_path_buf());
+        }
+    }
+    // `dest` is write-locked by an external app (Word/Photoshop/Font Cache): rotate inside `gdi-maps`
+    // so activation never fails with `StageCopyFailed`.
+    let rotated = rotated_stage_path(dest);
+    if fs::rename(tmp, &rotated).is_ok() && rotated.is_file() {
+        return Some(rotated);
+    }
+    if fs::copy(tmp, &rotated).is_ok() {
+        let _ = fs::remove_file(tmp);
+        if rotated.is_file() {
+            return Some(rotated);
+        }
+    }
+    let _ = fs::remove_file(tmp);
+    None
+}
+
 /// Copy `src` into gdi-maps when missing or size-mismatched. Never deletes `src`.
+/// Retries transient read locks and rotates to a fresh stage file if `dest` is write-locked.
 /// Returns `None` on failure — never falls back to Documents (must_not_register).
 fn ensure_gdi_session_copy_to(src: &Path, maps_root: &Path) -> Option<PathBuf> {
     guard_test_path(maps_root);
@@ -844,29 +899,17 @@ fn ensure_gdi_session_copy_to(src: &Path, maps_root: &Path) -> Option<PathBuf> {
         let _ = fs::create_dir_all(parent);
     }
     let src_len = fs::metadata(src).map(|m| m.len()).unwrap_or(0);
-    let dest_ok = fs::metadata(&dest)
-        .map(|m| m.len() == src_len && src_len >= 256)
-        .unwrap_or(false);
+    let dest_ok = dest.is_file()
+        && fs::metadata(&dest)
+            .map(|m| m.len() == src_len && src_len >= 256)
+            .unwrap_or(false);
     if dest_ok {
         return Some(dest);
     }
     let tmp = dest.with_extension("part");
     let _ = fs::remove_file(&tmp);
-    match fs::copy(src, &tmp) {
-        Ok(_) => {
-            if fs::rename(&tmp, &dest).is_err() {
-                if fs::copy(&tmp, &dest).is_err() {
-                    let _ = fs::remove_file(&tmp);
-                    return None;
-                }
-                let _ = fs::remove_file(&tmp);
-            }
-            if dest.is_file() {
-                Some(dest)
-            } else {
-                None
-            }
-        }
+    match copy_with_lock_retry(src, &tmp) {
+        Ok(_) => commit_stage_tmp(&tmp, &dest),
         Err(_) => {
             let _ = fs::remove_file(&tmp);
             None
@@ -893,29 +936,21 @@ fn prestage_gdi_session_bytes_to(src: &Path, bytes: &[u8], maps_root: &Path) -> 
         let _ = fs::create_dir_all(parent);
     }
     let src_len = bytes.len() as u64;
-    let dest_ok = fs::metadata(&dest)
-        .map(|m| m.len() == src_len && src_len >= 256)
-        .unwrap_or(false);
+    let dest_ok = dest.is_file()
+        && fs::metadata(&dest)
+            .map(|m| m.len() == src_len && src_len >= 256)
+            .unwrap_or(false);
     if dest_ok {
         return Some(dest);
     }
     let tmp = dest.with_extension("part");
     let _ = fs::remove_file(&tmp);
     if fs::write(&tmp, bytes).is_ok() {
-        if fs::rename(&tmp, &dest).is_err() {
-            if fs::copy(&tmp, &dest).is_err() {
-                let _ = fs::remove_file(&tmp);
-                return None;
-            }
-            let _ = fs::remove_file(&tmp);
-        }
-        if dest.is_file() {
-            return Some(dest);
-        }
+        commit_stage_tmp(&tmp, &dest)
     } else {
         let _ = fs::remove_file(&tmp);
+        None
     }
-    None
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -3239,7 +3274,20 @@ pub fn gdi_objects_at_hard_ceiling(count: u32) -> bool {
 /// Fast 4-byte SFNT/TTC magic header validation (microseconds) so corrupt,
 /// truncated, or HTML-error files never reach Windows GDI (`AddFontResourceExW`).
 pub fn has_valid_sfnt_magic(path: &Path) -> bool {
-    let Ok(mut f) = fs::File::open(path) else {
+    let mut opened = None;
+    for attempt in 0..3u8 {
+        match fs::File::open(path) {
+            Ok(f) => {
+                opened = Some(f);
+                break;
+            }
+            Err(e) if attempt < 2 && is_transient_lock_error(&e) => {
+                thread::sleep(Duration::from_millis(30));
+            }
+            Err(_) => return false,
+        }
+    }
+    let Some(mut f) = opened else {
         return false;
     };
     let Ok(meta) = f.metadata() else {
@@ -19048,5 +19096,40 @@ mod c263_tests {
         let snap = gdi_session_state();
         assert_eq!(snap.live_family_count, snap.live_families.len());
         assert!(snap.gdi_quota >= 10_000);
+    }
+
+    #[test]
+    fn ensure_gdi_session_copy_rotates_around_locked_dest() {
+        let root = std::env::temp_dir().join(format!("fonths-rotate-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let src_dir = root.join("src");
+        let maps_root = root.join("gdi-maps");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::create_dir_all(&maps_root).unwrap();
+
+        let src = src_dir.join("LockTest.ttf");
+        fs::write(&src, include_bytes!("../../tests/fixtures/Figtree-wght.ttf")).unwrap();
+
+        // Simulate an un-overwritable destination path in `gdi-maps` by occupying `dest`
+        // with a non-empty directory so rename/copy onto `dest` fails cleanly cross-platform.
+        let blocked_dest = maps_root.join(gdi_map_file_name(&src));
+        fs::create_dir_all(blocked_dest.join("locked-handle-sentinel")).unwrap();
+
+        let staged = ensure_gdi_session_copy_to(&src, &maps_root)
+            .expect("must rotate to a fresh stage path instead of failing StageCopyFailed");
+        assert_ne!(staged, blocked_dest);
+        assert!(staged.is_file());
+        assert!(staged.starts_with(&maps_root));
+        assert!(
+            staged
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(|n| n.contains("-r"))
+                .unwrap_or(false),
+            "rotated path expected: {}",
+            staged.display()
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

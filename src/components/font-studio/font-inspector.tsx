@@ -41,13 +41,23 @@ import { openSystemFontsFolder } from "@/lib/fonts/system-fonts";
 import { isDesktopShellSync } from "@/lib/desktop/open-fonts";
 import { copyText } from "@/lib/copy-text";
 import { idbGet, previewCacheId } from "@/lib/fonts/idb";
+import { familyFontFiles, forgetFamilyFontFiles } from "@/lib/fonts/skia-engine";
 import { SkiaFontCanvas } from "./skia-font-canvas";
+
+const PREVIEW_THEME_CLASS: Record<"paper" | "ink" | "newsprint" | "blueprint", string> = {
+  paper: "bg-paper text-ink",
+  ink: "bg-ink text-paper",
+  newsprint: "bg-newsprint text-newsprint-fg",
+  blueprint: "bg-blueprint text-blueprint-fg",
+};
 
 export function FontInspector() {
   const open = useFontStore((s) => s.inspectorOpen);
   const selectedId = useFontStore((s) => s.selectedId);
   const localFonts = useFontStore((s) => s.localFonts);
   const googleFonts = useFontStore((s) => s.googleFonts);
+  const systemFonts = useFontStore((s) => s.systemFonts);
+  const diskFamilySet = useFontStore((s) => s.diskFamilySet);
   const setInspectorOpen = useFontStore((s) => s.setInspectorOpen);
   const collections = useFontStore((s) => s.collections);
   const toggleInCollection = useFontStore((s) => s.toggleInCollection);
@@ -76,12 +86,13 @@ export function FontInspector() {
   const [italicOn, setItalicOn] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<"local" | "google" | null>(null);
   const [parsedTags, setParsedTags] = useState<string[] | undefined>();
-  const [skiaPath, setSkiaPath] = useState<string | null>(null);
+  const [skiaPaths, setSkiaPaths] = useState<string[]>([]);
   const fontRef = useRef(font);
   fontRef.current = font;
   const previewItalicRef = useRef(Boolean(preview.italic));
   previewItalicRef.current = Boolean(preview.italic);
   const activeFontId = font?.id;
+  const diskHasFamily = font ? diskFamilySet.has(font.family.trim().toLowerCase()) : false;
 
   useEffect(() => {
     const cur = fontRef.current;
@@ -94,20 +105,15 @@ export function FontInspector() {
     setFeatures(useFontStore.getState().featurePrefs[cur.id] ?? {});
     setTagDraft("");
     setParsedTags(cur.otFeatures);
-    setSkiaPath(isDesktopShellSync() && cur.originPath ? cur.originPath : null);
+    setSkiaPaths([]);
+
     const id = cur.id;
     const family = cur.family;
     void (async () => {
       try {
-        const { nativeFamilyLayout, nativeFamilyPreviewInfo, fontMetricsFromLayout } = await import(
+        const { nativeFamilyLayout, fontMetricsFromLayout } = await import(
           "@/lib/fonts/native-parse"
         );
-        if (isDesktopShellSync() && !cur.originPath) {
-          const previewInfo = await nativeFamilyPreviewInfo(family, wantItalic);
-          if (!cancelled && previewInfo?.path) {
-            setSkiaPath(previewInfo.path);
-          }
-        }
         const layout = await nativeFamilyLayout(family);
         if (layout) {
           if (!cancelled && layout.otFeatures?.length) setParsedTags(layout.otFeatures);
@@ -132,6 +138,60 @@ export function FontInspector() {
       cancelled = true;
     };
   }, [activeFontId]);
+
+  useEffect(() => {
+    const cur = fontRef.current;
+    if (!cur || !isDesktopShellSync()) {
+      setSkiaPaths([]);
+      return;
+    }
+    let cancelled = false;
+    const famKey = cur.family.trim().toLowerCase();
+    const collected: string[] = [];
+    if (cur.originPath) collected.push(cur.originPath);
+    if (!isItalicOnlyFace(cur)) {
+      const siblings = cur.source === "system" ? systemFonts : localFonts;
+      for (const s of siblings) {
+        if (s.originPath && s.family.trim().toLowerCase() === famKey && !collected.includes(s.originPath)) {
+          collected.push(s.originPath);
+        }
+      }
+    }
+    if (collected.length > 0) {
+      setSkiaPaths(collected);
+      return () => {
+        cancelled = true;
+      };
+    }
+    void (async () => {
+      try {
+        if (diskHasFamily || isOn) forgetFamilyFontFiles(cur.family);
+        const files = await familyFontFiles(cur.family);
+        if (!cancelled && files.length > 0) {
+          setSkiaPaths(files);
+          return;
+        }
+        const { nativeFamilyPreviewInfo } = await import("@/lib/fonts/native-parse");
+        const previewInfo = await nativeFamilyPreviewInfo(cur.family, previewItalicRef.current);
+        if (!cancelled && previewInfo?.path) {
+          setSkiaPaths([previewInfo.path]);
+        }
+      } catch {
+        /* DOM preview remains active when font is catalog-only */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeFontId, font?.originPath, diskHasFamily, isOn, localFonts, systemFonts]);
+
+  useEffect(() => {
+    const cur = fontRef.current;
+    if (!cur || isItalicOnlyFace(cur)) return;
+    const on = Boolean(preview.italic) && hasRealItalic(cur);
+    setItalicOn(on);
+    if (on) void loadItalicFace(cur);
+  }, [activeFontId, preview.italic]);
 
   useEffect(() => {
     if (!open) return;
@@ -200,7 +260,8 @@ export function FontInspector() {
   const liveAxes = previewAxisValues(font, storedAxes, cardWeight, effectiveItalicOn);
   const weight = liveAxes.wght ?? cardWeight;
   const italicCss = italicPreviewStyle(font, effectiveItalicOn);
-  const canItalic = hasRealItalic(font) && !isItalicOnlyFace(font);
+  const canItalic = (hasRealItalic(font) || skiaPaths.length > 0) && !isItalicOnlyFace(font);
+  const obliqueFallback = !hasRealItalic(font) && !isItalicOnlyFace(font) && skiaPaths.length > 0;
   const axisStyle = variationStyle(
     {
       ...liveAxes,
@@ -260,7 +321,7 @@ export function FontInspector() {
         onClick={() => setInspectorOpen(false)}
       />
     <aside className="fm-inspector fixed inset-y-0 right-0 z-30 flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden border-l border-border bg-card shadow-border md:static md:inset-auto md:z-auto md:w-inspector md:shrink-0">
-      <div className="fm-inspector-head flex items-start justify-between gap-3">
+      <div className="fm-inspector-head flex shrink-0 items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="font-heading min-w-0 max-w-full overflow-hidden text-xl leading-snug break-words text-foreground" style={{ fontFamily: stack, overflowWrap: "anywhere" }}>
             {font.family}
@@ -280,27 +341,40 @@ export function FontInspector() {
           <X />
         </Button>
       </div>
-      <ScrollArea className="min-h-0 flex-1">
-          <div className="fm-inspector-body space-y-6 pb-10">
-            {skiaPath && !specimenLines && colorKindOf(font) === "none" ? (
+      <ScrollArea
+        className="min-h-0 flex-1"
+        viewportClassName="[&>div]:!block [&>div]:min-w-0 [&>div]:max-w-full"
+      >
+          <div className="fm-inspector-body min-w-0 max-w-full space-y-6 overflow-x-hidden pb-12">
+            {skiaPaths.length > 0 && !specimenLines && colorKindOf(font) === "none" ? (
               <div
-                className="fm-spec min-w-0 max-w-full overflow-hidden rounded-lg bg-paper px-4 py-4 text-ink"
+                className={cn(
+                  "fm-spec min-w-0 max-w-full overflow-hidden rounded-lg px-4 py-4",
+                  PREVIEW_THEME_CLASS[preview.theme],
+                )}
                 data-testid="inspector-skia-preview"
               >
                 <SkiaFontCanvas
-                  fontPath={skiaPath}
+                  slot="inspector-main"
+                  fontPaths={skiaPaths}
                   text={previewSample(font, preview.sampleText)}
-                  fontSize={22}
-                  height={76}
-                  colorHex="#111111"
+                  fontSize={Math.max(16, Math.min(48, Math.round((preview.fontSize || 36) * 0.65)))}
+                  minHeight={56}
+                  maxHeight={340}
+                  themeKey={preview.theme}
                   features={skiaFeatures}
                   variations={font.variable ? liveAxes : undefined}
+                  weight={font.variable ? (axisStyle.fontWeight ?? weight) : weight}
+                  italic={effectiveItalicOn}
+                  align={preview.align}
+                  lineHeight={1.3}
                 />
               </div>
             ) : (
             <p
               className={cn(
-                "fm-spec min-w-0 max-w-full overflow-x-hidden overflow-hidden break-words rounded-lg bg-paper px-4 py-4 text-xl leading-snug text-ink",
+                "fm-spec min-w-0 max-w-full overflow-x-hidden overflow-hidden break-words rounded-lg px-4 py-4 text-xl leading-snug",
+                PREVIEW_THEME_CLASS[preview.theme],
                 effectiveItalicOn && hasRealItalic(font) ? "fm-spec-italic" : "fm-spec-roman",
                 font.variable ? "fm-spec-variable" : "fm-spec-static",
                 effectiveItalicOn && hasRealItalic(font) ? "fm-spec-real" : null,
@@ -472,11 +546,20 @@ export function FontInspector() {
             </section>
             )}
             <label className="flex h-10 items-center justify-between rounded-md bg-secondary px-3 text-sm">
-                Italic
+                <span>{obliqueFallback ? "Italic (oblique preview)" : "Italic"}</span>
                 <Switch
+                  data-testid="inspector-italic-switch"
                   checked={effectiveItalicOn}
                   disabled={!canItalic}
-                  title={canItalic ? "Toggle italic" : isItalicOnlyFace(font) ? "Italic file" : "No italic face"}
+                  title={
+                    canItalic
+                      ? obliqueFallback
+                        ? "Synthetic oblique preview in Skia (no italic font file)"
+                        : "Toggle italic"
+                      : isItalicOnlyFace(font)
+                        ? "Italic file"
+                        : "No italic face"
+                  }
                   onCheckedChange={(on) => {
                     if (!canItalic) return;
                     setItalicOn(on);
@@ -561,8 +644,36 @@ export function FontInspector() {
                   ? `${layoutTags.length} GSUB/GPOS tags in this file. liga/calt/kern on by default. Toggle and watch the line below.`
                   : "Reading GSUB… common tags until the file is parsed. Off means explicitly disable."}
               </p>
+              {skiaPaths.length > 0 && colorKindOf(font) === "none" ? (
+                <div
+                  className={cn(
+                    "fm-spec min-w-0 max-w-full overflow-hidden rounded-lg px-3 py-2",
+                    PREVIEW_THEME_CLASS[preview.theme],
+                  )}
+                  data-testid="inspector-skia-ot-preview"
+                >
+                  <SkiaFontCanvas
+                    slot="inspector-ot"
+                    fontPaths={skiaPaths}
+                    text={FEATURE_DEMO}
+                    fontSize={20}
+                    minHeight={36}
+                    maxHeight={180}
+                    themeKey={preview.theme}
+                    features={skiaFeatures}
+                    variations={font.variable ? liveAxes : undefined}
+                    weight={font.variable ? (axisStyle.fontWeight ?? weight) : weight}
+                    italic={effectiveItalicOn}
+                    align="left"
+                    lineHeight={1.25}
+                  />
+                </div>
+              ) : (
               <p
-                className="fm-spec min-w-0 max-w-full overflow-hidden break-words rounded-lg bg-paper px-3 py-2 text-xl text-ink"
+                className={cn(
+                  "fm-spec min-w-0 max-w-full overflow-hidden break-words rounded-lg px-3 py-2 text-xl",
+                  PREVIEW_THEME_CLASS[preview.theme],
+                )}
                 style={{
                   fontFamily: stack,
                   fontWeight: font.variable ? (axisStyle.fontWeight ?? weight) : weight,
@@ -577,11 +688,12 @@ export function FontInspector() {
               >
                 {FEATURE_DEMO}
               </p>
+              )}
               <div className="grid grid-cols-2 gap-2">
                 {togglesFor(layoutTags).map((tag) => (
                   <label
                     key={tag}
-                    className="flex h-10 items-center justify-between rounded-md bg-secondary px-3 text-sm"
+                    className="flex h-10 min-w-0 items-center justify-between gap-2 rounded-md bg-secondary px-3 text-sm"
                   >
                     <span className="truncate" title={tag}>
                       {labelForFeature(tag)}
@@ -662,10 +774,10 @@ export function FontInspector() {
                   .map(({ folder, depth }) => (
                     <label
                       key={folder.id}
-                      className="flex h-10 items-center justify-between rounded-md px-2 text-sm hover:bg-accent"
+                      className="flex h-10 min-w-0 items-center justify-between gap-2 rounded-md px-2 text-sm hover:bg-accent"
                       style={{ paddingLeft: 8 + depth * 12 }}
                     >
-                      {folder.name}
+                      <span className="truncate">{folder.name}</span>
                       <Switch
                         checked={folder.fontIds.includes(font.id)}
                         onCheckedChange={() => toggleInCollection(folder.id, font.id)}
@@ -687,10 +799,10 @@ export function FontInspector() {
                   .map(({ folder, depth }) => (
                     <label
                       key={folder.id}
-                      className="flex h-10 items-center justify-between rounded-md px-2 text-sm hover:bg-accent"
+                      className="flex h-10 min-w-0 items-center justify-between gap-2 rounded-md px-2 text-sm hover:bg-accent"
                       style={{ paddingLeft: 8 + depth * 12 }}
                     >
-                      {folder.name}
+                      <span className="truncate">{folder.name}</span>
                       <Switch
                         checked={folder.fontIds.includes(font.id)}
                         onCheckedChange={() => toggleInCollection(folder.id, font.id)}
@@ -754,10 +866,10 @@ export function FontInspector() {
             </section>
 
             <section className="space-y-1 text-xs text-muted-foreground">
-              {font.fullName && font.fullName !== font.family && <p>Name · {font.fullName}</p>}
-              <p>Family · {font.family}</p>
+              {font.fullName && font.fullName !== font.family && <p className="break-words">Name · {font.fullName}</p>}
+              <p className="break-words">Family · {font.family}</p>
               {font.originPath && <p className="truncate" title={font.originPath}>Path · {font.originPath}</p>}
-              {font.fileName && <p>File · {font.fileName}</p>}
+              {font.fileName && <p className="break-words">File · {font.fileName}</p>}
               {font.fileSize ? <p>Size · {formatBytes(font.fileSize)}</p> : null}
               {font.glyphCount ? <p>Glyphs · {font.glyphCount}</p> : null}
               {font.version && <p>Version · {font.version}</p>}
@@ -790,10 +902,10 @@ export function FontInspector() {
                 <DialogDescription>
                   {permanent
                     ? confirmDelete === "local"
-                      ? "Permanent Delete mode is active. This immediately removes the font file from your library and Documents / Fonths / Uploads and cannot be undone."
+                      ? "Permanent Delete mode is active. This immediately removes the font file from your library and Documents / Fonths and cannot be undone."
                       : "Permanent Delete mode is active. Downloaded files in Documents / Fonths / Providers / Google will be permanently deleted (the Google Fonts catalog entry stays)."
                     : confirmDelete === "local"
-                      ? "Recycle Bin mode is active. The font file in your library and Documents / Fonths / Uploads will move to the Recycle Bin so you can restore it later."
+                      ? "Recycle Bin mode is active. The font file in your library and Documents / Fonths will move to the Recycle Bin so you can restore it later."
                       : "Recycle Bin mode is active. Downloaded files in Documents / Fonths / Providers / Google will move to the Recycle Bin. The Google Fonts catalog entry stays."}
                 </DialogDescription>
               </DialogHeader>

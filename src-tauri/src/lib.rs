@@ -24,11 +24,19 @@ use tauri::{
 
 static QUITTING: AtomicBool = AtomicBool::new(false);
 static CLOSE_TO_TRAY: AtomicBool = AtomicBool::new(false);
+static START_MINIMIZED: AtomicBool = AtomicBool::new(false);
+
+fn set_tray_tooltip(app: &tauri::AppHandle, text: &str) {
+    if let Some(tray) = app.tray_by_id("main") {
+        let _ = tray.set_tooltip(Some(text));
+    }
+}
 
 fn show_main(app: &tauri::AppHandle) {
     if QUITTING.load(Ordering::SeqCst) {
         return;
     }
+    set_tray_tooltip(app, "Fonths");
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.show();
         let _ = win.unminimize();
@@ -69,12 +77,15 @@ fn quit_gracefully(app: &tauri::AppHandle) {
 fn set_desktop_prefs(
     close_to_tray: bool,
     start_with_windows: bool,
+    start_minimized: Option<bool>,
     prefer_static_faces: Option<bool>,
     fast_session_resume: Option<bool>,
     delete_mode: Option<String>,
 ) {
     CLOSE_TO_TRAY.store(close_to_tray, Ordering::SeqCst);
-    let _ = apply_start_with_windows(start_with_windows);
+    let minimized = start_minimized.unwrap_or(false);
+    START_MINIMIZED.store(minimized, Ordering::SeqCst);
+    let _ = apply_start_with_windows(start_with_windows, minimized);
     activate::set_prefer_static_faces(prefer_static_faces.unwrap_or(false));
     activate::set_fast_session_resume(fast_session_resume.unwrap_or(true));
     delete_ops::set_permanent_delete(
@@ -105,7 +116,7 @@ pub(crate) fn is_elevated() -> bool {
     }
 }
 
-fn apply_start_with_windows(on: bool) -> Result<(), String> {
+fn apply_start_with_windows(on: bool, start_minimized: bool) -> Result<(), String> {
     // c263: a sandbox build never touches the real Startup folder or Task Scheduler.
     if activate::sandbox_active() {
         return Ok(());
@@ -127,6 +138,7 @@ fn apply_start_with_windows(on: bool) -> Result<(), String> {
         let link = dir.join("Fonths.cmd");
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let exe_str = exe.display().to_string();
+        let arg_tail = if start_minimized { " --minimized" } else { "" };
 
         if win_admin::is_elevated() {
             let _ = std::process::Command::new("schtasks.exe")
@@ -134,7 +146,7 @@ fn apply_start_with_windows(on: bool) -> Result<(), String> {
                 .creation_flags(CREATE_NO_WINDOW)
                 .status();
             if on {
-                let tr = format!("\"{exe_str}\"");
+                let tr = format!("\"{exe_str}\"{arg_tail}");
                 let status = std::process::Command::new("schtasks.exe")
                     .args([
                         "/Create",
@@ -167,7 +179,7 @@ fn apply_start_with_windows(on: bool) -> Result<(), String> {
                 }
             }
         } else if on {
-            let body = format!("@echo off\r\nstart \"\" \"{exe_str}\"\r\n");
+            let body = format!("@echo off\r\nstart \"\" \"{exe_str}\"{arg_tail}\r\n");
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             std::fs::write(&link, body).map_err(|e| e.to_string())?;
         } else if link.exists() {
@@ -177,7 +189,7 @@ fn apply_start_with_windows(on: bool) -> Result<(), String> {
             }
         }
     }
-    let _ = on;
+    let _ = (on, start_minimized);
     Ok(())
 }
 
@@ -417,12 +429,20 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            if std::env::args().any(|a| a == "--minimized") {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.hide();
+                }
+                set_tray_tooltip(app.handle(), "Fonths — running in background");
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             set_desktop_prefs,
             scanner::scan_font_directory,
             renderer::render_font_preview,
+            renderer::render_font_specimen,
             activator::activate_font,
             activator::deactivate_font,
             activate::activation_folder,
@@ -491,6 +511,7 @@ pub fn run() {
                 api.prevent_close();
                 if CLOSE_TO_TRAY.load(Ordering::SeqCst) {
                     let _ = window.hide();
+                    set_tray_tooltip(window.app_handle(), "Fonths — running in background");
                     return;
                 }
                 quit_gracefully(window.app_handle());

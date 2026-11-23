@@ -14,6 +14,7 @@ import {
 } from "./import-collision";
 import {
   analyzeImportBatch,
+  dedupeWatchedBatch,
   defaultImportSelection,
   filterImportFiles,
   filterOriginPathsByRule,
@@ -75,12 +76,22 @@ export async function addWatchedFolder(): Promise<void> {
   const store = useFontStore.getState();
   const existing = store.collections.find((c) => c.watchPath && norm(c.watchPath) === norm(picked.path));
   let originPaths = picked.originPaths.slice();
+  let originSizes = (picked.originSizes ?? []).slice();
   let autoActivate = existing?.autoActivate ?? true;
   let importFilter: SavedImportRule | undefined = existing?.importFilter;
   let skippedByRule = 0;
 
   if (originPaths.length) {
-    const likes = originPathsToFileLikes(originPaths, picked.path);
+    // 1. Within-folder smart duplicate detection (identical filename + size across nested subfolders).
+    const preLikes = originPathsToFileLikes(originPaths, picked.path, originSizes);
+    const deduped = dedupeWatchedBatch(preLikes);
+    if (deduped.duplicateCount > 0) {
+      originPaths = deduped.keptIndices.map((idx) => originPaths[idx]!);
+      originSizes = deduped.keptIndices.map((idx) => originSizes[idx] ?? 0);
+      skippedByRule += deduped.duplicateCount;
+    }
+
+    const likes = originPathsToFileLikes(originPaths, picked.path, originSizes);
     const analysis = analyzeImportBatch(likes, store.localFonts);
     if (shouldPromptImportOptions(analysis)) {
       const selection = await requestImportOptions(analysis, {
@@ -89,14 +100,16 @@ export async function addWatchedFolder(): Promise<void> {
       });
       if (!selection) return;
       const filtered = filterImportFiles(likes, analysis, selection);
-      const keptIdx = new Set(filtered.files.map((item) => likes.indexOf(item)).filter((i) => i >= 0));
-      originPaths = originPaths.filter((_, i) => keptIdx.has(i));
-      skippedByRule = filtered.skippedCount;
+      const keptIdx = filtered.files.map((item) => likes.indexOf(item)).filter((i) => i >= 0);
+      const keptSet = new Set(keptIdx);
+      originPaths = originPaths.filter((_, i) => keptSet.has(i));
+      originSizes = originSizes.filter((_, i) => keptSet.has(i));
+      skippedByRule += filtered.skippedCount;
       autoActivate = selection.autoActivate;
       importFilter = toSavedImportRule(selection);
     }
     if (originPaths.length) {
-      const remainingLikes = originPathsToFileLikes(originPaths, picked.path);
+      const remainingLikes = originPathsToFileLikes(originPaths, picked.path, originSizes);
       const latest = useFontStore.getState();
       const { collisions, collidingFileIndices } = findImportGoogleCollisions(
         remainingLikes,
@@ -104,12 +117,14 @@ export async function addWatchedFolder(): Promise<void> {
         latest.activatedSet,
         latest.diskFamilySet,
         latest.localFonts,
+        latest.systemFonts,
       );
       if (collisions.length > 0) {
         const choice = await requestImportCollisionChoice(collisions, remainingLikes.length);
         if (choice === "cancel") return;
         if (choice === "skip-colliding") {
           originPaths = originPaths.filter((_, idx) => !collidingFileIndices.has(idx));
+          originSizes = originSizes.filter((_, idx) => !collidingFileIndices.has(idx));
           skippedByRule += collidingFileIndices.size;
           const excludedKeys = collisions.map((c) => c.familyKey);
           const baseRule = importFilter ?? toSavedImportRule(defaultImportSelection(analysis));
@@ -119,7 +134,7 @@ export async function addWatchedFolder(): Promise<void> {
           };
           if (!originPaths.length) {
             toast.message("All colliding fonts skipped", {
-              description: "Skipped watched-folder fonts that matched existing Google or library families.",
+              description: "Skipped watched-folder fonts that matched existing Google, library, or system families.",
             });
             return;
           }
@@ -146,7 +161,11 @@ export async function addWatchedFolder(): Promise<void> {
       collectionId: id,
       collectionName: picked.name,
     });
-    const skippedNote = skippedByRule > 0 ? ` (${skippedByRule.toLocaleString()} filtered out by smart rules)` : "";
+    const totalSkipped = skippedByRule + result.duplicates;
+    const skippedNote =
+      totalSkipped > 0
+        ? ` (${totalSkipped.toLocaleString()} duplicate/filtered skipped)`
+        : "";
     toast.success(`Watching ${picked.name}`, {
       description: `${result.added.toLocaleString()} typeface${result.added === 1 ? "" : "s"} linked in place${skippedNote}. Files stay in that folder; auto-activate is ${autoActivate ? "on" : "off"}.`,
     });
@@ -202,25 +221,56 @@ export async function refreshWatchedFolders(): Promise<void> {
         knownByPath.set(key, [...(knownByPath.get(key) ?? []), f]);
       }
       const freshPaths: string[] = [];
+      const freshSizes: number[] = [];
       for (let i = 0; i < listed.paths.length; i += 1) {
         const origin = listed.paths[i]!;
         const prev = knownByPath.get(norm(origin)) ?? [];
         if (prev.length && (prev[0]!.fileSize ?? 0) === listed.sizes[i]) continue;
         for (const face of prev) await removeLocalFont(face.id);
         freshPaths.push(origin);
+        freshSizes.push(listed.sizes[i] ?? 0);
+      }
+      let dedupedFresh = freshPaths;
+      if (freshPaths.length > 1) {
+        const waveLikes = originPathsToFileLikes(freshPaths, root, freshSizes);
+        const deduped = dedupeWatchedBatch(waveLikes);
+        if (deduped.duplicateCount > 0) {
+          dedupedFresh = deduped.keptIndices.map((idx) => freshPaths[idx]!);
+        }
       }
       const filteredFresh =
-        freshPaths.length && folder.importFilter
-          ? filterOriginPathsByRule(freshPaths, root, folder.importFilter, localFonts)
-          : freshPaths;
+        dedupedFresh.length && folder.importFilter
+          ? filterOriginPathsByRule(dedupedFresh, root, folder.importFilter, localFonts)
+          : dedupedFresh;
       if (
         filteredFresh.length &&
         useFontStore.getState().collections.some((c) => c.id === folder.id && c.watchPath)
       ) {
-        await importOriginPaths(filteredFresh, {
+        const latest = useFontStore.getState();
+        const dropLikes = originPathsToFileLikes(filteredFresh, root);
+        const { collisions } = findImportGoogleCollisions(
+          dropLikes,
+          latest.googleFonts,
+          latest.activatedSet,
+          latest.diskFamilySet,
+          latest.localFonts,
+          latest.systemFonts,
+        );
+        const result = await importOriginPaths(filteredFresh, {
           collectionId: folder.id,
           collectionName: folder.name,
         });
+        if (result.duplicates > 0) {
+          toast.message(
+            `${result.duplicates} duplicate file${result.duplicates === 1 ? "" : "s"} skipped in ${folder.name}`,
+          );
+        }
+        if (collisions.length > 0 && result.added > 0) {
+          toast.message(
+            `${collisions.length} new file${collisions.length === 1 ? "" : "s"} in ${folder.name} share a family with existing fonts`,
+            { description: "Check the Duplicates tab to hide or resolve overlapping families." },
+          );
+        }
       }
     }
     const sig = signature(allOrigins, allSizes, allMtimes);

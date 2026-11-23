@@ -197,8 +197,11 @@ try {
   assert.equal(afterCancelProg.running, false, "Cancel on Activate All confirm must not start downloads");
   assert.equal(afterCancelProg.total, 0, "Cancel on Activate All confirm must leave queue empty");
 
-  // Settings + Separated Fast GDI Restore + Delete Mode + Clean Temp Cache + Purge non-Google + Skia Engine
+  // Settings + Background & Startup + Separated Fast GDI Restore + Delete Mode + Clean Temp Cache + Purge non-Google + Skia Engine
   await p1.click('[data-testid="settings-open"]');
+  await p1.waitForSelector('[data-testid="background-mode-card"]', { timeout: 10_000 });
+  await p1.waitForSelector('[data-testid="run-in-background-switch"]', { timeout: 5_000 });
+  await p1.waitForSelector('[data-testid="start-minimized-switch"]', { timeout: 5_000 });
   await p1.waitForSelector('[data-testid="delete-mode-card"]', { timeout: 10_000 });
   await p1.waitForSelector('[data-testid="gdi-restore-card"]', { timeout: 5_000 });
   await p1.waitForSelector('[data-testid="purge-non-google-btn"]', { timeout: 5_000 });
@@ -289,12 +292,52 @@ try {
     if (!(c instanceof HTMLCanvasElement) || c.width === 0 || c.height === 0) return false;
     const ctx = c.getContext("2d");
     if (!ctx) return false;
-    const data = ctx.getImageData(0, 0, Math.min(c.width, 160), Math.min(c.height, 80)).data;
-    for (let i = 3; i < data.length; i += 4) {
-      if (data[i] > 0) return true;
-    }
+    const d = ctx.getImageData(0, 0, Math.min(c.width, 160), Math.min(c.height, 80)).data;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > 0) return true;
     return false;
   }, { timeout: 10_000 });
+  const beforeItalicPixels = await p1.evaluate(() => {
+    const c = document.querySelector('[data-testid="skia-font-canvas"]');
+    if (!(c instanceof HTMLCanvasElement) || c.width === 0 || c.height === 0) return null;
+    const ctx = c.getContext("2d");
+    if (!ctx) return null;
+    const d = ctx.getImageData(0, 0, Math.min(c.width, 160), Math.min(c.height, 80)).data;
+    let sum = 0;
+    let opaque = 0;
+    for (let i = 3; i < d.length; i += 4) {
+      if (d[i] > 0) {
+        opaque += 1;
+        sum += (i * 31 + d[i]) % 997;
+      }
+    }
+    return opaque > 0 ? { opaque, sum } : null;
+  });
+  assert.ok(beforeItalicPixels && beforeItalicPixels.opaque > 0, "Expected non-transparent Skia canvas before Italic");
+
+  // Toggle Italic live in Font Inspector and verify Skia re-renders immediately
+  await p1.waitForSelector('[data-testid="inspector-italic-switch"]', { timeout: 5_000 });
+  await p1.click('[data-testid="inspector-italic-switch"]');
+  await p1.waitForFunction(
+    (prevSum) => {
+      const c = document.querySelector('[data-testid="skia-font-canvas"]');
+      if (!(c instanceof HTMLCanvasElement) || c.width === 0 || c.height === 0) return false;
+      const ctx = c.getContext("2d");
+      if (!ctx) return false;
+      const d = ctx.getImageData(0, 0, Math.min(c.width, 160), Math.min(c.height, 80)).data;
+      let sum = 0;
+      let opaque = 0;
+      for (let i = 3; i < d.length; i += 4) {
+        if (d[i] > 0) {
+          opaque += 1;
+          sum += (i * 31 + d[i]) % 997;
+        }
+      }
+      return opaque > 0 && sum !== prevSum;
+    },
+    beforeItalicPixels.sum,
+    { timeout: 10_000 },
+  );
+  await p1.click('[data-testid="inspector-italic-switch"]');
   await p1.locator('aside.fm-inspector button[aria-label="Delete font"], aside.fm-inspector button:has-text("Delete")').first().click();
   await p1.waitForSelector('[data-testid="inspector-delete-dialog"]', { timeout: 10_000 });
   const delText = await p1.locator('[data-testid="inspector-delete-dialog"]').innerText();

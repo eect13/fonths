@@ -20,6 +20,7 @@ export function ImportCollisionDialog() {
 
   const open = Boolean(req);
   const items = req?.collisions ?? [];
+  const hasGoogle = items.some((i) => !i.matchSource || i.matchSource === "google");
   return (
     <Dialog
       open={open}
@@ -30,44 +31,60 @@ export function ImportCollisionDialog() {
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>
-            {items.length} upload{items.length === 1 ? "" : "s"} match Google Fonts
+            {items.length} duplicate or matching font{items.length === 1 ? "" : "s"} found
           </DialogTitle>
           <DialogDescription>
-            Importing a font with the same family name as an active Google Font can shadow faces in Adobe/Office. Choose how to handle the collision:
+            Importing a font with the same family name as an existing Google, library, or system font can shadow faces in Adobe/Office. Choose how to handle the overlap:
           </DialogDescription>
         </DialogHeader>
 
         <div className="max-h-60 space-y-2 overflow-y-auto pr-1">
-          {items.map((item) => (
-            <div
-              key={item.familyKey}
-              className="grid grid-cols-2 gap-2 rounded-md border border-border bg-secondary/40 p-2.5 text-xs"
-            >
-              <div>
-                <div className="font-semibold text-foreground">
-                  Existing: {item.googleFont.family}
+          {items.map((item) => {
+            const sourceLabel =
+              item.matchSource === "system"
+                ? "System font (Windows\\Fonts)"
+                : item.matchSource === "local"
+                  ? "Local / Watched library"
+                  : "Google Fonts";
+            const statusLabel =
+              item.matchSource === "system"
+                ? "Always active (read-only)"
+                : item.isGoogleActive
+                  ? "Currently Active"
+                  : item.isGoogleOnDisk
+                    ? "On disk (Inactive)"
+                    : "Catalog only";
+            return (
+              <div
+                key={item.familyKey}
+                className="grid grid-cols-2 gap-2 rounded-md border border-border bg-secondary/40 p-2.5 text-xs"
+              >
+                <div>
+                  <div className="font-semibold text-foreground">
+                    Existing: {item.googleFont.family}
+                  </div>
+                  <div className="text-muted-foreground">
+                    {sourceLabel} · {CATEGORY_LABEL[item.googleFont.category]} · {item.googleFont.weights.length} weights
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-muted-foreground">
+                    {statusLabel}
+                  </div>
                 </div>
-                <div className="text-muted-foreground">
-                  Google Fonts · {CATEGORY_LABEL[item.googleFont.category]} · {item.googleFont.weights.length} weights
-                </div>
-                <div className="mt-0.5 text-[11px] text-muted-foreground">
-                  {item.isGoogleActive ? "Currently Active" : item.isGoogleOnDisk ? "On disk (Inactive)" : "Catalog only"}
+                <div>
+                  <div className="font-semibold text-foreground">
+                    New Folder ({item.uploadFileNames.length} file{item.uploadFileNames.length === 1 ? "" : "s"})
+                  </div>
+                  <div className="truncate text-muted-foreground" title={item.uploadFileNames.join(", ")}>
+                    {item.uploadFileNames.slice(0, 2).join(", ")}
+                    {item.uploadFileNames.length > 2 ? ` +${item.uploadFileNames.length - 2}` : ""}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-muted-foreground">
+                    {Math.max(1, Math.round(item.uploadBytes / 1024)).toLocaleString()} KB
+                  </div>
                 </div>
               </div>
-              <div>
-                <div className="font-semibold text-foreground">
-                  New Upload ({item.uploadFileNames.length} file{item.uploadFileNames.length === 1 ? "" : "s"})
-                </div>
-                <div className="truncate text-muted-foreground" title={item.uploadFileNames.join(", ")}>
-                  {item.uploadFileNames.slice(0, 2).join(", ")}
-                  {item.uploadFileNames.length > 2 ? ` +${item.uploadFileNames.length - 2}` : ""}
-                </div>
-                <div className="mt-0.5 text-[11px] text-muted-foreground">
-                  {Math.max(1, Math.round(item.uploadBytes / 1024)).toLocaleString()} KB
-                </div>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         <div className="fm-dialog-footer flex-wrap">
@@ -81,7 +98,7 @@ export function ImportCollisionDialog() {
             Keep both
           </Button>
           <Button type="button" onClick={() => resolveImportCollision("prefer-local")}>
-            Prefer local (deactivate Google)
+            {hasGoogle ? "Prefer local (deactivate Google)" : "Prefer new (deactivate existing)"}
           </Button>
         </div>
       </DialogContent>

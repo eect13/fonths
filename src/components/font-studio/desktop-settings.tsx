@@ -54,6 +54,7 @@ export function DesktopSettings() {
   const {
     closeToTray,
     startWithWindows,
+    startMinimized = false,
     preferStaticFaces,
     fastSessionResume,
     deleteMode = "recycle",
@@ -63,11 +64,12 @@ export function DesktopSettings() {
     void applyDesktopPrefs({
       closeToTray,
       startWithWindows,
+      startMinimized,
       preferStaticFaces,
       fastSessionResume,
       deleteMode,
     });
-  }, [closeToTray, startWithWindows, preferStaticFaces, fastSessionResume, deleteMode]);
+  }, [closeToTray, startWithWindows, startMinimized, preferStaticFaces, fastSessionResume, deleteMode]);
 
   useEffect(() => {
     if (!open) return;
@@ -139,7 +141,7 @@ export function DesktopSettings() {
       if (preview.candidates.length === 0) {
         toast.success("Providers → Google is clean — no non-Google folders found.", {
           id: "fm-purge-nongoogle",
-          description: "Your Uploads folder is kept separate and untouched.",
+          description: "Your local & watched folders are kept separate and untouched.",
         });
         return;
       }
@@ -173,7 +175,7 @@ export function DesktopSettings() {
             : `Moved ${res.removed} non-Google folder${res.removed === 1 ? "" : "s"} to Recycle Bin.`,
           {
             id: "fm-purge-nongoogle",
-            description: "Uploads folder was left untouched.",
+            description: "Local and watched folders were left untouched.",
           },
         );
       }
@@ -226,16 +228,17 @@ export function DesktopSettings() {
           </div>
         </div>
 
-        {/* Group 2: Startup & Tray (separate from GDI restore) */}
-        <div className="space-y-2">
+        {/* Group 2: Background & Startup (separate from GDI restore) */}
+        <div className="space-y-2" data-testid="background-mode-card">
           <label className="fm-settings-row flex items-center justify-between gap-3 rounded-md bg-secondary text-sm">
             <div>
-              <p className="font-medium">Close to tray</p>
+              <p className="font-medium">Run in background (Close to tray)</p>
               <p className="text-xs text-muted-foreground">
-                Keep active fonts loaded until you Quit from the tray.
+                Keep Fonths running in the tray with active fonts loaded when you close the window — avoids repeated unload/reload locks while Adobe or Word are open.
               </p>
             </div>
             <Switch
+              data-testid="run-in-background-switch"
               checked={prefs.closeToTray}
               onCheckedChange={(on) => setDesktopPrefs({ closeToTray: on })}
             />
@@ -250,6 +253,19 @@ export function DesktopSettings() {
             <Switch
               checked={prefs.startWithWindows}
               onCheckedChange={(on) => setDesktopPrefs({ startWithWindows: on })}
+            />
+          </label>
+          <label className="fm-settings-row flex items-center justify-between gap-3 rounded-md bg-secondary text-sm">
+            <div>
+              <p className="font-medium">Start minimized in background</p>
+              <p className="text-xs text-muted-foreground">
+                Start hidden in the system tray at Windows login while restoring your active fonts quietly.
+              </p>
+            </div>
+            <Switch
+              data-testid="start-minimized-switch"
+              checked={Boolean(prefs.startMinimized)}
+              onCheckedChange={(on) => setDesktopPrefs({ startMinimized: on })}
             />
           </label>
         </div>

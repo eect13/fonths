@@ -529,9 +529,13 @@ export function selectionFromSavedRule(
 }
 
 /** Convert disk origin paths under `rootPath` into MinimalFileLike entries for smart analysis. */
-export function originPathsToFileLikes(originPaths: string[], rootPath?: string): MinimalFileLike[] {
+export function originPathsToFileLikes(
+  originPaths: string[],
+  rootPath?: string,
+  originSizes?: number[],
+): MinimalFileLike[] {
   const normRoot = (rootPath ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-  return originPaths.map((fullPath) => {
+  return originPaths.map((fullPath, i) => {
     const slash = fullPath.replace(/\\/g, "/");
     const name = slash.split("/").pop() || fullPath;
     const lower = slash.toLowerCase();
@@ -539,8 +543,44 @@ export function originPathsToFileLikes(originPaths: string[], rootPath?: string)
       normRoot && lower.startsWith(`${normRoot}/`)
         ? slash.slice(normRoot.length + 1)
         : slash;
-    return { name, webkitRelativePath: rel };
+    const size = originSizes && typeof originSizes[i] === "number" ? originSizes[i] : undefined;
+    return { name, size, webkitRelativePath: rel };
   });
+}
+
+/**
+ * Deduplicate identical font files within a scanned folder batch (for example the same
+ * `(lowercase filename, non-zero size)` appearing in nested backup subfolders, or exact
+ * duplicate relative paths). Keeps the shallowest/first copy and returns dropped indices.
+ */
+export function dedupeWatchedBatch(files: MinimalFileLike[]): {
+  keptIndices: number[];
+  duplicateIndices: Set<number>;
+  duplicateCount: number;
+} {
+  const seen = new Map<string, number>();
+  const keptIndices: number[] = [];
+  const duplicateIndices = new Set<number>();
+
+  files.forEach((file, idx) => {
+    const base = (file.name || "").trim().toLowerCase();
+    const size = typeof file.size === "number" ? file.size : 0;
+    // Key by filename + size when size is known; fall back to basename when sizes match across folders
+    // only if size > 0, else distinguish by basename+relativePath only on exact same filename+size.
+    const key = size > 0 ? `${base}::${size}` : base;
+    if (seen.has(key)) {
+      duplicateIndices.add(idx);
+    } else {
+      seen.set(key, idx);
+      keptIndices.push(idx);
+    }
+  });
+
+  return {
+    keptIndices,
+    duplicateIndices,
+    duplicateCount: duplicateIndices.size,
+  };
 }
 
 /** Filter newly discovered watch-folder paths through a saved smart rule. */

@@ -6,6 +6,7 @@ export interface ImportCollisionItem {
   familyKey: string;
   familyName: string;
   googleFont: FontRecord;
+  matchSource?: "google" | "local" | "system";
   isGoogleActive: boolean;
   isGoogleOnDisk: boolean;
   uploadFileNames: string[];
@@ -39,39 +40,72 @@ export function findImportGoogleCollisions(
   activatedSet: Set<string>,
   diskFamilySet: Set<string>,
   existingLocalFonts: FontRecord[] = [],
+  existingSystemFonts: FontRecord[] = [],
 ): { collisions: ImportCollisionItem[]; collidingFileIndices: Set<number> } {
   const compactKey = (s: string) => s.trim().toLowerCase().replace(/[\s_-]+/g, "");
-  const googleByKey = new Map<string, FontRecord>();
-  for (const gf of googleFonts) {
-    const key = gf.family.trim().toLowerCase();
-    if (!googleByKey.has(key)) googleByKey.set(key, gf);
-    const cKey = compactKey(gf.family);
-    if (cKey && !googleByKey.has(cKey)) googleByKey.set(cKey, gf);
-  }
-  const localByKey = new Map<string, FontRecord>();
-  for (const lf of existingLocalFonts) {
-    const key = lf.family.trim().toLowerCase();
-    if (!localByKey.has(key)) localByKey.set(key, lf);
-    const cKey = compactKey(lf.family);
-    if (cKey && !localByKey.has(cKey)) localByKey.set(cKey, lf);
-  }
+  const indexByFamily = (list: FontRecord[]) => {
+    const map = new Map<string, FontRecord>();
+    for (const font of list) {
+      const key = font.family.trim().toLowerCase();
+      if (key && !map.has(key)) map.set(key, font);
+      const cKey = compactKey(font.family);
+      if (cKey && !map.has(cKey)) map.set(cKey, font);
+    }
+    return map;
+  };
+  const googleByKey = indexByFamily(googleFonts);
+  const localByKey = indexByFamily(existingLocalFonts);
+  const systemByKey = indexByFamily(existingSystemFonts);
 
-  const groups = new Map<string, { gf: FontRecord; indices: number[]; names: string[]; bytes: number }>();
+  const groups = new Map<
+    string,
+    {
+      gf: FontRecord;
+      matchSource: "google" | "local" | "system";
+      indices: number[];
+      names: string[];
+      bytes: number;
+    }
+  >();
   const collidingFileIndices = new Set<number>();
 
   files.forEach((file, idx) => {
     const guess = guessFamilyFromFileName(file.name).toLowerCase();
     if (!guess) return;
     const cGuess = compactKey(guess);
-    const gf =
-      googleByKey.get(guess) ??
-      googleByKey.get(cGuess) ??
-      localByKey.get(guess) ??
-      localByKey.get(cGuess);
+    const googleMatch = googleByKey.get(guess) ?? googleByKey.get(cGuess);
+    const localMatch = localByKey.get(guess) ?? localByKey.get(cGuess);
+    const systemMatch = systemByKey.get(guess) ?? systemByKey.get(cGuess);
+
+    let gf: FontRecord | undefined;
+    let matchSource: "google" | "local" | "system" = "google";
+    if (
+      googleMatch &&
+      (activatedSet.has(googleMatch.id) ||
+        diskFamilySet.has(googleMatch.family.trim().toLowerCase()))
+    ) {
+      gf = googleMatch;
+      matchSource = "google";
+    } else if (localMatch) {
+      gf = localMatch;
+      matchSource = "local";
+    } else if (googleMatch) {
+      gf = googleMatch;
+      matchSource = "google";
+    } else if (systemMatch) {
+      gf = systemMatch;
+      matchSource = "system";
+    }
     if (!gf) return;
     const canonKey = gf.family.trim().toLowerCase();
     collidingFileIndices.add(idx);
-    const existing = groups.get(canonKey) ?? { gf, indices: [], names: [], bytes: 0 };
+    const existing = groups.get(canonKey) ?? {
+      gf,
+      matchSource,
+      indices: [],
+      names: [],
+      bytes: 0,
+    };
     existing.indices.push(idx);
     existing.names.push(file.name);
     existing.bytes += file.size || 0;
@@ -84,8 +118,9 @@ export function findImportGoogleCollisions(
       familyKey,
       familyName: g.gf.family,
       googleFont: g.gf,
+      matchSource: g.matchSource,
       isGoogleActive: activatedSet.has(g.gf.id),
-      isGoogleOnDisk: diskFamilySet.has(familyKey) || g.gf.source === "local",
+      isGoogleOnDisk: diskFamilySet.has(familyKey) || g.gf.source === "local" || g.matchSource === "system",
       uploadFileNames: g.names,
       uploadBytes: g.bytes,
     });

@@ -13,6 +13,7 @@ import {
   suggestRandomIdealPair,
 } from "../src/lib/fonts/pairing.ts";
 import { findImportGoogleCollisions } from "../src/lib/fonts/import-collision.ts";
+import { dedupeWatchedBatch } from "../src/lib/fonts/import-options.ts";
 import { fontMatchesSearch, metricsFromTables, parseSearchQuery, tokenizeSearchQuery, toggleSearchToken } from "../src/lib/fonts/metrics.ts";
 import { fontFormatForFile, formatInspectorCss, formatLocalFontFace, tailwindFontVarKey } from "../src/lib/fonts/css-format.ts";
 
@@ -460,4 +461,48 @@ test("13. Fonths 2.0.0 Skia + Fontations + Windows Activator replaces DirectWrit
   assert.match(canvasTsx, /ctx\.putImageData/);
   assert.match(inspectorTsx, /<SkiaFontCanvas/);
   assert.doesNotMatch(appShellTsx, /Skia Studio/);
+});
+
+test("14. Live Skia Inspector (italic/weight/auto-height/scroll), watched dedupe+collision, and lock combat/tray prefs", () => {
+  const rendererRs = readFileSync(join(process.cwd(), "src-tauri/src/renderer.rs"), "utf8");
+  const activateRs = readFileSync(join(process.cwd(), "src-tauri/src/activate.rs"), "utf8");
+  const libRs = readFileSync(join(process.cwd(), "src-tauri/src/lib.rs"), "utf8");
+  const canvasTsx = readFileSync(join(process.cwd(), "src/components/font-studio/skia-font-canvas.tsx"), "utf8");
+  const inspectorTsx = readFileSync(join(process.cwd(), "src/components/font-studio/font-inspector.tsx"), "utf8");
+  const settingsTsx = readFileSync(join(process.cwd(), "src/components/font-studio/desktop-settings.tsx"), "utf8");
+
+  assert.match(rendererRs, /pub async fn render_font_specimen/);
+  assert.match(rendererRs, /coalesce_latest/);
+  assert.match(canvasTsx, /renderFontSpecimen/);
+  assert.match(inspectorTsx, /viewportClassName="\[&>div\]:!block \[&>div\]:min-w-0 \[&>div\]:max-w-full"/);
+  assert.match(inspectorTsx, /data-testid="inspector-italic-switch"/);
+  assert.match(inspectorTsx, /italic=\{effectiveItalicOn\}/);
+
+  // Within-folder batch deduplication (same filename + non-zero size across subfolders)
+  const deduped = dedupeWatchedBatch([
+    { name: "Inter-Regular.ttf", size: 120_000, webkitRelativePath: "A/Inter-Regular.ttf" },
+    { name: "Inter-Regular.ttf", size: 120_000, webkitRelativePath: "Backup/Inter-Regular.ttf" },
+    { name: "Inter-Bold.ttf", size: 125_000, webkitRelativePath: "A/Inter-Bold.ttf" },
+  ]);
+  assert.equal(deduped.duplicateCount, 1);
+  assert.deepEqual(deduped.keptIndices, [0, 2]);
+
+  // System + Local collision detection
+  const { collisions } = findImportGoogleCollisions(
+    [{ name: "Arial-Bold.ttf", size: 50_000 }],
+    [],
+    new Set(),
+    new Set(),
+    [],
+    [makeFont({ id: "sys:arial", family: "Arial", source: "system" })],
+  );
+  assert.equal(collisions.length, 1);
+  assert.equal(collisions[0].matchSource, "system");
+
+  // Lock combat & Background mode toggles
+  assert.match(activateRs, /fn rotated_stage_path/);
+  assert.match(activateRs, /fn copy_with_lock_retry/);
+  assert.match(libRs, /start_minimized: Option<bool>/);
+  assert.match(settingsTsx, /data-testid="run-in-background-switch"/);
+  assert.match(settingsTsx, /data-testid="start-minimized-switch"/);
 });
