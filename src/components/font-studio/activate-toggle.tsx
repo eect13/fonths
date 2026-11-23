@@ -218,15 +218,12 @@ async function activateInWaves(ids: string[], label: string) {
   const epoch = getActivateCancelEpoch();
   const desktop = await inDesktopShell();
   if (getActivateCancelEpoch() !== epoch) return;
-  // Queue pending in waves so the UI stays responsive; each wave uses setActivatedMany.
-  for (let i = 0; i < ids.length; i += ACTIVATE_WAVE) {
-    if (getActivateCancelEpoch() !== epoch) return;
-    const wave = ids.slice(i, i + ACTIVATE_WAVE);
-    useFontStore.getState().setActivatedMany(wave, true);
-    // Yield to paint progressive Live / progress owners between waves.
-    await new Promise<void>((r) => window.setTimeout(r, 0));
-    if (getActivateCancelEpoch() !== epoch) return;
-  }
+  // Dispatch the entire prefer-ordered batch in one atomic queue call (rather than 50 racing
+  // 40-font setTimeout waves) so Rust receives the full target list at once and never drops
+  // later waves when Wave 1 finishes on-disk registration in < 50ms.
+  const batch = ids.length > ACTIVATE_WAVE ? ids.slice() : ids;
+  useFontStore.getState().setActivatedMany(batch, true);
+  await new Promise<void>((r) => window.setTimeout(r, 0));
   if (getActivateCancelEpoch() !== epoch) return;
   const live = useFontStore.getState().activated.length;
   const pending = useFontStore.getState().pendingActivate.length;

@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeftRight, ChevronDown, ChevronUp, Columns2, Copy, RotateCcw, Sparkles, Square, ZoomIn } from "lucide-react";
+import { ArrowLeftRight, ChevronDown, ChevronUp, Columns2, Copy, Lock, RotateCcw, Sparkles, Square, Unlock, ZoomIn } from "lucide-react";
 import { toast } from "sonner";
 import { copyText } from "@/lib/copy-text";
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +25,8 @@ import {
   PAIRING_PRESETS,
   pickNextCompanion,
   suggestCompanionCandidates,
+  suggestHeadingCandidates,
+  suggestRandomIdealPair,
   type PairingPreset,
 } from "@/lib/fonts/pairing";
 import { AxisSliders } from "./axis-sliders";
@@ -67,6 +69,8 @@ type PlaygroundSnapshot = {
   bgColor?: string;
   zoom?: number;
   otFeatures?: Record<string, boolean>;
+  lockHeading?: boolean;
+  lockBody?: boolean;
 };
 
 function loadPlaygroundSnapshot(): PlaygroundSnapshot {
@@ -204,6 +208,8 @@ export function Playground() {
   const [otFeatures, setOtFeatures] = useState<Record<string, boolean>>(
     () => (snap.otFeatures && typeof snap.otFeatures === "object" ? snap.otFeatures : { liga: true }),
   );
+  const [lockHeading, setLockHeading] = useState(() => Boolean(snap.lockHeading));
+  const [lockBody, setLockBody] = useState(() => Boolean(snap.lockBody));
 
   // Ensure System Fonts load reactively if a saved or chosen pair uses an OS font (`s:*`).
   useEffect(() => {
@@ -261,6 +267,8 @@ export function Playground() {
       bgColor,
       zoom,
       otFeatures,
+      lockHeading,
+      lockBody,
     }),
     [
       leftId,
@@ -282,6 +290,8 @@ export function Playground() {
       bgColor,
       zoom,
       otFeatures,
+      lockHeading,
+      lockBody,
     ],
   );
 
@@ -431,31 +441,104 @@ export function Playground() {
   }
 
   function suggestCompanion() {
-    if (!left) return;
+    if (lockHeading && lockBody) {
+      toast.message("Heading and Body are both locked", {
+        id: "fm-pair-suggest",
+        description: "Unlock Heading or Body (or both) to suggest an ideal pairing.",
+      });
+      return;
+    }
     const allPool = allFonts(localFonts, googleFonts);
     const pool = allPool.length >= 2 ? allPool : activatedFonts;
-    const candidates = suggestCompanionCandidates({
-      left,
+
+    if (lockHeading && !lockBody) {
+      if (!left) return;
+      const candidates = suggestCompanionCandidates({
+        left,
+        pool,
+        activatedIds: activatedSet,
+        leftSize,
+        rightSize,
+        leftWeight: leftAxes.wght ?? leftWeight,
+      });
+      const pick = pickNextCompanion(candidates, suggestIdx, rightId);
+      if (!pick) return;
+      setSuggestIdx((n) => n + 1);
+      keepRightPresetRef.current = pick.font.id !== rightId;
+      setRightId(pick.font.id);
+      const nextWeight = pick.font.weights.includes(400) ? 400 : defaultWeightForFont(pick.font);
+      setRightWeight(nextWeight);
+      setRightAxes({
+        ...defaultAxisValues(axesForFont(pick.font), instancesForFont(pick.font)),
+        wght: nextWeight,
+      });
+      toast.message(`Paired locked ${left.family} with ${pick.font.family}`, {
+        id: "fm-pair-suggest",
+        description: `Score ${pick.score}/100 · ${pick.reason}`,
+      });
+      return;
+    }
+
+    if (!lockHeading && lockBody) {
+      if (!right) return;
+      const candidates = suggestHeadingCandidates({
+        right,
+        pool,
+        activatedIds: activatedSet,
+        leftSize,
+        rightSize,
+        rightWeight: rightAxes.wght ?? rightWeight,
+      });
+      const pick = pickNextCompanion(candidates, suggestIdx, leftId);
+      if (!pick) return;
+      setSuggestIdx((n) => n + 1);
+      keepLeftPresetRef.current = pick.font.id !== leftId;
+      setLeftId(pick.font.id);
+      const nextWeight = pick.font.weights.includes(700)
+        ? 700
+        : pick.font.weights.includes(600)
+          ? 600
+          : defaultWeightForFont(pick.font);
+      setLeftWeight(nextWeight);
+      setLeftAxes({
+        ...defaultAxisValues(axesForFont(pick.font), instancesForFont(pick.font)),
+        wght: nextWeight,
+      });
+      toast.message(`Paired ${pick.font.family} with locked ${right.family}`, {
+        id: "fm-pair-suggest",
+        description: `Score ${pick.score}/100 · ${pick.reason}`,
+      });
+      return;
+    }
+
+    // Neither locked: suggest a random ideal Heading + Body pair.
+    const pair = suggestRandomIdealPair({
       pool,
       activatedIds: activatedSet,
       leftSize,
       rightSize,
-      leftWeight: leftAxes.wght ?? leftWeight,
+      currentLeftId: leftId,
+      currentRightId: rightId,
     });
-    const pick = pickNextCompanion(candidates, suggestIdx, rightId);
-    if (!pick) return;
+    if (!pair) return;
     setSuggestIdx((n) => n + 1);
-    keepRightPresetRef.current = pick.font.id !== rightId;
-    setRightId(pick.font.id);
-    const nextWeight = pick.font.weights.includes(400) ? 400 : defaultWeightForFont(pick.font);
-    setRightWeight(nextWeight);
-    setRightAxes({
-      ...defaultAxisValues(axesForFont(pick.font), instancesForFont(pick.font)),
-      wght: nextWeight,
+    keepLeftPresetRef.current = pair.heading.id !== leftId;
+    keepRightPresetRef.current = pair.body.id !== rightId;
+    setLeftId(pair.heading.id);
+    setRightId(pair.body.id);
+    setLeftWeight(pair.headingWeight);
+    setRightWeight(pair.bodyWeight);
+    setLeftAxes({
+      ...defaultAxisValues(axesForFont(pair.heading), instancesForFont(pair.heading)),
+      wght: pair.headingWeight,
     });
-    toast.message(`Paired ${left.family} with ${pick.font.family}`, {
+    setRightAxes({
+      ...defaultAxisValues(axesForFont(pair.body), instancesForFont(pair.body)),
+      wght: pair.bodyWeight,
+    });
+    toast.message(`Ideal pair: ${pair.heading.family} + ${pair.body.family}`, {
       id: "fm-pair-suggest",
-      description: `Score ${pick.score}/100 · ${pick.reason}`,
+      description: `Score ${pair.score}/100 · ${pair.reason}`,
     });
   }
 
@@ -538,6 +621,9 @@ export function Playground() {
         >
         <PaneControls
           label="Heading"
+          locked={lockHeading}
+          onToggleLock={() => setLockHeading((v) => !v)}
+          lockTestId="lock-heading-btn"
           fontId={leftId}
           onFont={setLeftId}
           size={leftSize}
@@ -571,6 +657,9 @@ export function Playground() {
         </div>
         <PaneControls
           label="Body"
+          locked={lockBody}
+          onToggleLock={() => setLockBody((v) => !v)}
+          lockTestId="lock-body-btn"
           fontId={rightId}
           onFont={setRightId}
           size={rightSize}
@@ -621,29 +710,43 @@ export function Playground() {
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
-          {PAIRING_PRESETS.map((preset) => (
-            <Button
-              key={preset.id}
-              type="button"
-              size="sm"
-              variant="ghost"
-              className="h-6 px-2 text-[11px]"
-              title={`${preset.headingFamily} + ${preset.bodyFamily}`}
-              onClick={() => applyPreset(preset)}
-            >
-              {preset.label}
-            </Button>
-          ))}
+          <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Curated pairing presets">
+            {PAIRING_PRESETS.map((preset) => (
+              <Button
+                key={preset.id}
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-6 px-2 text-[11px]"
+                title={`${preset.headingFamily} + ${preset.bodyFamily}`}
+                onClick={() => applyPreset(preset)}
+              >
+                {preset.label}
+              </Button>
+            ))}
+          </div>
+          <span className="hidden h-3.5 w-px bg-border sm:inline-block" aria-hidden />
           <Button
             type="button"
             size="sm"
             variant="secondary"
             className="h-6 px-2 text-[11px]"
+            data-testid="suggest-pair-btn"
+            title={
+              lockHeading && lockBody
+                ? "Unlock Heading or Body to suggest a pairing"
+                : lockHeading
+                  ? `Heading locked (${left?.family ?? "Heading"}) — suggest ideal Body font`
+                  : lockBody
+                    ? `Body locked (${right?.family ?? "Body"}) — suggest ideal Heading font`
+                    : "Suggest random ideal Heading + Body pairing (lock Heading or Body to keep one fixed)"
+            }
             onClick={suggestCompanion}
           >
             <Sparkles className="size-3" />
             Suggest pair
           </Button>
+          <span className="hidden h-3.5 w-px bg-border sm:inline-block" aria-hidden />
           <Button
             type="button"
             size="sm"
@@ -865,6 +968,9 @@ export function Playground() {
 
 function PaneControls({
   label,
+  locked = false,
+  onToggleLock,
+  lockTestId,
   fontId,
   onFont,
   size,
@@ -883,6 +989,9 @@ function PaneControls({
   onAxis,
 }: {
   label: string;
+  locked?: boolean;
+  onToggleLock?: () => void;
+  lockTestId?: string;
   fontId: string;
   onFont: (id: string) => void;
   size: number;
@@ -903,7 +1012,32 @@ function PaneControls({
   return (
     <div className="space-y-2.5">
       <div className="flex items-center justify-between gap-2">
-        <Label>{label}</Label>
+        <div className="flex items-center gap-1.5">
+          <Label>{label}</Label>
+          {onToggleLock ? (
+            <button
+              type="button"
+              aria-pressed={locked}
+              aria-label={locked ? `Unlock ${label} font` : `Lock ${label} font`}
+              data-testid={lockTestId}
+              title={
+                locked
+                  ? `${label} locked — Suggest pair will keep this font and suggest an ideal companion`
+                  : `Lock ${label} font when clicking Suggest pair`
+              }
+              onClick={onToggleLock}
+              className={cn(
+                "inline-flex h-5 items-center gap-1 rounded px-1.5 text-[10px] font-medium transition-colors",
+                locked
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-secondary/80 text-muted-foreground hover:bg-secondary hover:text-foreground",
+              )}
+            >
+              {locked ? <Lock className="size-2.5" /> : <Unlock className="size-2.5" />}
+              <span>{locked ? "Locked" : "Lock"}</span>
+            </button>
+          ) : null}
+        </div>
         <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
           {size}px · LH {lineHeight.toFixed(2)} · {tracking >= 0 ? "+" : ""}
           {tracking.toFixed(2)}em

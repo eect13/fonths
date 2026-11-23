@@ -116,9 +116,24 @@ function GroupTree({
     setRenamingId(id);
   }, [isFolder]);
   const onDelete = useCallback((folder: Collection) => {
+    if (isFolder || folder.watchPath) {
+      const name = folder.name;
+      const result = useFontStore.getState().deleteCollection(folder.id, {
+        deleteFromDisk: false,
+      });
+      if (result.fonts) {
+        toast.success(
+          `Stopped watching ${name} — removed ${result.fonts.toLocaleString()} typeface${result.fonts === 1 ? "" : "s"} from Fonths`,
+          { description: "Files on disk were not modified." },
+        );
+      } else {
+        toast.success(`Stopped watching ${name}`);
+      }
+      return;
+    }
     setDeleteFromDisk(false);
     setPendingDelete(folder);
-  }, []);
+  }, [isFolder]);
   const onDragOver = useCallback((id: string, e: DragEvent) => {
     e.preventDefault();
     setOverId(id);
@@ -132,6 +147,12 @@ function GroupTree({
     setOverId(null);
     const types = Array.from(e.dataTransfer.types);
     if (types.includes("Files")) {
+      if (isFolder) {
+        toast.message("Add files directly to your watched disk folder", {
+          description: "Watched folders stay linked in place on disk and auto-sync without copying to Documents.",
+        });
+        return;
+      }
       void filesFromDataTransfer(e.dataTransfer).then(({ files }) => {
         if (files.length) void runFontImport(files, { collectionId: targetId });
       });
@@ -154,7 +175,7 @@ function GroupTree({
       return;
     }
     useFontStore.getState().moveCollection(movedId, targetId);
-  }, []);
+  }, [isFolder]);
 
   function confirmDelete() {
     if (!pendingDelete) return;
@@ -184,7 +205,7 @@ function GroupTree({
         <HelpTip
           label={
             isFolder
-              ? "Live-link a folder in place (Dropbox, Drive, Downloads) — files stay put and auto-sync. Unlike header Folder which copies files into Uploads."
+              ? "Live-link a folder in place (Dropbox, Drive, Downloads) — files stay on disk and auto-sync with smart duplicate & format detection."
               : "New collection — virtual group, files are not moved"
           }
         >
@@ -452,43 +473,32 @@ const GroupRow = memo(function GroupRow({
             </DropdownMenuItem>
           ) : null}
           {folder.watchPath ? (
-            <>
-              <DropdownMenuItem
-                onSelect={() => {
-                  const on = !folder.autoActivate;
-                  useFontStore.getState().setCollectionAutoActivate(folder.id, on);
-                  if (on && fontIds.length) useFontStore.getState().setActivatedMany(fontIds, true);
-                  toast.success(on ? "Auto-activate on" : "Auto-activate off", {
-                    description: on
-                      ? "New files in this folder activate for other apps."
-                      : "New files are listed only. Activate them yourself.",
-                  });
-                }}
-              >
-                <Power className="size-3.5" />
-                {folder.autoActivate ? "Auto-activate on" : "Auto-activate off"}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onSelect={() => {
-                  useFontStore.getState().setCollectionWatch(folder.id, undefined, false);
-                  toast.message("Moved to Collections", {
-                    description: "Stopped watching the disk. Files were never copied.",
-                  });
-                }}
-              >
-                <Layers className="size-3.5" />
-                Convert to collection
-              </DropdownMenuItem>
-            </>
+            <DropdownMenuItem
+              onSelect={() => {
+                const on = !folder.autoActivate;
+                useFontStore.getState().setCollectionAutoActivate(folder.id, on);
+                if (on && fontIds.length) useFontStore.getState().setActivatedMany(fontIds, true);
+                toast.success(on ? "Auto-activate on" : "Auto-activate off", {
+                  description: on
+                    ? "New files in this folder activate for other apps."
+                    : "New files are listed only. Activate them yourself.",
+                });
+              }}
+            >
+              <Power className="size-3.5" />
+              {folder.autoActivate ? "Auto-activate on" : "Auto-activate off"}
+            </DropdownMenuItem>
           ) : null}
           <DropdownMenuItem onSelect={() => onStartRename(folder.id)}>
             <Pencil className="size-3.5" />
             Rename
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => onNewSubfolder(folder.id)}>
-            {isFolder ? <FolderPlus className="size-3.5" /> : <Layers className="size-3.5" />}
-            {isFolder ? "New subfolder" : "New collection"}
-          </DropdownMenuItem>
+          {!isFolder ? (
+            <DropdownMenuItem onSelect={() => onNewSubfolder(folder.id)}>
+              <Layers className="size-3.5" />
+              New collection
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={() => onDelete(folder)} className="text-destructive">
             <Trash2 className="size-3.5" />

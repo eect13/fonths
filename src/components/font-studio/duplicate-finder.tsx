@@ -46,19 +46,26 @@ function DuplicateHeader({ extra }: { extra?: ReactNode }) {
     <div>
       <h1 className="font-heading text-3xl">Duplicates</h1>
       <p className="mt-1 text-sm text-muted-foreground">
-        Google Fonts is the catalog. This page lists an upload next to that catalog family, or two
-        uploads of the same file. Same size is byte-compared; a tiny patch still counts. Keep order:
-        system fonts, then Google Fonts, then uploads. System fonts cannot be deleted or deactivated.
+        Compares watched local typefaces, Google Fonts, and Windows System fonts by file checksum,
+        near-identical binary tables, and family name. Keep order: System fonts → Google Fonts →
+        largest local file.
       </p>
-      <label className="mt-3 flex items-center gap-2 text-sm">
-        <Switch checked={autoHide} onCheckedChange={setAutoHide} />
-        Auto-hide duplicates in the library
-      </label>
-      <p className="mt-1 text-xs text-muted-foreground">
-        Keeps the system font when present, else the catalog family (or the larger
-        file), hides extra uploads, and deactivates them. Activate on a catalog face
-        unloads a local of that name, and the other way around. Files stay on disk.
-      </p>
+      <div className="mt-3 rounded-lg border border-border bg-secondary/35 p-3">
+        <label className="flex cursor-pointer items-center justify-between gap-3 text-sm font-medium">
+          <span>Auto-hide &amp; deactivate duplicates</span>
+          <Switch
+            checked={autoHide}
+            onCheckedChange={setAutoHide}
+            data-testid="auto-hide-duplicates-switch"
+            aria-label="Auto-hide duplicates in the library"
+          />
+        </label>
+        <p className="mt-1 text-xs text-muted-foreground">
+          When enabled, hides redundant duplicates in the library and immediately deactivates any
+          active duplicate faces. Turning this switch off restores visibility without changing
+          activation state.
+        </p>
+      </div>
       {extra}
     </div>
   );

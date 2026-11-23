@@ -325,11 +325,14 @@ function commitReadyFamilies(names: string[]): Promise<void> {
   });
 }
 
+let activeGoogleDispatchCount = 0;
+
 /** Flush ready marks (await markLiveActivated) then clear pending — never clear first.
  * Pass familyNames to scope the clear (mixed Activate All: google on-disk finish must not wipe local install-queue pending).
  * With no names, clear pending Google fonts only — never a nuclear clearPendingActivate(). */
 async function finalizeReadyAndClearPending(familyNames?: string[]) {
   await flushReadyFamilies();
+  if (activeGoogleDispatchCount > 0) return;
   resetReadyBatching();
   if (familyNames?.length) {
     await clearPendingForFamilyNames(familyNames);
@@ -2610,6 +2613,7 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
     });
     let added = 0;
     let startFailed = false;
+    activeGoogleDispatchCount += 1;
     startGooglePoll("download");
     try {
       added = await tauriInvoke<number>("start_google_downloads", { families: names, intents });
@@ -2617,6 +2621,8 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
       // Invoke fail/timeout — fall back to sync on-disk register (no false live).
       startFailed = true;
       added = 0;
+    } finally {
+      activeGoogleDispatchCount = Math.max(0, activeGoogleDispatchCount - 1);
     }
     if (myBatch !== batchId) return;
     if (!added) {

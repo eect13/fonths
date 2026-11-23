@@ -17,6 +17,7 @@ export interface SavedImportRule {
   includeItalic: boolean;
   formats: Record<FontFileFormat, boolean>;
   autoActivate: boolean;
+  excludeFamilies?: string[];
 }
 
 const SAVED_RULE_KEY = "fonths:import-smart-prefs-v1";
@@ -554,8 +555,16 @@ export function filterOriginPathsByRule(
   const analysis = analyzeImportBatch(likes, existingLocalFonts);
   const selection = selectionFromSavedRule(analysis, rule);
   const filtered = filterImportFiles(likes, analysis, selection);
+  const excluded = new Set((rule.excludeFamilies ?? []).map((f) => f.trim().toLowerCase()));
   const keptIndices = new Set(
-    filtered.files.map((item) => likes.indexOf(item)).filter((i) => i >= 0),
+    filtered.files
+      .map((item) => likes.indexOf(item))
+      .filter((i) => {
+        if (i < 0) return false;
+        if (!excluded.size) return true;
+        const classified = analysis.files[i];
+        return !classified || !excluded.has(classified.familyKey.toLowerCase());
+      }),
   );
   return originPaths.filter((_, i) => keptIndices.has(i));
 }

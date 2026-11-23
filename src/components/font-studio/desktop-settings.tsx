@@ -335,7 +335,7 @@ export function DesktopSettings() {
                 : "DirectWrite font inspection with session-only activation. System Fonts remain protected."}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Google: {googleCount.toLocaleString()} catalog · Uploads: {uploadCount.toLocaleString()} · On disk: {diskCount.toLocaleString()} · Active: {liveCount.toLocaleString()}
+              Google: {googleCount.toLocaleString()} catalog · Watched: {uploadCount.toLocaleString()} · On disk: {diskCount.toLocaleString()} · Active: {liveCount.toLocaleString()}
               {gdiState
                 ? ` · GDI: ${gdiState.liveFaceCount.toLocaleString()} faces (${gdiState.gdiObjects.toLocaleString()} / ${gdiState.gdiQuota.toLocaleString()} handles)`
                 : ""}
@@ -362,17 +362,6 @@ export function DesktopSettings() {
             >
               <FolderOpen className="size-3.5 mr-1" />
               Providers\Google
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              aria-label="Open Uploads folder"
-              data-testid="open-uploads-folder-btn"
-              onClick={() => void openActivatedFolder("uploads")}
-            >
-              <FolderOpen className="size-3.5 mr-1" />
-              Uploads
             </Button>
             <Button
               type="button"

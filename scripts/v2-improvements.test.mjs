@@ -5,7 +5,14 @@ import test from "node:test";
 import { GOOGLE_SUBDIR, UPLOADS_SUBDIR, documentsFamilyFolder, documentsFamilySubpath } from "../src/lib/fonts/family-folder.ts";
 import { axisStep, previewAxisValues, variationStyle, vfStyleDescriptor } from "../src/lib/fonts/axes.ts";
 import { inferLocalStyle, parseTagInput, tagsForGoogleFamily } from "../src/lib/fonts/style-tags.ts";
-import { computePairingMatrix, pickNextCompanion, suggestCompanionCandidates } from "../src/lib/fonts/pairing.ts";
+import {
+  computePairingMatrix,
+  pickNextCompanion,
+  suggestCompanionCandidates,
+  suggestHeadingCandidates,
+  suggestRandomIdealPair,
+} from "../src/lib/fonts/pairing.ts";
+import { findImportGoogleCollisions } from "../src/lib/fonts/import-collision.ts";
 import { fontMatchesSearch, metricsFromTables, parseSearchQuery, tokenizeSearchQuery, toggleSearchToken } from "../src/lib/fonts/metrics.ts";
 import { fontFormatForFile, formatInspectorCss, formatLocalFontFace, tailwindFontVarKey } from "../src/lib/fonts/css-format.ts";
 
@@ -311,4 +318,90 @@ test("10. Live Google Fonts command, upload Pause/Resume/Cancel, and cleaned rem
   assert.match(osActivate, /export function cancelUploadDiskQueue/);
   assert.match(dropzone, /data-testid="upload-pause-resume"/);
   assert.match(dropzone, /data-testid="upload-cancel"/);
+});
+
+test("11. Suggest pair supports Lock Heading, Lock Body, and unlocked random ideal pairings", () => {
+  const heading = makeFont({
+    id: "h1",
+    family: "Playfair Display",
+    category: "serif",
+    weights: [400, 700],
+    script: "latin",
+    popularity: 10,
+  });
+  const body = makeFont({
+    id: "b1",
+    family: "Inter",
+    category: "sans",
+    weights: [400, 500, 700],
+    script: "latin",
+    popularity: 1,
+  });
+  const pool = [
+    heading,
+    body,
+    makeFont({ id: "h2", family: "Fraunces", category: "serif", weights: [400, 700], script: "latin", popularity: 25 }),
+    makeFont({ id: "b2", family: "Source Sans 3", category: "sans", weights: [400, 600], script: "latin", popularity: 15 }),
+    makeFont({ id: "m1", family: "JetBrains Mono", category: "mono", weights: [400, 700], script: "latin", popularity: 20 }),
+  ];
+
+  // Body locked: suggest ideal Heading candidates for Inter
+  const headingCands = suggestHeadingCandidates({
+    right: body,
+    pool,
+    activatedIds: new Set(["h1"]),
+    leftSize: 48,
+    rightSize: 18,
+    rightWeight: 400,
+  });
+  assert.ok(headingCands.length >= 3);
+  assert.equal(headingCands[0].font.id, "h1");
+  assert.ok(headingCands[0].score >= 80);
+
+  // Neither locked: suggest a random ideal Heading + Body pair avoiding current pair
+  const randomPair = suggestRandomIdealPair({
+    pool,
+    activatedIds: new Set(["h1", "b1"]),
+    leftSize: 48,
+    rightSize: 18,
+    currentLeftId: "h1",
+    currentRightId: "b1",
+    randomFn: () => 0,
+  });
+  assert.ok(randomPair);
+  assert.notEqual(randomPair.heading.id, "h1");
+  assert.notEqual(randomPair.body.id, randomPair.heading.id);
+  assert.ok(randomPair.score >= 70);
+});
+
+test("12. Watched folders run smart duplicate collision detection and stop watching without converting to Collections", () => {
+  const googleFonts = [makeFont({ id: "g:Inter", family: "Inter", source: "google" })];
+  const localFonts = [makeFont({ id: "l-custom", family: "avenir next", source: "local" })];
+  const likes = [
+    { name: "Inter-Regular.ttf", size: 120000 },
+    { name: "AvenirNext-Bold.otf", size: 90000 },
+    { name: "BrandUnique-Regular.ttf", size: 80000 },
+  ];
+  const { collisions, collidingFileIndices } = findImportGoogleCollisions(
+    likes,
+    googleFonts,
+    new Set(["g:Inter"]),
+    new Set(["inter"]),
+    localFonts,
+  );
+  assert.equal(collisions.length, 2);
+  assert.equal(collidingFileIndices.has(0), true);
+  assert.equal(collidingFileIndices.has(1), true);
+  assert.equal(collidingFileIndices.has(2), false);
+
+  const watchTs = readFileSync(join(process.cwd(), "src/lib/fonts/watch-folder.ts"), "utf8");
+  const folderTreeTsx = readFileSync(join(process.cwd(), "src/components/font-studio/folder-tree.tsx"), "utf8");
+  const appShellTsx = readFileSync(join(process.cwd(), "src/components/font-studio/app-shell.tsx"), "utf8");
+  const settingsTsx = readFileSync(join(process.cwd(), "src/components/font-studio/desktop-settings.tsx"), "utf8");
+
+  assert.match(watchTs, /findImportGoogleCollisions/);
+  assert.match(watchTs, /requestImportCollisionChoice/);
+  assert.doesNotMatch(folderTreeTsx, /Convert to collection/);
+  assert.doesNotMatch(appShellTsx, /Upload folder \(Copy\)/);
+  assert.doesNotMatch(settingsTsx, /open-uploads-folder-btn/);
 });

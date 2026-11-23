@@ -825,9 +825,11 @@ export const useFontStore = create<FontState>()(
       },
       markLiveActivated: (ids) => {
         if (!ids.length) return;
-        const pending = get().pendingSet;
+        const pendingDeact = get().pendingDeactivateSet;
         const live = get().activatedSet;
-        const add = ids.filter((id) => pending.has(id) && !live.has(id));
+        // Accept any authoritative ready ID from Rust that is not already live or pending-deactivate
+        // (even if a prior wave's poll completion cleared pendingSet early).
+        const add = ids.filter((id) => !live.has(id) && !pendingDeact.has(id));
         if (!add.length) {
           const leftover = get().pendingActivate.filter((id) => !ids.includes(id) || live.has(id));
           if (leftover.length !== get().pendingActivate.length) set(withPending(leftover));
@@ -1039,12 +1041,24 @@ export const useFontStore = create<FontState>()(
       setSystemBusy: (value) => set({ systemBusy: value }),
       setAutoHideDuplicates: (on) => {
         if (!on) {
+          // Toggle OFF: restore visibility and do nothing to activation state.
           set({ autoHideDuplicates: false, duplicateHideIds: [] });
           return;
         }
-        const hide = familyDuplicateHideIds(get().localFonts, get().googleFonts, get().systemFonts);
+        const s = get();
+        const hide = familyDuplicateHideIds(s.localFonts, s.googleFonts, s.systemFonts);
         set({ autoHideDuplicates: true, duplicateHideIds: hide });
         if (hide.length) get().setActivatedMany(hide, false);
+        void findDuplicates(s.localFonts, s.googleFonts, s.systemFonts)
+          .then((groups) => {
+            if (!get().autoHideDuplicates) return;
+            const merged = Array.from(
+              new Set([...get().duplicateHideIds, ...hideIdsFromDuplicateGroups(groups)]),
+            );
+            set({ duplicateHideIds: merged });
+            if (merged.length) get().setActivatedMany(merged, false);
+          })
+          .catch(() => undefined);
       },
       addCollection: (name, parentId = null) => {
         const id = uid("c");
@@ -1111,7 +1125,13 @@ export const useFontStore = create<FontState>()(
         const remaining = s.localFonts.filter((f) => !removeLocal.has(f.id));
         const keepFamilies = new Set(remaining.map((f) => f.family.toLowerCase()));
         set({
-          collections: s.collections.filter((c) => !folderIds.has(c.id)),
+          collections: s.collections
+            .filter((c) => !folderIds.has(c.id))
+            .map((c) =>
+              removeLocal.size && c.fontIds.some((fid) => removeLocal.has(fid))
+                ? { ...c, fontIds: c.fontIds.filter((fid) => !removeLocal.has(fid)) }
+                : c,
+            ),
           localFonts: remaining,
           favorites: s.favorites.filter((x) => !removeLocal.has(x)),
           ...withActivated(s.activated.filter((x) => !removeLocal.has(x))),
@@ -1561,36 +1581,64 @@ export const useFontStore = create<FontState>()(
               added += 1;
             }
             if (waveRecords.length) {
-              if (collectionId) {
-                const exists = get().collections.some((c) => c.id === collectionId);
-                if (!exists) collectionId = undefined;
+              if (opts?.collectionId) {
+                const target = get().collections.find((c) => c.id === opts.collectionId);
+                // If this watched folder was stopped/deleted while indexing was in flight,
+                // abort immediately — never recreate it as an unwatched Collection!
+                if (!target) {
+                  break;
+                }
+                collectionId = target.id;
               }
               set((s) => {
                 let collections = s.collections.slice();
-                const parentName = collectionId
-                  ? collections.find((c) => c.id === collectionId)?.name
+                const targetFolder = collectionId
+                  ? collections.find((c) => c.id === collectionId)
                   : undefined;
+                if (opts?.collectionId && !targetFolder) {
+                  return s;
+                }
                 let rootId = collectionId ?? null;
-                for (const record of waveRecords) {
-                  let names = folderPathForOrigin(record.originPath ?? "", opts?.collectionName);
-                  if (collectionId && parentName && names[0] === parentName) names = names.slice(1);
-                  if (!names.length && opts?.collectionName && !collectionId) names = [opts.collectionName];
-                  if (!names.length && !collectionId) continue;
-                  const nested = ensureFolderPath(collections, collectionId ?? null, names);
-                  collections = nested.collections;
-                  const leaf = nested.leafId;
-                  if (!rootId && names.length) {
-                    const top = collections.find(
-                      (c) => c.name === names[0] && (c.parentId ?? null) === null,
-                    );
-                    rootId = top?.id ?? leaf;
-                  }
-                  if (leaf) {
-                    collections = collections.map((c) =>
-                      c.id === leaf
-                        ? { ...c, fontIds: Array.from(new Set([...c.fontIds, record.id])) }
-                        : c,
-                    );
+                if (targetFolder?.watchPath) {
+                  // Watched folder: link all wave records directly into the watched folder node
+                  // without creating unwatched sub-collection entries.
+                  collections = collections.map((c) =>
+                    c.id === targetFolder.id
+                      ? { ...c, fontIds: Array.from(new Set([...c.fontIds, ...waveIds])) }
+                      : c,
+                  );
+                  rootId = targetFolder.id;
+                } else {
+                  const parentName = targetFolder?.name;
+                  for (const record of waveRecords) {
+                    let names = folderPathForOrigin(record.originPath ?? "", opts?.collectionName);
+                    if (
+                      collectionId &&
+                      parentName &&
+                      names[0]?.toLowerCase() === parentName.toLowerCase()
+                    ) {
+                      names = names.slice(1);
+                    }
+                    if (!names.length && opts?.collectionName && !collectionId) {
+                      names = [opts.collectionName];
+                    }
+                    if (!names.length && !collectionId) continue;
+                    const nested = ensureFolderPath(collections, collectionId ?? null, names);
+                    collections = nested.collections;
+                    const leaf = nested.leafId;
+                    if (!rootId && names.length) {
+                      const top = collections.find(
+                        (c) => c.name === names[0] && (c.parentId ?? null) === null,
+                      );
+                      rootId = top?.id ?? leaf;
+                    }
+                    if (leaf) {
+                      collections = collections.map((c) =>
+                        c.id === leaf
+                          ? { ...c, fontIds: Array.from(new Set([...c.fontIds, record.id])) }
+                          : c,
+                      );
+                    }
                   }
                 }
                 collectionId = rootId ?? collectionId;
@@ -1973,21 +2021,29 @@ export function familyDuplicateHideIds(
   googleFonts: FontRecord[],
   systemFonts: FontRecord[] = [],
 ): string[] {
-  const catalog = new Set(
-    [...googleFonts, ...systemFonts].map((f) => f.family.toLowerCase()),
-  );
-  const seen = new Set<string>();
-  const hide: string[] = [];
-  for (const font of localFonts) {
-    const key = font.family.toLowerCase();
-    if (catalog.has(key) || seen.has(key)) hide.push(font.id);
-    else seen.add(key);
+  const systemSet = new Set(systemFonts.map((f) => f.family.trim().toLowerCase()).filter(Boolean));
+  const googleSet = new Set(googleFonts.map((f) => f.family.trim().toLowerCase()).filter(Boolean));
+  const catalog = new Set([...googleSet, ...systemSet]);
+  const seenFamily = new Set<string>();
+  const seenHash = new Set<string>();
+  const hide = new Set<string>();
+  for (const gf of googleFonts) {
+    const key = gf.family.trim().toLowerCase();
+    if (key && systemSet.has(key)) hide.add(gf.id);
   }
-  return hide;
+  for (const font of localFonts) {
+    const key = font.family.trim().toLowerCase();
+    const hash = font.checksum?.trim();
+    const isHashDup = Boolean(hash && seenHash.has(hash));
+    if (hash) seenHash.add(hash);
+    if (isHashDup || catalog.has(key) || seenFamily.has(key)) hide.add(font.id);
+    else if (key) seenFamily.add(key);
+  }
+  return [...hide];
 }
 
 export function hideIdsFromDuplicateGroups(groups: DuplicateGroup[]): string[] {
-  const hide: string[] = [];
+  const hide = new Set<string>();
   for (const group of groups) {
     const keep =
       group.fonts.find((f) => f.source === "system") ??
@@ -1995,10 +2051,10 @@ export function hideIdsFromDuplicateGroups(groups: DuplicateGroup[]): string[] {
       [...group.fonts].sort((a, b) => (b.fileSize ?? 0) - (a.fileSize ?? 0))[0];
     if (!keep) continue;
     for (const font of group.fonts) {
-      if (font.id !== keep.id && font.source === "local") hide.push(font.id);
+      if (font.id !== keep.id && font.source !== "system") hide.add(font.id);
     }
   }
-  return hide;
+  return [...hide];
 }
 
 function sourceRank(source: FontRecord["source"]) {
@@ -2318,14 +2374,35 @@ export function folderDeleteImpact(
     collections.filter((c) => !folderIdSet.has(c.id)).flatMap((c) => c.fontIds),
   );
   const inDeleted = new Set<string>();
+  const deletedWatchRoots: string[] = [];
   for (const c of collections) {
-    if (folderIdSet.has(c.id)) c.fontIds.forEach((fontId) => inDeleted.add(fontId));
+    if (folderIdSet.has(c.id)) {
+      c.fontIds.forEach((fontId) => inDeleted.add(fontId));
+      if (c.watchPath) {
+        deletedWatchRoots.push(c.watchPath.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase());
+      }
+    }
   }
+  const underDeletedWatch = (originPath: string | undefined): boolean => {
+    if (!originPath || !deletedWatchRoots.length) return false;
+    const normOrigin = originPath.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+    return deletedWatchRoots.some((root) => normOrigin === root || normOrigin.startsWith(`${root}/`));
+  };
   const localSet = new Set(localFonts.map((f) => f.id));
-  const localFontIds = [...inDeleted].filter((fontId) => localSet.has(fontId) && !remainingIds.has(fontId));
+  const localFontIds = new Set<string>(
+    [...inDeleted].filter((fontId) => localSet.has(fontId) && !remainingIds.has(fontId)),
+  );
+  // Any font linked from a stopped watched folder must be removed completely from Fonths.
+  if (deletedWatchRoots.length) {
+    for (const f of localFonts) {
+      if (underDeletedWatch(f.originPath) || (inDeleted.has(f.id) && deletedWatchRoots.length > 0)) {
+        localFontIds.add(f.id);
+      }
+    }
+  }
   return {
     folderIds,
-    localFontIds,
+    localFontIds: [...localFontIds],
     folderName: collections.find((c) => c.id === id)?.name ?? "Folder",
   };
 }

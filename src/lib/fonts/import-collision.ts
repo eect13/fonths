@@ -34,15 +34,26 @@ export function guessFamilyFromFileName(fileName: string): string {
 }
 
 export function findImportGoogleCollisions(
-  files: File[],
+  files: Array<{ name: string; size?: number }>,
   googleFonts: FontRecord[],
   activatedSet: Set<string>,
   diskFamilySet: Set<string>,
+  existingLocalFonts: FontRecord[] = [],
 ): { collisions: ImportCollisionItem[]; collidingFileIndices: Set<number> } {
+  const compactKey = (s: string) => s.trim().toLowerCase().replace(/[\s_-]+/g, "");
   const googleByKey = new Map<string, FontRecord>();
   for (const gf of googleFonts) {
     const key = gf.family.trim().toLowerCase();
     if (!googleByKey.has(key)) googleByKey.set(key, gf);
+    const cKey = compactKey(gf.family);
+    if (cKey && !googleByKey.has(cKey)) googleByKey.set(cKey, gf);
+  }
+  const localByKey = new Map<string, FontRecord>();
+  for (const lf of existingLocalFonts) {
+    const key = lf.family.trim().toLowerCase();
+    if (!localByKey.has(key)) localByKey.set(key, lf);
+    const cKey = compactKey(lf.family);
+    if (cKey && !localByKey.has(cKey)) localByKey.set(cKey, lf);
   }
 
   const groups = new Map<string, { gf: FontRecord; indices: number[]; names: string[]; bytes: number }>();
@@ -51,14 +62,20 @@ export function findImportGoogleCollisions(
   files.forEach((file, idx) => {
     const guess = guessFamilyFromFileName(file.name).toLowerCase();
     if (!guess) return;
-    const gf = googleByKey.get(guess);
+    const cGuess = compactKey(guess);
+    const gf =
+      googleByKey.get(guess) ??
+      googleByKey.get(cGuess) ??
+      localByKey.get(guess) ??
+      localByKey.get(cGuess);
     if (!gf) return;
+    const canonKey = gf.family.trim().toLowerCase();
     collidingFileIndices.add(idx);
-    const existing = groups.get(guess) ?? { gf, indices: [], names: [], bytes: 0 };
+    const existing = groups.get(canonKey) ?? { gf, indices: [], names: [], bytes: 0 };
     existing.indices.push(idx);
     existing.names.push(file.name);
     existing.bytes += file.size || 0;
-    groups.set(guess, existing);
+    groups.set(canonKey, existing);
   });
 
   const collisions: ImportCollisionItem[] = [];
@@ -68,7 +85,7 @@ export function findImportGoogleCollisions(
       familyName: g.gf.family,
       googleFont: g.gf,
       isGoogleActive: activatedSet.has(g.gf.id),
-      isGoogleOnDisk: diskFamilySet.has(familyKey),
+      isGoogleOnDisk: diskFamilySet.has(familyKey) || g.gf.source === "local",
       uploadFileNames: g.names,
       uploadBytes: g.bytes,
     });

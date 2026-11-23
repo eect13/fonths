@@ -24,22 +24,34 @@ Active fonts use **session-only** staging under `%LOCALAPPDATA%\Fonths\gdi-maps`
 
 ## Highlights
 
-- **Automatic Fast GDI Session Restore & Authoritative State Management:** Fast GDI session restore is enabled automatically on reopen (`gdi-maps` pre-staged zero-copy re-Add, configurable in Settings), strictly deduplicates and bounds restore progress (`done ≤ total ≤ library count`), tracks live GDI families/faces/handles authoritatively in Rust (`gdi_session_state`), and cleanly unloads everything on exit without touching `C:\Windows\Fonts`.
+- **Instant Startup Activation State & Automatic Fast GDI Session Restore:** Restores your saved activation state immediately on frame 0 (`< 10 ms`) and flushes active families on window close (`beforeunload` / `pagehide`), while Fast GDI session restore (`gdi-maps` pre-staged zero-copy re-Add, configurable in Settings) verifies and registers session faces in the background with strictly bounded progress (`done ≤ total ≤ library count`) and authoritative Rust GDI tracking (`gdi_session_state`).
+- **Atomic Bulk Google Fonts Activation:** `Activate All` dispatches one prefer-ordered queue (`selected → favorites → visible → first-page → recent → remainder`) and clears transient `.web-build` markers on variable-font-primary folders before stamping `.complete`, preventing partial wave drops or false `Incomplete` flags.
 - **Up-to-Date Shipped Google Fonts Catalog (1,961 Families):** Ships the latest Google Fonts metadata snapshot (`1,961` families, `567` variable) out of the box—no immediate catalog update prompt on a fresh install—with optional live CDN revision sync and **Purge non-Google** cleanup.
 - **DirectWrite System Font Inspection (`windows 0.61`):** Read-only enumeration of `C:\Windows\Fonts` in ~1.7 ms, plus targeted partial-read SFNT parsing (`fast_parse.rs`, ~22× faster metadata reads) and multi-threaded indexing (`std::thread::scope`).
-- **Clean FontBase-Style Folder Layout:**
+- **In-Place Watched Folders & Clean Provider Layout:**
   - `Documents\Fonths\Providers\Google` — Downloaded Google Fonts catalog (with live CDN revision tracking & **Purge non-Google** cleanup)
-  - `Documents\Fonths\Uploads` — Local copied fonts
-  - **Watched Folders** — Live-linked external folders (Dropbox, Drive, Downloads) where files stay in place and auto-sync
-- **Smart Local & Watch Folder Import:** Automatically detects when the same family has both **Variable** and **Static** files (in the dropped folder or already in your library), offers **Variable only (Recommended)** / **Static only** / **Both**, smart kind/format checkboxes (auto-unchecking web-only `WOFF`/`WOFF2` when desktop `TTF`/`OTF` are present), and persists smart rules per watched folder.
+  - **Watched Folders** — Live-linked external folders (Dropbox, Drive, Downloads) where files stay strictly in place on disk (no internal `Uploads` folder copy) and auto-sync; stopping watching a folder removes it and its linked typefaces cleanly from Fonths without converting it into a Collection.
+- **Smart Duplicate & Variable/Static Detection on Watched Folders:** Automatically detects when a watched folder contains both **Variable** and **Static** files or collides with existing Google Fonts / library families, prompting **Variable only (Recommended)** / **Static only** / **Both** and **Skip colliding** / **Keep both** / **Prefer local (deactivate Google)**.
 - **Zero Unrequested Downloads:** `Google Fonts → ... → Activate all` never pre-downloads before confirmation, `Cancel` / `Esc` starts nothing, and in-flight cancellation stops downloads immediately.
 - **Built for 100,000+ Fonts:** Virtual scroll height scaling, `O(1)` LRU WebView preview caching with Blob URL revocation, `O(1)` `scan-index.json` stamp caching on boot, inverted trigram SuperSearch, and parallel 8-thread quit unloading.
 - **Full Typography Studio:**
-  - **Live Playground:** Split/Single viewport, collapsible scrollable top controls, variable font axes, Ink/Paper color pickers, zoom, OpenType feature pills (`liga`, `dlig`, `smcp`, `tnum`, `onum`, `zero`, `frac`, `ss01`), and pairing presets.
+  - **Live Playground with Lockable `Suggest pair`:** Lock **Heading** to cycle ideal **Body** companions, lock **Body** to cycle ideal **Heading** companions, or leave both unlocked for random high-contrast ideal pairings—plus Split/Single viewport, collapsible controls, variable font axes, Ink/Paper color pickers, zoom, and OpenType feature pills (`liga`, `dlig`, `smcp`, `tnum`, `onum`, `zero`, `frac`, `ss01`).
   - **Glyphs & Inspector:** Character map, variable/slant sliders, OpenType switches, metadata-driven style tags, and license details.
-  - **Duplicates Finder:** Fast `O(N)` detection of identical bytes, same-family local duplicates, and Google/System overlaps.
+  - **Duplicates Finder:** Fast `O(N)` detection of identical bytes, same-family local duplicates, and Google/System overlaps; enabling **Auto-hide & deactivate duplicates** hides and deactivates redundant duplicate faces, while turning it off restores visibility without altering activation state.
   - **Notification Center & Desktop Context Menus:** Scrollable notification history with burst-coalescing toast protection and right-click menus on font cards.
   - **Smart Deletion:** Configurable **Recycle Bin** vs. **Permanent Delete**, with automatic permanent cleanup for temporary/stage files.
+
+---
+
+## Font Engine Comparison: FontBase vs. MainType vs. NexusFont vs. Fonths
+
+| Architecture Dimension | FontBase | MainType (High-Logic) | NexusFont | **Fonths 1.0.0** |
+| --- | --- | --- | --- | --- |
+| **Runtime & UI** | Electron (Chromium + Node.js) | Native C++ / Win32 + `FmsService` | Native Delphi / Win32 | **Tauri v2 (Rust) + DirectWrite + React 19** |
+| **Watched / Local Folders** | Copies or links into `~/FontBase`; provider folders under `Providers/Google` | SQLite vault + synced disk folders | Strictly in-place folder references (`fontlist.dat`) | **Strictly in-place Watched Folders (zero `Uploads` duplication) + `Providers\Google`** |
+| **Startup Activation State** | Instant JSON state hydrate on frame 0 (`< 50 ms`) | Persistent Windows service keeps fonts live across app restarts | Fast binary index + background `AddFontResourceExW` | **Instant frame-0 state restore + zero-copy `gdi-maps` parallel re-Add** |
+| **Bulk Activation Queue** | Single batched provider queue | Service-managed transactional batch | Batched `AddFontResourceExW` + single trailing `WM_FONTCHANGE` | **Single atomic prefer-ordered queue + coalesced `WM_FONTCHANGE`** |
+| **Metadata & System Scan** | FreeType / JS parser | Native SFNT + SQLite cache | GDI / FreeType | **DirectWrite (`~1.7 ms` system scan) + partial-read `fast_parse.rs` (`~22×` faster)** |
 
 ---
 

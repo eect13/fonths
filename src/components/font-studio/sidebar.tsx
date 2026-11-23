@@ -13,7 +13,6 @@ import {
   RefreshCw,
   Tag,
   Type,
-  Upload,
   User,
   Monitor,
   FolderOpen,
@@ -287,7 +286,7 @@ export function Sidebar({
             <SidebarRow
               active={scope === "uploaded"}
               onClick={() => go("uploaded")}
-              icon={<Upload className="size-4 shrink-0" />}
+              icon={<FolderOpen className="size-4 shrink-0" />}
               label="Local Files"
               count={localFonts.length}
               mainProps={{ "aria-label": "Local Files" }}

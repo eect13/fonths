@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { Code2, Copy, FolderUp, Grid3x3, HelpCircle, Library, Menu, Search, SplitSquareHorizontal, Upload, X } from "lucide-react";
+import { Code2, Copy, Grid3x3, HelpCircle, Library, Menu, Search, SplitSquareHorizontal, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -30,7 +30,6 @@ import { ActivateConfirmDialog, DeactivateConfirmDialog } from "./activate-confi
 import { ImportCollisionDialog } from "./import-collision-dialog";
 import { ImportOptionsDialog } from "./import-options-dialog";
 import { runFontImport } from "./import-fonts";
-import { pickFontFiles, pickFontFolder } from "@/lib/desktop/open-fonts";
 import { useHydrateFonts } from "@/lib/fonts/hydrate";
 import { useFontStore } from "@/lib/fonts/store";
 import { cn } from "@/lib/utils";
@@ -125,34 +124,6 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
       window.removeEventListener("contextmenu", onGlobalContextMenu);
     };
   }, []);
-
-  async function addFiles() {
-    try {
-      const picked = await pickFontFiles();
-      if (picked === "web") {
-        fileRef.current?.click();
-        return;
-      }
-      if (picked.length) void runFontImport(picked);
-    } catch {
-      fileRef.current?.click();
-    }
-  }
-
-  async function addFolder() {
-    try {
-      const picked = await pickFontFolder();
-      if (picked === "web") {
-        folderRef.current?.click();
-        return;
-      }
-      if (picked?.files.length) {
-        void runFontImport(picked.files, { collectionName: picked.name });
-      }
-    } catch {
-      folderRef.current?.click();
-    }
-  }
 
   return (
     <TooltipProvider delayDuration={220}>
@@ -285,23 +256,6 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
                 CSS
               </Button>
             </HelpTip>
-            <HelpTip label="Upload font files — copies into Documents → Fonths → Uploads">
-              <Button
-                size="sm"
-                variant="secondary"
-                className="h-8 px-2.5"
-                onClick={() => void addFiles()}
-              >
-                <Upload />
-                Files
-              </Button>
-            </HelpTip>
-            <HelpTip label="Upload folder (Copy) — copies fonts into Documents → Fonths → Uploads (use Watched Folders in the sidebar to link a folder live)">
-              <Button size="sm" className="h-8 px-2.5" onClick={() => void addFolder()}>
-                <FolderUp />
-                Folder
-              </Button>
-            </HelpTip>
           </div>
           <div className="col-span-2 flex items-center justify-end gap-0.5 sm:hidden">
             <ThemeToggle />
@@ -310,25 +264,6 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
             <HelpTip label="Export CSS">
               <Button size="icon-sm" variant="secondary" aria-label="Export CSS" onClick={() => setCssOpen(true)}>
                 <Code2 />
-              </Button>
-            </HelpTip>
-            <HelpTip label="Upload files">
-              <Button
-                size="icon-sm"
-                variant="secondary"
-                aria-label="Add font files"
-                onClick={() => void addFiles()}
-              >
-                <Upload />
-              </Button>
-            </HelpTip>
-            <HelpTip label="Upload a folder">
-              <Button
-                size="icon-sm"
-                aria-label="Add font folder"
-                onClick={() => void addFolder()}
-              >
-                <FolderUp />
               </Button>
             </HelpTip>
           </div>

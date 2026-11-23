@@ -569,6 +569,13 @@ fn consolidate_legacy_roots_in(root: &Path, cancel: Option<&AtomicBool>) -> u32 
             let _ = fs::remove_dir(&legacy_parent);
         }
     }
+    let uploads_dir = root.join(UPLOADS_CONTAINER);
+    if fs::read_dir(&uploads_dir)
+        .map(|mut it| it.next().is_none())
+        .unwrap_or(false)
+    {
+        let _ = fs::remove_dir(&uploads_dir);
+    }
     moved
 }
 
@@ -6675,6 +6682,14 @@ fn commit_vf_primary_after_successful_add(app: &AppHandle, family: &str) -> (usi
         if !dir_vf_primary_ready(&dir, family) || !vf_primary_purge_safe_for_dir(&dir, family) {
             continue;
         }
+        // Fast-path: already pure VF with .complete and not flagged .web-build — skip 6 directory walks.
+        if fast_session_resume()
+            && dir_is_pure_variable_font(&dir)
+            && dir_is_complete(&dir)
+            && !gfsource::dir_is_web_build(&dir)
+        {
+            continue;
+        }
         // Collect intact vars → planned vars-only, then purge statics.
         let mut vars = Vec::new();
         let mut files = Vec::new();
@@ -6691,6 +6706,10 @@ fn commit_vf_primary_after_successful_add(app: &AppHandle, family: &str) -> (usi
             continue;
         }
         write_google_planned(&dir, &vars);
+        // Clear any transient .web-build marker from auxiliary CSS2 fallback statics BEFORE
+        // calling mark_family_complete, because mark_family_complete refuses and deletes
+        // .complete if .web-build is still set.
+        gfsource::set_web_build(&dir, false);
         let intact = count_intact_planned_keys(&dir, &vars);
         if intact >= vars.len() {
             mark_family_complete(&dir, vars.len());
@@ -8217,7 +8236,9 @@ fn fetch_google_family_faces_to_dir(
     if dl.all_full && !dl.web_build {
         gfsource::set_full_source(root, source);
         gfsource::set_web_build(root, false);
-    } else if !var_files.is_empty() && dl.wrote == 0 {
+    } else if !var_files.is_empty() && (dl.wrote == 0 || dir_vf_primary_ready(root, family)) {
+        // Real upstream variable TTFs from google/fonts landed intact; do not let auxiliary
+        // CSS2 static fallback instances taint this VF-primary folder as .web-build.
         gfsource::clear_full_source(root);
         gfsource::set_web_build(root, false);
     } else {
@@ -10706,10 +10727,15 @@ pub fn open_activation_folder(app: AppHandle, sub: Option<String>) -> Result<(),
     let uploads_dir = dir.join(UPLOADS_CONTAINER);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let _ = fs::create_dir_all(&google_dir);
-    let _ = fs::create_dir_all(&uploads_dir);
+    if fs::read_dir(&uploads_dir)
+        .map(|mut it| it.next().is_none())
+        .unwrap_or(false)
+    {
+        let _ = fs::remove_dir(&uploads_dir);
+    }
     let target = match sub.as_deref().map(str::trim).map(str::to_ascii_lowercase).as_deref() {
         Some("google") => google_dir,
-        Some("uploads" | "local") => uploads_dir,
+        Some("uploads" | "local") if uploads_dir.is_dir() => uploads_dir,
         _ => dir,
     };
     #[cfg(windows)]

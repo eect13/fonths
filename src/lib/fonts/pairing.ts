@@ -389,3 +389,183 @@ export function pickNextCompanion(
   }
   return pick;
 }
+
+function bestHeadingWeight(font: FontRecord): number {
+  const wght = font.axes?.find((a) => a.tag === "wght");
+  if (wght && wght.max >= 700 && wght.min <= 700) return 700;
+  if (wght && wght.max >= 600 && wght.min <= 600) return 600;
+  const weights = font.weights ?? [];
+  if (weights.includes(700)) return 700;
+  if (weights.includes(600)) return 600;
+  if (weights.includes(800)) return 800;
+  if (weights.includes(500)) return 500;
+  return weights[weights.length - 1] ?? 700;
+}
+
+/**
+ * When Body (`right`) is locked, rank ideal Heading (`left`) candidates that contrast
+ * with the locked body typeface in structure, stroke contrast, and weight hierarchy.
+ */
+export function suggestHeadingCandidates(opts: {
+  right: FontRecord;
+  pool: FontRecord[];
+  activatedIds?: Set<string>;
+  leftSize: number;
+  rightSize: number;
+  rightWeight: number;
+}): CompanionCandidate[] {
+  const { right, pool, activatedIds, leftSize, rightSize, rightWeight } = opts;
+  const rightNameKey = right.family.trim().toLowerCase();
+  const nonLatinBody = Boolean(right.script && right.script !== "latin");
+
+  const base = pool.filter((f) => {
+    if (f.id === right.id) return false;
+    if (f.family.trim().toLowerCase() === rightNameKey) return false;
+    if (f.category === "icons") return false;
+    if (f.colorKind && f.colorKind !== "none") return false;
+    if ((f.tags ?? []).includes("emoji") || (f.tags ?? []).includes("symbols")) return false;
+    if (nonLatinBody && f.script && f.script !== right.script) return false;
+    return true;
+  });
+
+  return base
+    .map((cand) => {
+      const hWeight = bestHeadingWeight(cand);
+      const m = computePairingMatrix({
+        left: cand,
+        right,
+        leftSize,
+        rightSize,
+        leftWeight: hWeight,
+        rightWeight,
+      });
+
+      let rank = m.score;
+      const reasons: string[] = [];
+
+      if (
+        (cand.category === "serif" && right.category === "sans") ||
+        (cand.category === "sans" && right.category === "serif")
+      ) {
+        rank += 8;
+        reasons.push(`${CATEGORY_LABEL[cand.category]} × ${CATEGORY_LABEL[right.category]}`);
+      } else if (cand.category === "display" && (right.category === "sans" || right.category === "serif")) {
+        rank += 8;
+        reasons.push(`Display × ${CATEGORY_LABEL[right.category]}`);
+      } else if ((cand.category === "sans" || cand.category === "serif") && right.category === "mono") {
+        rank += 5;
+        reasons.push(`${CATEGORY_LABEL[cand.category]} × Mono`);
+      } else if (cand.category === right.category) {
+        rank -= 3;
+      }
+
+      if (hWeight >= 600) rank += 4;
+
+      const style = subStyleBonus(cand, right);
+      rank += style.bonus;
+      if (style.note && reasons.length < 2) reasons.push(style.note);
+
+      if (curatedBonus(cand.family, right.family)) {
+        rank += 10;
+        reasons.unshift("Classic pair");
+      }
+
+      if (activatedIds?.has(cand.id) || cand.source === "local") {
+        rank += 4;
+      }
+      if (Number.isFinite(cand.popularity) && cand.popularity > 0 && cand.popularity < 600) {
+        rank += Math.max(0, 5 - Math.floor(cand.popularity / 120));
+      }
+
+      if (!nonLatinBody && cand.script && cand.script !== "latin" && !cand.coversLatin) {
+        rank -= 30;
+      }
+
+      const reason = reasons.length
+        ? reasons.join(" · ")
+        : `${m.catRel.label} · ${m.verdict}`;
+
+      return {
+        font: cand,
+        rawRank: rank,
+        score: Math.max(25, Math.min(99, Math.round(rank))),
+        reason,
+        matrix: m,
+      };
+    })
+    .sort((a, b) => b.rawRank - a.rawRank || a.font.family.localeCompare(b.font.family))
+    .map(({ rawRank: _rawRank, ...rest }) => rest);
+}
+
+/**
+ * When neither Heading nor Body is locked, suggest a random ideal Heading + Body pair
+ * from high-scoring complementary candidates in the library pool.
+ */
+export function suggestRandomIdealPair(opts: {
+  pool: FontRecord[];
+  activatedIds?: Set<string>;
+  leftSize: number;
+  rightSize: number;
+  currentLeftId?: string;
+  currentRightId?: string;
+  randomFn?: () => number;
+}): {
+  heading: FontRecord;
+  body: FontRecord;
+  headingWeight: number;
+  bodyWeight: number;
+  score: number;
+  reason: string;
+} | null {
+  const { pool, activatedIds, leftSize, rightSize, currentLeftId, currentRightId, randomFn = Math.random } = opts;
+  if (pool.length < 2) return null;
+
+  const eligibleHeadings = pool.filter((f) => {
+    if (f.category === "icons" || f.category === "handwriting") return false;
+    if (f.colorKind && f.colorKind !== "none") return false;
+    if ((f.tags ?? []).includes("emoji") || (f.tags ?? []).includes("symbols")) return false;
+    if (f.script && f.script !== "latin" && !f.coversLatin) return false;
+    return true;
+  });
+  const headingPool = eligibleHeadings.length >= 2 ? eligibleHeadings : pool;
+
+  const scoredHeadings = [...headingPool]
+    .sort((a, b) => {
+      const aAct = activatedIds?.has(a.id) || a.source === "local" ? 1 : 0;
+      const bAct = activatedIds?.has(b.id) || b.source === "local" ? 1 : 0;
+      const aClassic = CLASSIC_PAIR_GRAPH[a.family.trim().toLowerCase()] ? 1 : 0;
+      const bClassic = CLASSIC_PAIR_GRAPH[b.family.trim().toLowerCase()] ? 1 : 0;
+      if (bClassic !== aClassic) return bClassic - aClassic;
+      if (bAct !== aAct) return bAct - aAct;
+      return (a.popularity || 9999) - (b.popularity || 9999);
+    })
+    .slice(0, 48);
+
+  const candidates = scoredHeadings.filter((f) => f.id !== currentLeftId);
+  const pickList = candidates.length > 0 ? candidates : scoredHeadings;
+  const heading = pickList[Math.floor(randomFn() * pickList.length)]!;
+  const headingWeight = bestHeadingWeight(heading);
+
+  const bodyCandidates = suggestCompanionCandidates({
+    left: heading,
+    pool,
+    activatedIds,
+    leftSize,
+    rightSize,
+    leftWeight: headingWeight,
+  });
+  const topBodies = bodyCandidates.slice(0, 10).filter((c) => c.font.id !== currentRightId);
+  const bodyPool = topBodies.length > 0 ? topBodies : bodyCandidates.slice(0, 10);
+  if (!bodyPool.length) return null;
+  const pickedBody = bodyPool[Math.floor(randomFn() * bodyPool.length)]!;
+  const bodyWeight = pickedBody.font.weights?.includes(400) ? 400 : 400;
+
+  return {
+    heading,
+    body: pickedBody.font,
+    headingWeight,
+    bodyWeight,
+    score: pickedBody.score,
+    reason: pickedBody.reason,
+  };
+}

@@ -201,6 +201,14 @@ try {
   assert.equal(collapsed, 0, "Expected top controls to collapse when Focus viewport clicked");
   await p1.click('[data-testid="playground-toggle-controls"]');
   await p1.waitForSelector('[data-testid="playground-top-controls"]', { timeout: 5_000 });
+  await p1.waitForSelector('[data-testid="lock-heading-btn"]', { timeout: 5_000 });
+  await p1.waitForSelector('[data-testid="lock-body-btn"]', { timeout: 5_000 });
+  await p1.click('[data-testid="lock-heading-btn"]');
+  const headingLocked = await p1.locator('[data-testid="lock-heading-btn"]').getAttribute("aria-pressed");
+  assert.equal(headingLocked, "true", "Expected lock-heading-btn aria-pressed=true after click");
+  await p1.click('[data-testid="suggest-pair-btn"]');
+  await p1.waitForTimeout(150);
+  await p1.click('[data-testid="lock-heading-btn"]');
   await p1.locator('[data-testid="playground-fg-color"]').fill("#224488");
   await p1.locator('[data-testid="playground-ot-smcp"]').click();
   await p1.waitForTimeout(200);
@@ -232,6 +240,7 @@ try {
   // Duplicates tab detects uploaded Figtree & Inter matching Google catalog
   await p1.getByRole("link", { name: "Duplicates" }).click();
   await p1.waitForFunction(() => document.body.innerText.includes("Figtree") && document.body.innerText.includes("Same family"), { timeout: 10_000 });
+  await p1.waitForSelector('[data-testid="auto-hide-duplicates-switch"]', { timeout: 5_000 });
   await p1.getByRole("link", { name: "Library" }).click();
   await p1.locator('[aria-label="Local Files"]').click();
   await figCard.locator("p.fm-spec").first().click();

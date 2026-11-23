@@ -232,8 +232,9 @@ export function useHydrateFonts() {
       if (desktop) {
         // Keep persisted IDs safe across localStorage writes while startup restore is running.
         setBootRestoringIds(wantIds);
-        // Drop persisted Activated until this-process Add confirms (avoid false Live).
-        useFontStore.getState().restoreActivation([], []);
+        // Instant startup restore: render remembered active state immediately on frame 0 (< 10ms)
+        // instead of blanking to [] while background GDI session verification catches up.
+        useFontStore.getState().restoreActivation(wantIds, []);
         const persistNames: string[] = [];
         const seenPersist = new Set<string>();
         for (const id of wantIds) {
@@ -244,6 +245,27 @@ export function useHydrateFonts() {
             seenPersist.add(famKey);
             persistNames.push(font.family.trim());
           }
+        }
+        const flushRememberedSessionOnClose = () => {
+          const st = useFontStore.getState();
+          const activeIds = st.activated.length ? st.activated : wantIds;
+          const names: string[] = [];
+          const seen = new Set<string>();
+          for (const id of activeIds) {
+            const f = findFont(id, st.localFonts, st.googleFonts.length ? st.googleFonts : google);
+            if (!f || f.source === "system") continue;
+            const k = f.family.trim().toLowerCase();
+            if (k && !seen.has(k)) {
+              seen.add(k);
+              names.push(f.family.trim());
+            }
+          }
+          void rememberSessionFamilies(names);
+        };
+        window.addEventListener("beforeunload", flushRememberedSessionOnClose);
+        window.addEventListener("pagehide", flushRememberedSessionOnClose);
+        if (persistNames.length) {
+          void rememberSessionFamilies(persistNames);
         }
         const liveIdsFromReadyNames = (readyNames: string[]): string[] => {
           const allow = new Set(readyNames.map((n) => n.trim().toLowerCase()).filter(Boolean));
@@ -281,8 +303,9 @@ export function useHydrateFonts() {
         // do not wait for boot.done (~2099) before restoreActivation.
         const boot = await waitSessionBoot(180_000, (readyChunk, _done) => {
           if (cancelled) return;
-          // boot.ready is this-process GDI only — never last-session sidecar.
-          const live = liveIdsFromReadyNames(readyChunk);
+          // Merge remembered wantIds with progressive boot.ready so startup UI is instant and never flickers to 0.
+          const bootLive = liveIdsFromReadyNames(readyChunk);
+          const live = Array.from(new Set([...wantIds, ...bootLive]));
           useFontStore.getState().restoreActivation(live, []);
         });
         const bootReady = boot.ready.slice();

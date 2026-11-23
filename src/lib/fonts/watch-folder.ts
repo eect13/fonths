@@ -5,12 +5,16 @@ import {
   isManagedFontManagerRoot,
   listWatchFolder,
   pickWatchFolder,
-  readWatchFiles,
 } from "@/lib/desktop/open-fonts";
 import { managedDocumentsRoot, syncManagedDocumentsRoot } from "./os-activate";
 import { isOwnMarkerOnlyEvent } from "./watch-event-filter.ts";
 import {
+  findImportGoogleCollisions,
+  requestImportCollisionChoice,
+} from "./import-collision";
+import {
   analyzeImportBatch,
+  defaultImportSelection,
   filterImportFiles,
   filterOriginPathsByRule,
   originPathsToFileLikes,
@@ -91,6 +95,44 @@ export async function addWatchedFolder(): Promise<void> {
       autoActivate = selection.autoActivate;
       importFilter = toSavedImportRule(selection);
     }
+    if (originPaths.length) {
+      const remainingLikes = originPathsToFileLikes(originPaths, picked.path);
+      const latest = useFontStore.getState();
+      const { collisions, collidingFileIndices } = findImportGoogleCollisions(
+        remainingLikes,
+        latest.googleFonts,
+        latest.activatedSet,
+        latest.diskFamilySet,
+        latest.localFonts,
+      );
+      if (collisions.length > 0) {
+        const choice = await requestImportCollisionChoice(collisions, remainingLikes.length);
+        if (choice === "cancel") return;
+        if (choice === "skip-colliding") {
+          originPaths = originPaths.filter((_, idx) => !collidingFileIndices.has(idx));
+          skippedByRule += collidingFileIndices.size;
+          const excludedKeys = collisions.map((c) => c.familyKey);
+          const baseRule = importFilter ?? toSavedImportRule(defaultImportSelection(analysis));
+          importFilter = {
+            ...baseRule,
+            excludeFamilies: Array.from(new Set([...(baseRule.excludeFamilies ?? []), ...excludedKeys])),
+          };
+          if (!originPaths.length) {
+            toast.message("All colliding fonts skipped", {
+              description: "Skipped watched-folder fonts that matched existing Google or library families.",
+            });
+            return;
+          }
+        } else if (choice === "prefer-local") {
+          const activeCollidingIds = collisions
+            .filter((c) => c.isGoogleActive)
+            .map((c) => c.googleFont.id);
+          if (activeCollidingIds.length > 0) {
+            useFontStore.getState().setActivatedMany(activeCollidingIds, false);
+          }
+        }
+      }
+    }
   }
 
   const id = existing?.id ?? store.addCollection(picked.name);
@@ -126,13 +168,17 @@ export async function refreshWatchedFolders(): Promise<void> {
   if (!(await inDesktopShell())) return;
   inflight = true;
   try {
-    const { collections, localFonts, importOriginPaths, importFiles, removeLocalFont } = useFontStore.getState();
+    const { collections, localFonts, importOriginPaths, removeLocalFont } = useFontStore.getState();
     const watched = collections.filter((c) => c.watchPath);
     if (!watched.length) return;
     const allOrigins: string[] = [];
     const allSizes: number[] = [];
     const allMtimes: number[] = [];
     for (const folder of watched) {
+      // If user stopped watching this folder while a refresh was running, skip it immediately.
+      if (!useFontStore.getState().collections.some((c) => c.id === folder.id && c.watchPath)) {
+        continue;
+      }
       const root = folder.watchPath!;
       if (isManagedFontManagerRoot(root)) {
         // Never treat managed store as a watch folder — sync library from Documents instead.
@@ -142,6 +188,9 @@ export async function refreshWatchedFolders(): Promise<void> {
       const blocked = forbiddenWatchReason(root);
       if (blocked) continue;
       const listed = await listWatchFolder(root);
+      if (!useFontStore.getState().collections.some((c) => c.id === folder.id && c.watchPath)) {
+        continue;
+      }
       allOrigins.push(...listed.paths);
       allSizes.push(...listed.sizes);
       allMtimes.push(...listed.mtimes);
@@ -164,21 +213,14 @@ export async function refreshWatchedFolders(): Promise<void> {
         freshPaths.length && folder.importFilter
           ? filterOriginPathsByRule(freshPaths, root, folder.importFilter, localFonts)
           : freshPaths;
-      if (filteredFresh.length) {
-        const result = await importOriginPaths(filteredFresh, {
+      if (
+        filteredFresh.length &&
+        useFontStore.getState().collections.some((c) => c.id === folder.id && c.watchPath)
+      ) {
+        await importOriginPaths(filteredFresh, {
           collectionId: folder.id,
           collectionName: folder.name,
         });
-        if (!result.added && !result.duplicates) {
-          const scanned = await readWatchFiles(root, filteredFresh);
-          if (scanned.files.length) {
-            await importFiles(scanned.files, {
-              collectionId: folder.id,
-              collectionName: folder.name,
-              originPaths: scanned.originPaths,
-            });
-          }
-        }
       }
     }
     const sig = signature(allOrigins, allSizes, allMtimes);
