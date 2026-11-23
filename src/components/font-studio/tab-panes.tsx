@@ -3,12 +3,10 @@ import { DuplicatesPage } from "@/routes/duplicates";
 import { GlyphsPage } from "@/routes/glyphs";
 import { LibraryPage } from "@/routes/index";
 import { PlaygroundPage } from "@/routes/playground";
-import { SkiaPage } from "@/routes/skia";
 import { cn } from "@/lib/utils";
 
 const PANES = [
   { path: "/", match: (p: string) => p === "/", Page: LibraryPage },
-  { path: "/skia", match: (p: string) => p.startsWith("/skia"), Page: SkiaPage },
   { path: "/playground", match: (p: string) => p.startsWith("/playground"), Page: PlaygroundPage },
   { path: "/duplicates", match: (p: string) => p.startsWith("/duplicates"), Page: DuplicatesPage },
   { path: "/glyphs", match: (p: string) => p.startsWith("/glyphs"), Page: GlyphsPage },

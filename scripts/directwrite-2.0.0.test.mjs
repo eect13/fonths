@@ -13,7 +13,8 @@ const tauriConf = JSON.parse(read("src-tauri/tauri.conf.json"));
 const cargoToml = read("src-tauri/Cargo.toml");
 const versionTs = read("src/version.ts");
 const mainRs = read("src-tauri/src/lib.rs");
-const dwriteRs = read("src-tauri/src/dwrite.rs");
+const scannerRs = read("src-tauri/src/scanner.rs");
+const rendererRs = read("src-tauri/src/renderer.rs");
 const parseRs = read("src-tauri/src/parse.rs");
 const stageRs = read("src-tauri/src/session_stage.rs");
 const activateRs = read("src-tauri/src/activate.rs");
@@ -31,24 +32,30 @@ test("2.0.0 version metadata synced across Cargo, Tauri, npm, and version.ts", (
   assert.match(versionTs, /export const APP_VERSION = "2\.0\.0";/);
 });
 
-test("DirectWrite dependencies and read-only system font collection guard are wired", () => {
-  assert.match(cargoToml, /Win32_Graphics_DirectWrite/);
+test("Skia + Fontations engine replaces legacy DirectWrite and ttf-parser with read-only system font guard", () => {
+  assert.doesNotMatch(cargoToml, /Win32_Graphics_DirectWrite/);
+  assert.doesNotMatch(cargoToml, /ttf-parser/);
+  assert.equal(existsSync(join(root, "src-tauri/src/dwrite.rs")), false, "legacy dwrite.rs must be removed");
+  assert.match(cargoToml, /skia-safe.*textlayout.*embed-freetype.*freetype-woff2/);
+  assert.match(cargoToml, /read-fonts/);
+  assert.match(cargoToml, /memmap2/);
+  assert.match(cargoToml, /Win32_Graphics_Gdi/);
+  assert.match(cargoToml, /Win32_UI_WindowsAndMessaging/);
   assert.match(cargoToml, /Win32_Foundation/);
-  assert.match(cargoToml, /windows-core\s*=\s*"0\.61"/);
-  assert.match(dwriteRs, /pub fn list_system_fonts_dwrite/);
-  assert.match(dwriteRs, /pub fn analyze_font_file/);
-  assert.match(dwriteRs, /pub fn is_system_windows_fonts_dir/);
-  assert.match(dwriteRs, /\\gdi-maps\\/);
-  assert.match(dwriteRs, /\\documents\\font manager\\/);
-  assert.match(parseRs, /crate::dwrite::list_system_fonts_dwrite\(\)/);
+  assert.match(scannerRs, /pub fn analyze_font_file/);
+  assert.match(scannerRs, /pub fn is_system_windows_fonts_dir/);
+  assert.match(scannerRs, /\\gdi-maps\\/);
+  assert.match(scannerRs, /\\documents\\font manager\\/);
+  assert.match(rendererRs, /FontMgr::custom_empty\(\)\.unwrap_or_else\(FontMgr::new\)/);
+  assert.match(parseRs, /crate::scanner::is_system_windows_fonts_dir/);
   assert.match(parseRs, /fn layout_cache\(/);
   assert.match(parseRs, /fn index_cache\(/);
 });
 
 test("all 5 new 2.0.0 commands are async spawn_blocking, registered, ACL-allowed, and wrapped", () => {
   const newCmds = [
-    ["dwrite_engine_info", dwriteRs, "getDWriteEngineInfo"],
-    ["dwrite_inspect_font", dwriteRs, "inspectFontDWrite"],
+    ["dwrite_engine_info", scannerRs, "getDWriteEngineInfo"],
+    ["dwrite_inspect_font", scannerRs, "inspectFontDWrite"],
     ["read_family_preview_info", parseRs, "nativeFamilyPreviewInfo"],
     ["list_leftover_stage_files", activateRs, "listLeftoverStageFiles"],
     ["recycle_leftover_stage_files", activateRs, "recycleLeftoverStageFiles"],

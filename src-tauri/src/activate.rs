@@ -6463,18 +6463,15 @@ fn recycle_static_or_test_delete(path: &Path) -> Result<(), String> {
 }
 
 fn file_is_variable_font(path: &Path) -> bool {
+    if let Some(is_var) = crate::scanner::file_has_variations(path) {
+        return is_var;
+    }
     let Ok(bytes) = fs::read(path) else {
         return false;
     };
-    if let Ok(face) = ttf_parser::Face::parse(&bytes, 0) {
-        return face.is_variable();
-    }
-    // Real SFNT with core tables that failed ttf-parser is never treated as VF by filename.
+    // Real SFNT with core tables that failed Fontations is never treated as VF by filename.
     if crate::namepatch::has_table(&bytes, b"head") || crate::namepatch::has_table(&bytes, b"name") {
         return false;
-    }
-    if let Some(true) = crate::dwrite::file_has_variations_dwrite(path) {
-        return true;
     }
     path.file_name()
         .and_then(|s| s.to_str())
@@ -6504,35 +6501,24 @@ fn vf_primary_purge_safe_for_dir(dir: &Path, family: &str) -> bool {
         let Ok(bytes) = fs::read(&path) else {
             continue;
         };
-        if let Ok(face) = ttf_parser::Face::parse(&bytes, 0) {
-            if !face.is_variable() {
+        if let Some(axis_tags) = crate::scanner::variation_axis_tags_from_bytes(&bytes) {
+            if axis_tags.is_empty() {
                 continue;
             }
-            let std_axes = [
-                ttf_parser::Tag::from_bytes(b"wght"),
-                ttf_parser::Tag::from_bytes(b"wdth"),
-                ttf_parser::Tag::from_bytes(b"ital"),
-                ttf_parser::Tag::from_bytes(b"slnt"),
-            ];
-            if face
-                .variation_axes()
-                .into_iter()
-                .any(|ax| !std_axes.contains(&ax.tag))
-            {
+            const STD_AXES: &[&str] = &["wght", "wdth", "ital", "slnt"];
+            if axis_tags.iter().any(|tag| !STD_AXES.contains(&tag.as_str())) {
                 return false;
             }
-            let dw = crate::dwrite::analyze_font_file(&path);
-            if dw.file_type != "unavailable" {
-                if !dw.supported || !dw.is_variable {
+            let info = crate::scanner::analyze_font_file(&path);
+            if !info.supported || !info.is_variable {
+                return false;
+            }
+            if let Some(ref tf) = info.typographic_family {
+                if !tf.trim().eq_ignore_ascii_case(trimmed) {
                     return false;
                 }
-                if let Some(ref tf) = dw.typographic_family {
-                    if !tf.trim().eq_ignore_ascii_case(trimmed) {
-                        return false;
-                    }
-                }
             }
-            let win32_id1 = crate::namepatch::read_name_id(&bytes, 1).or(dw.win32_family);
+            let win32_id1 = crate::namepatch::read_name_id(&bytes, 1).or(info.win32_family);
             if let Some(ref w32) = win32_id1 {
                 let w32t = w32.trim();
                 if w32t.encode_utf16().count() > 31 || !w32t.eq_ignore_ascii_case(trimmed) {
@@ -8676,13 +8662,13 @@ fn format_register_zero_detail_with(
                 if !ttf_intact(&path) {
                     continue;
                 }
-                let dw = crate::dwrite::analyze_font_file(&path);
-                if let Some(reason) = dw.error_reason.filter(|s| !s.is_empty()) {
-                    msg.push_str(&format!("; DirectWrite: {reason}"));
-                } else if dw.supported {
+                let info = crate::scanner::analyze_font_file(&path);
+                if let Some(reason) = info.error_reason.filter(|s| !s.is_empty()) {
+                    msg.push_str(&format!("; Fontations: {reason}"));
+                } else if info.supported {
                     msg.push_str(&format!(
-                        "; DirectWrite supports ({}, faces={}, var={})",
-                        dw.face_type, dw.face_count, dw.is_variable
+                        "; Fontations supports ({}, faces={}, var={})",
+                        info.face_type, info.face_count, info.is_variable
                     ));
                 }
                 break 'dw;
@@ -13748,7 +13734,7 @@ fn find_leftover_stage_files_in(
                     .and_then(|d| d.file_name())
                     .and_then(|s| s.to_str())
                     .map(|s| s.to_string())
-                    .or_else(|| crate::dwrite::win32_family_name_dwrite(&p))
+                    .or_else(|| crate::scanner::win32_family_name(&p))
             };
             let src_exists = Path::new(src).is_file();
             let reason = if src_exists {
@@ -13758,7 +13744,7 @@ fn find_leftover_stage_files_in(
             };
             (fam_opt, reason)
         } else {
-            let fam_opt = crate::dwrite::win32_family_name_dwrite(&p);
+            let fam_opt = crate::scanner::win32_family_name(&p);
             (fam_opt, "Unreferenced stage copy in gdi-maps".to_string())
         };
 

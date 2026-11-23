@@ -406,7 +406,7 @@ test("12. Watched folders run smart duplicate collision detection and stop watch
   assert.doesNotMatch(settingsTsx, /open-uploads-folder-btn/);
 });
 
-test("13. Fonths 2.0.0 Skia + Fontations + Windows Activator architecture contracts", () => {
+test("13. Fonths 2.0.0 Skia + Fontations + Windows Activator replaces DirectWrite/ttf-parser cleanly in existing UI", () => {
   const cargoToml = readFileSync(join(process.cwd(), "src-tauri/Cargo.toml"), "utf8");
   const libRs = readFileSync(join(process.cwd(), "src-tauri/src/lib.rs"), "utf8");
   const scannerRs = readFileSync(join(process.cwd(), "src-tauri/src/scanner.rs"), "utf8");
@@ -414,13 +414,16 @@ test("13. Fonths 2.0.0 Skia + Fontations + Windows Activator architecture contra
   const activatorRs = readFileSync(join(process.cwd(), "src-tauri/src/activator.rs"), "utf8");
   const perms = readFileSync(join(process.cwd(), "src-tauri/permissions/font-activate.toml"), "utf8");
   const canvasTsx = readFileSync(join(process.cwd(), "src/components/font-studio/skia-font-canvas.tsx"), "utf8");
-  const studioTsx = readFileSync(join(process.cwd(), "src/components/font-studio/skia-studio.tsx"), "utf8");
+  const inspectorTsx = readFileSync(join(process.cwd(), "src/components/font-studio/font-inspector.tsx"), "utf8");
+  const appShellTsx = readFileSync(join(process.cwd(), "src/components/font-studio/app-shell.tsx"), "utf8");
 
   assert.match(cargoToml, /version = "2\.0\.0"/);
   assert.match(cargoToml, /skia-safe.*textlayout.*embed-freetype.*freetype-woff2/);
   assert.match(cargoToml, /read-fonts/);
   assert.match(cargoToml, /lru/);
   assert.match(cargoToml, /memmap2/);
+  assert.doesNotMatch(cargoToml, /ttf-parser/);
+  assert.doesNotMatch(cargoToml, /Win32_Graphics_DirectWrite/);
 
   assert.match(libRs, /pub mod scanner;/);
   assert.match(libRs, /pub mod renderer;/);
@@ -455,7 +458,6 @@ test("13. Fonths 2.0.0 Skia + Fontations + Windows Activator architecture contra
 
   assert.match(canvasTsx, /new ImageData\(new Uint8ClampedArray\(buffer\)/);
   assert.match(canvasTsx, /ctx\.putImageData/);
-  assert.match(studioTsx, /pickAndScanFontDirectory/);
-  assert.match(studioTsx, /activateFontPath/);
-  assert.match(studioTsx, /deactivateFontPath/);
+  assert.match(inspectorTsx, /<SkiaFontCanvas/);
+  assert.doesNotMatch(appShellTsx, /Skia Studio/);
 });

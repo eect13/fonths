@@ -208,7 +208,7 @@ pub fn read_metadata_sfnt_bytes(path: &Path) -> std::io::Result<Option<Vec<u8>>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ttf_parser::Face;
+    use read_fonts::{FontRef, TableProvider};
 
     #[test]
     fn fast_metadata_slice_matches_full_parse_on_vf_fixtures() {
@@ -232,22 +232,37 @@ mod tests {
                 raw.len()
             );
 
-            let full_face = Face::parse(raw, 0).expect("full face");
-            let fast_face = Face::parse(&compact, 0).expect("fast face");
-            assert_eq!(full_face.number_of_glyphs(), fast_face.number_of_glyphs());
-            assert_eq!(full_face.is_variable(), fast_face.is_variable());
-            assert_eq!(full_face.weight().to_number(), fast_face.weight().to_number());
-            assert_eq!(full_face.is_monospaced(), fast_face.is_monospaced());
+            let full_face = FontRef::new(raw).expect("full face");
+            let fast_face = FontRef::new(&compact).expect("fast face");
+            assert_eq!(
+                full_face.maxp().unwrap().num_glyphs(),
+                fast_face.maxp().unwrap().num_glyphs()
+            );
+            assert_eq!(full_face.fvar().is_ok(), fast_face.fvar().is_ok());
+            assert_eq!(
+                full_face.os2().unwrap().us_weight_class(),
+                fast_face.os2().unwrap().us_weight_class()
+            );
+            assert_eq!(
+                full_face.post().unwrap().is_fixed_pitch(),
+                fast_face.post().unwrap().is_fixed_pitch()
+            );
 
             let full_axes: Vec<String> = full_face
-                .variation_axes()
-                .into_iter()
-                .map(|a| a.tag.to_string())
+                .fvar()
+                .unwrap()
+                .axes()
+                .unwrap()
+                .iter()
+                .map(|a| a.axis_tag().to_string())
                 .collect();
             let fast_axes: Vec<String> = fast_face
-                .variation_axes()
-                .into_iter()
-                .map(|a| a.tag.to_string())
+                .fvar()
+                .unwrap()
+                .axes()
+                .unwrap()
+                .iter()
+                .map(|a| a.axis_tag().to_string())
                 .collect();
             assert_eq!(full_axes, fast_axes);
 

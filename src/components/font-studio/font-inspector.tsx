@@ -38,8 +38,10 @@ import { colorKindLabel, colorKindOf, windowsColorNote } from "@/lib/fonts/color
 import { DEFAULT_ON, FEATURE_DEMO, featureStyle, labelForFeature, togglesFor } from "@/lib/fonts/ot-features";
 import { openActivatedFolder, deleteFontFiles } from "@/lib/fonts/os-activate";
 import { openSystemFontsFolder } from "@/lib/fonts/system-fonts";
+import { isDesktopShellSync } from "@/lib/desktop/open-fonts";
 import { copyText } from "@/lib/copy-text";
 import { idbGet, previewCacheId } from "@/lib/fonts/idb";
+import { SkiaFontCanvas } from "./skia-font-canvas";
 
 export function FontInspector() {
   const open = useFontStore((s) => s.inspectorOpen);
@@ -74,6 +76,7 @@ export function FontInspector() {
   const [italicOn, setItalicOn] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<"local" | "google" | null>(null);
   const [parsedTags, setParsedTags] = useState<string[] | undefined>();
+  const [skiaPath, setSkiaPath] = useState<string | null>(null);
   const fontRef = useRef(font);
   fontRef.current = font;
   const previewItalicRef = useRef(Boolean(preview.italic));
@@ -83,20 +86,31 @@ export function FontInspector() {
   useEffect(() => {
     const cur = fontRef.current;
     if (!cur) return;
+    let cancelled = false;
     void loadFont(cur, "full");
     setConfirmDelete(null);
-    setItalicOn(isItalicOnlyFace(cur) || (hasRealItalic(cur) && previewItalicRef.current));
+    const wantItalic = isItalicOnlyFace(cur) || (hasRealItalic(cur) && previewItalicRef.current);
+    setItalicOn(wantItalic);
     setFeatures(useFontStore.getState().featurePrefs[cur.id] ?? {});
     setTagDraft("");
     setParsedTags(cur.otFeatures);
+    setSkiaPath(isDesktopShellSync() && cur.originPath ? cur.originPath : null);
     const id = cur.id;
     const family = cur.family;
     void (async () => {
       try {
-        const { nativeFamilyLayout, fontMetricsFromLayout } = await import("@/lib/fonts/native-parse");
+        const { nativeFamilyLayout, nativeFamilyPreviewInfo, fontMetricsFromLayout } = await import(
+          "@/lib/fonts/native-parse"
+        );
+        if (isDesktopShellSync() && !cur.originPath) {
+          const previewInfo = await nativeFamilyPreviewInfo(family, wantItalic);
+          if (!cancelled && previewInfo?.path) {
+            setSkiaPath(previewInfo.path);
+          }
+        }
         const layout = await nativeFamilyLayout(family);
         if (layout) {
-          if (layout.otFeatures?.length) setParsedTags(layout.otFeatures);
+          if (!cancelled && layout.otFeatures?.length) setParsedTags(layout.otFeatures);
           const store = useFontStore.getState();
           if (layout.axes?.length) store.patchFontAxes(id, layout.axes);
           const metrics = fontMetricsFromLayout(layout);
@@ -109,11 +123,14 @@ export function FontInspector() {
         if (!buf) return;
         const { otFeaturesFromBuffer } = await import("@/lib/fonts/parse-font");
         const tags = await otFeaturesFromBuffer(buf);
-        if (tags.length) setParsedTags(tags);
+        if (!cancelled && tags.length) setParsedTags(tags);
       } catch {
         /* CSS toggles still apply */
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [activeFontId]);
 
   useEffect(() => {
@@ -136,6 +153,15 @@ export function FontInspector() {
     () => featureStyle(features, togglesFor(layoutTags)),
     [features, layoutTags],
   );
+  const skiaFeatures = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const tag of togglesFor(layoutTags)) {
+      const val = features[tag];
+      if (typeof val === "boolean") map[tag] = val ? 1 : 0;
+      else if (DEFAULT_ON.has(tag)) map[tag] = 1;
+    }
+    return map;
+  }, [features, layoutTags]);
 
   if (!open) return null;
 
@@ -256,6 +282,22 @@ export function FontInspector() {
       </div>
       <ScrollArea className="min-h-0 flex-1">
           <div className="fm-inspector-body space-y-6 pb-10">
+            {skiaPath && !specimenLines && colorKindOf(font) === "none" ? (
+              <div
+                className="fm-spec min-w-0 max-w-full overflow-hidden rounded-lg bg-paper px-4 py-4 text-ink"
+                data-testid="inspector-skia-preview"
+              >
+                <SkiaFontCanvas
+                  fontPath={skiaPath}
+                  text={previewSample(font, preview.sampleText)}
+                  fontSize={22}
+                  height={76}
+                  colorHex="#111111"
+                  features={skiaFeatures}
+                  variations={font.variable ? liveAxes : undefined}
+                />
+              </div>
+            ) : (
             <p
               className={cn(
                 "fm-spec min-w-0 max-w-full overflow-x-hidden overflow-hidden break-words rounded-lg bg-paper px-4 py-4 text-xl leading-snug text-ink",
@@ -295,6 +337,7 @@ export function FontInspector() {
                 previewSample(font, preview.sampleText)
               )}
             </p>
+            )}
 
             <div className="flex flex-wrap gap-2">
               {font.source === "system" ? (
@@ -331,13 +374,13 @@ export function FontInspector() {
                 label={
                   font.source === "google"
                     ? "Open Documents / Fonths / Providers / Google"
-                    : "Open Documents / Fonths / Uploads"
+                    : "Open Documents / Fonths"
                 }
               >
                 <Button
                   size="sm"
                   variant="ghost"
-                  onClick={() => void openActivatedFolder(font.source === "google" ? "google" : "uploads")}
+                  onClick={() => void openActivatedFolder(font.source === "google" ? "google" : undefined)}
                 >
                   <FolderOpen />
                   Folder

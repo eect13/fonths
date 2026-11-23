@@ -141,7 +141,7 @@ try {
   const p1 = r1.page;
 
   const dw = await p1.evaluate(() => window.__TAURI_INTERNALS__.invoke("dwrite_engine_info"));
-  assert.equal(dw.engine, "DirectWrite");
+  assert.match(dw.engine, /Skia.*Fontations/i);
   assert.equal(typeof dw.elevated, "boolean");
 
   // Skia + Fontations v2.0.0 backend verification: zero-copy scan_font_directory + Skia RGBA8888 render_font_preview
@@ -197,11 +197,17 @@ try {
   assert.equal(afterCancelProg.running, false, "Cancel on Activate All confirm must not start downloads");
   assert.equal(afterCancelProg.total, 0, "Cancel on Activate All confirm must leave queue empty");
 
-  // Settings + Separated Fast GDI Restore + Delete Mode + Clean Temp Cache + Purge non-Google
+  // Settings + Separated Fast GDI Restore + Delete Mode + Clean Temp Cache + Purge non-Google + Skia Engine
   await p1.click('[data-testid="settings-open"]');
   await p1.waitForSelector('[data-testid="delete-mode-card"]', { timeout: 10_000 });
   await p1.waitForSelector('[data-testid="gdi-restore-card"]', { timeout: 5_000 });
   await p1.waitForSelector('[data-testid="purge-non-google-btn"]', { timeout: 5_000 });
+  await p1.waitForSelector('[data-testid="dwrite-engine-card"]', { timeout: 5_000 });
+  const engineCardText = await p1.locator('[data-testid="dwrite-engine-card"]').innerText();
+  assert.ok(
+    engineCardText.includes("Skia") && engineCardText.includes("Fontations"),
+    `Expected Skia + Fontations engine card, got: ${engineCardText}`,
+  );
   await p1.click('[data-testid="delete-mode-permanent"]');
   await p1.click('[data-testid="clean-temp-cache-btn"]');
   await p1.waitForTimeout(300);
@@ -276,6 +282,19 @@ try {
   await p1.locator('[aria-label="Local Files"]').click();
   await figCard.locator("p.fm-spec").first().click();
   await p1.waitForSelector("aside.fm-inspector", { timeout: 10_000 });
+  await p1.waitForSelector('[data-testid="inspector-skia-preview"]', { timeout: 10_000 });
+  await p1.waitForSelector('[data-testid="skia-font-canvas"]', { timeout: 10_000 });
+  await p1.waitForFunction(() => {
+    const c = document.querySelector('[data-testid="skia-font-canvas"]');
+    if (!(c instanceof HTMLCanvasElement) || c.width === 0 || c.height === 0) return false;
+    const ctx = c.getContext("2d");
+    if (!ctx) return false;
+    const data = ctx.getImageData(0, 0, Math.min(c.width, 160), Math.min(c.height, 80)).data;
+    for (let i = 3; i < data.length; i += 4) {
+      if (data[i] > 0) return true;
+    }
+    return false;
+  }, { timeout: 10_000 });
   await p1.locator('aside.fm-inspector button[aria-label="Delete font"], aside.fm-inspector button:has-text("Delete")').first().click();
   await p1.waitForSelector('[data-testid="inspector-delete-dialog"]', { timeout: 10_000 });
   const delText = await p1.locator('[data-testid="inspector-delete-dialog"]').innerText();
@@ -351,7 +370,7 @@ try {
   const ex2 = await waitExit(r2.child, 15_000);
   assert.equal(!ex2.timedOut && ex2.exitCode === 0, true);
 
-  console.log("desktop-cdp.e2e.mjs: PASS (DirectWrite, Notification Center, Playground, Smart Deletion, Smart Import, 2-launch persistence)");
+  console.log("desktop-cdp.e2e.mjs: PASS (Skia + Fontations, Inspector Canvas, Notification Center, Playground, Smart Deletion, Smart Import, 2-launch persistence)");
 } finally {
   if (child1 && child1.exitCode === null) try { process.kill(child1.pid); } catch { /* ignore */ }
   if (child2 && child2.exitCode === null) try { process.kill(child2.pid); } catch { /* ignore */ }

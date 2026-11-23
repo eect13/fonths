@@ -195,7 +195,7 @@ export function DesktopSettings() {
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>
-            Appearance, startup, deletion behavior, Google CDN updates, and DirectWrite status.
+            Appearance, startup, deletion behavior, Google CDN updates, and Skia + Fontations engine status.
           </DialogDescription>
         </DialogHeader>
 
@@ -321,7 +321,7 @@ export function DesktopSettings() {
           <div className="min-w-0">
             <p className="text-sm font-medium flex items-center gap-1.5">
               <Cpu className="size-3.5" />
-              Font Engine (DirectWrite)
+              Font Engine (Skia + Fontations)
               {engineInfo?.elevated ? (
                 <span className="inline-flex items-center gap-1 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary">
                   <ShieldCheck className="size-3" />
@@ -332,7 +332,7 @@ export function DesktopSettings() {
             <p className="text-xs text-muted-foreground">
               {engineInfo
                 ? `${engineInfo.engine} · ${engineInfo.activationMode} · System Fonts protected (${engineInfo.systemFontCount.toLocaleString()} installed in Windows\\Fonts)`
-                : "DirectWrite font inspection with session-only activation. System Fonts remain protected."}
+                : "Skia (FreeType + HarfBuzz) rendering & zero-copy Fontations parsing with temporary session activation. System Fonts remain protected."}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
               Google: {googleCount.toLocaleString()} catalog · Watched: {uploadCount.toLocaleString()} · On disk: {diskCount.toLocaleString()} · Active: {liveCount.toLocaleString()}

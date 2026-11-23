@@ -4,7 +4,6 @@ pub mod scanner;
 
 mod activate;
 mod delete_ops;
-mod dwrite;
 mod fast_parse;
 mod google_cdn;
 // Some sfnt/pacer helpers are only exercised by tests and live checks.
@@ -469,8 +468,8 @@ pub fn run() {
             activate::cleanup_temp_stage_files,
             activate::fetch_live_google_catalog,
             activate::sync_google_cdn_updates,
-            dwrite::dwrite_engine_info,
-            dwrite::dwrite_inspect_font,
+            scanner::dwrite_engine_info,
+            scanner::dwrite_inspect_font,
             parse::parse_family_cmap,
             parse::parse_family_layout,
             parse::parse_font_layout,

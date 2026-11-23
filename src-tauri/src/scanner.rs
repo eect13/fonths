@@ -1,5 +1,8 @@
-//! Zero-copy OpenType metadata & feature scanner powered by Google Fontations (`read-fonts`)
-//! and `memmap2` (plus pure-Rust `wuff` decoding for `.woff2` containers).
+//! Zero-copy OpenType metadata, feature, and validation engine powered by Google Fontations
+//! (`read-fonts`) + `memmap2` (plus pure-Rust `wuff` decoding for `.woff2` containers).
+//!
+//! Replaces legacy `ttf-parser` and Windows DirectWrite COM inspection with a single
+//! cross-platform, zero-copy Fontations pipeline.
 
 use memmap2::Mmap;
 use read_fonts::{types::NameId, FileRef, FontRef, TableProvider};
@@ -27,6 +30,74 @@ pub struct FontMetadata {
     pub opentype_features: Vec<String>,
 }
 
+/// Engine diagnostics payload (keeps existing frontend `DWriteEngineInfo` TypeScript schema intact).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineInfo {
+    pub engine: String,
+    pub available: bool,
+    pub activation_mode: String,
+    pub system_fonts_read_only: bool,
+    pub system_font_count: usize,
+    pub platform: String,
+    pub elevated: bool,
+}
+
+/// Per-file font analysis payload (keeps existing frontend `DWriteInspectResult` schema intact).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineInspectResult {
+    pub supported: bool,
+    pub face_count: u32,
+    pub file_type: String,
+    pub face_type: String,
+    pub is_variable: bool,
+    pub typographic_family: Option<String>,
+    pub win32_family: Option<String>,
+    pub full_name: Option<String>,
+    pub weight: u16,
+    pub italic: bool,
+    pub hresult_code: Option<i32>,
+    pub error_reason: Option<String>,
+}
+
+fn normalize_win_path_str(p: &Path) -> String {
+    let mut s = p.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        s = rest.to_string();
+    }
+    while s.ends_with('\\') && s.len() > 3 {
+        s.pop();
+    }
+    s
+}
+
+/// Resolve the read-only OS system fonts directory (`C:\Windows\Fonts`).
+pub fn windows_system_fonts_dir() -> PathBuf {
+    let windir = std::env::var("SYSTEMROOT")
+        .or_else(|_| std::env::var("WINDIR"))
+        .unwrap_or_else(|_| r"C:\Windows".to_string());
+    PathBuf::from(windir).join("Fonts")
+}
+
+/// Strict guard: true ONLY for font files physically located inside `%SYSTEMROOT%\Fonts`.
+/// Explicitly rejects `gdi-maps`, `Documents\Fonths`, and `Documents\Font Manager`.
+pub fn is_system_windows_fonts_dir(path: &Path) -> bool {
+    let norm = normalize_win_path_str(path);
+    if norm.contains(r"\gdi-maps\")
+        || norm.ends_with(r"\gdi-maps")
+        || norm.contains(r"\documents\fonths\")
+        || norm.ends_with(r"\documents\fonths")
+        || norm.contains(r"\documents\font manager\")
+        || norm.ends_with(r"\documents\font manager")
+        || norm.contains(r"\microsoft\windows\fonts\")
+    {
+        return false;
+    }
+    let sys = normalize_win_path_str(&windows_system_fonts_dir());
+    norm == sys || norm.starts_with(&format!(r"{sys}\"))
+}
+
 fn is_supported_font_ext(path: &Path) -> bool {
     let ext = path
         .extension()
@@ -52,7 +123,7 @@ fn collect_font_files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 /// Rank `name` table platform/encoding/language records so English Windows/Unicode
 /// names win cleanly over legacy encodings.
-fn name_record_priority(platform_id: u16, encoding_id: u16, language_id: u16) -> u8 {
+pub fn name_record_priority(platform_id: u16, encoding_id: u16, language_id: u16) -> u8 {
     match (platform_id, encoding_id, language_id) {
         (3, 1 | 10, 0x0409) => 0, // Windows Unicode BMP/Full, en-US
         (0, _, _) => 1,           // Unicode platform
@@ -63,7 +134,7 @@ fn name_record_priority(platform_id: u16, encoding_id: u16, language_id: u16) ->
     }
 }
 
-fn read_name_string(font: &FontRef<'_>, target: NameId) -> Option<String> {
+pub fn read_name_string(font: &FontRef<'_>, target: NameId) -> Option<String> {
     let name_table = font.name().ok()?;
     let string_data = name_table.string_data();
     let mut best: Option<(u8, String)> = None;
@@ -174,7 +245,7 @@ pub fn scan_font_file(path: &Path) -> Vec<FontMetadata> {
     if meta.len() < 12 {
         return Vec::new();
     }
-    // SAFETY: Read-only memory map of an existing font file; we only read immutable bytes.
+    // SAFETY: Read-only memory map of an existing font file; immutable reads only.
     let Ok(mmap) = (unsafe { Mmap::map(&file) }) else {
         return Vec::new();
     };
@@ -193,6 +264,222 @@ pub fn scan_font_file(path: &Path) -> Vec<FontMetadata> {
     }
 
     parse_bytes(slice, &path_str, fallback_stem)
+}
+
+/// Zero-copy check if a font file on disk has an OpenType `fvar` variable table.
+pub fn file_has_variations(path: &Path) -> Option<bool> {
+    let file = File::open(path).ok()?;
+    if file.metadata().ok()?.len() < 12 {
+        return Some(false);
+    }
+    let mmap = unsafe { Mmap::map(&file) }.ok()?;
+    let slice: &[u8] = &mmap;
+    let decoded_owned;
+    let data = if slice.starts_with(b"wOF2") {
+        decoded_owned = wuff::decompress_woff2(slice).ok()?;
+        decoded_owned.as_slice()
+    } else {
+        slice
+    };
+    let file_ref = FileRef::new(data).ok()?;
+    let font = match file_ref {
+        FileRef::Font(f) => f,
+        FileRef::Collection(c) => c.get(0).ok()?,
+    };
+    // Require a valid OpenType `head` table so synthetic/truncated SFNT headers
+    // return `None` instead of being misclassified as valid static fonts.
+    if font.head().is_err() {
+        return None;
+    }
+    let has_axes = font
+        .fvar()
+        .ok()
+        .and_then(|fv| fv.axes().ok())
+        .map(|a| !a.is_empty())
+        .unwrap_or(false);
+    Some(has_axes)
+}
+
+/// Return all `fvar` axis 4-char tags from raw font bytes (or `None` if unparseable).
+pub fn variation_axis_tags_from_bytes(bytes: &[u8]) -> Option<Vec<String>> {
+    let file_ref = FileRef::new(bytes).ok()?;
+    let font = match file_ref {
+        FileRef::Font(f) => f,
+        FileRef::Collection(c) => c.get(0).ok()?,
+    };
+    if font.head().is_err() {
+        return None;
+    }
+    let fvar = match font.fvar() {
+        Ok(f) => f,
+        Err(_) => return Some(Vec::new()),
+    };
+    let axes = fvar.axes().ok()?;
+    Some(axes.iter().map(|a| a.axis_tag().to_string()).collect())
+}
+
+/// Read Win32/typographic family name from an on-disk font file via zero-copy `memmap2` + `read-fonts`.
+pub fn win32_family_name(path: &Path) -> Option<String> {
+    let file = File::open(path).ok()?;
+    if file.metadata().ok()?.len() < 12 {
+        return None;
+    }
+    let mmap = unsafe { Mmap::map(&file) }.ok()?;
+    let file_ref = FileRef::new(&mmap).ok()?;
+    let font = match file_ref {
+        FileRef::Font(f) => f,
+        FileRef::Collection(c) => c.get(0).ok()?,
+    };
+    read_name_string(&font, NameId::FAMILY_NAME)
+        .or_else(|| read_name_string(&font, NameId::TYPOGRAPHIC_FAMILY_NAME))
+}
+
+/// Validate and inspect an on-disk font file via `read-fonts` + `memmap2` (zero DirectWrite).
+pub fn analyze_font_file(path: &Path) -> EngineInspectResult {
+    let fail = |reason: String| EngineInspectResult {
+        supported: false,
+        face_count: 0,
+        file_type: "unknown".to_string(),
+        face_type: "unknown".to_string(),
+        is_variable: false,
+        typographic_family: None,
+        win32_family: None,
+        full_name: None,
+        weight: 400,
+        italic: false,
+        hresult_code: None,
+        error_reason: Some(reason),
+    };
+
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(e) => return fail(format!("Failed to open font file: {e}")),
+    };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    if len < 12 {
+        return fail("Font file is truncated (< 12 bytes)".to_string());
+    }
+    let mmap = match unsafe { Mmap::map(&file) } {
+        Ok(m) => m,
+        Err(e) => return fail(format!("Failed to mmap font file: {e}")),
+    };
+    let slice: &[u8] = &mmap;
+    let decoded_owned;
+    let (data, is_woff2) = if slice.starts_with(b"wOF2") {
+        match wuff::decompress_woff2(slice) {
+            Ok(v) => {
+                decoded_owned = v;
+                (decoded_owned.as_slice(), true)
+            }
+            Err(e) => return fail(format!("Invalid WOFF2 container: {e:?}")),
+        }
+    } else {
+        (slice, false)
+    };
+
+    let file_ref = match FileRef::new(data) {
+        Ok(r) => r,
+        Err(e) => return fail(format!("Invalid OpenType SFNT/TTC table directory: {e}")),
+    };
+
+    let (face_count, font, is_ttc) = match file_ref {
+        FileRef::Font(f) => (1u32, f, false),
+        FileRef::Collection(c) => {
+            let count = c.len();
+            match c.get(0) {
+                Ok(f) => (count, f, true),
+                Err(e) => return fail(format!("Corrupt font collection face 0: {e}")),
+            }
+        }
+    };
+
+    if let Err(e) = font.head() {
+        return fail(format!("Missing or invalid OpenType head table: {e}"));
+    }
+
+    let has_cff = font.table_data(read_fonts::types::Tag::new(b"CFF ")).is_some()
+        || font.table_data(read_fonts::types::Tag::new(b"CFF2")).is_some();
+    let file_type = if is_woff2 {
+        "woff2"
+    } else if is_ttc {
+        "truetype-collection"
+    } else if has_cff {
+        "cff"
+    } else {
+        "truetype"
+    }
+    .to_string();
+    let face_type = if has_cff { "cff" } else { "truetype" }.to_string();
+
+    let is_variable = font
+        .fvar()
+        .ok()
+        .and_then(|fv| fv.axes().ok())
+        .map(|a| !a.is_empty())
+        .unwrap_or(false);
+
+    let typographic_family = read_name_string(&font, NameId::TYPOGRAPHIC_FAMILY_NAME);
+    let win32_family = read_name_string(&font, NameId::FAMILY_NAME);
+    let full_name = read_name_string(&font, NameId::FULL_NAME);
+
+    let weight = font
+        .os2()
+        .ok()
+        .map(|o| o.us_weight_class())
+        .filter(|&w| w > 0)
+        .unwrap_or(400);
+
+    let italic = font
+        .os2()
+        .ok()
+        .map(|o| (o.fs_selection().bits() & 0x01) != 0)
+        .or_else(|| font.head().ok().map(|h| (h.mac_style().bits() & 0x02) != 0))
+        .unwrap_or(false);
+
+    EngineInspectResult {
+        supported: true,
+        face_count,
+        file_type,
+        face_type,
+        is_variable,
+        typographic_family,
+        win32_family,
+        full_name,
+        weight,
+        italic,
+        hresult_code: None,
+        error_reason: None,
+    }
+}
+
+/// Engine metadata command (preserves `dwrite_engine_info` IPC name for frontend compatibility,
+/// reporting the active Skia FreeType + HarfBuzz + Fontations engine).
+#[tauri::command]
+pub async fn dwrite_engine_info() -> Result<EngineInfo, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let system_font_count = crate::parse::list_system_fonts_blocking()
+            .map(|r| r.len())
+            .unwrap_or(0);
+        Ok(EngineInfo {
+            engine: "Skia (FreeType + HarfBuzz) + Fontations".to_string(),
+            available: true,
+            activation_mode: "session-temporary".to_string(),
+            system_fonts_read_only: true,
+            system_font_count,
+            platform: std::env::consts::OS.to_string(),
+            elevated: crate::is_elevated(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// File inspection command (preserves `dwrite_inspect_font` IPC name, powered by `read-fonts` + `memmap2`).
+#[tauri::command]
+pub async fn dwrite_inspect_font(path: String) -> Result<EngineInspectResult, String> {
+    tauri::async_runtime::spawn_blocking(move || analyze_font_file(Path::new(&path)))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Recursively scan a directory for `.ttf`, `.otf`, `.ttc`, and `.woff2` files without
@@ -305,5 +592,32 @@ mod tests {
             .expect("Figtree fixture must be parsed");
         assert!(figtree.is_variable, "Figtree fixture should be variable");
         assert!(figtree.axes.iter().any(|a| a.tag == "wght"));
+    }
+
+    #[test]
+    fn system_font_dir_guard_rejects_session_paths() {
+        assert!(is_system_windows_fonts_dir(Path::new(r"C:\Windows\Fonts\arial.ttf")));
+        assert!(!is_system_windows_fonts_dir(Path::new(r"C:\Users\Eric\AppData\Local\Fonths\gdi-maps\a.ttf")));
+        assert!(!is_system_windows_fonts_dir(Path::new(r"C:\Users\Eric\Documents\Fonths\Providers\Google\Inter\Inter.ttf")));
+        assert!(!is_system_windows_fonts_dir(Path::new(r"C:\Users\Eric\Documents\Font Manager\Inter\Inter.ttf")));
+    }
+
+    #[test]
+    fn analyze_font_file_rejects_corrupt_and_validates_vf_fixtures() {
+        let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("tests")
+            .join("fixtures");
+        let res = analyze_font_file(&fixtures.join("Inter-opsz-wght.ttf"));
+        assert!(res.supported);
+        assert!(res.is_variable);
+        assert_eq!(res.face_count, 1);
+
+        let corrupt = std::env::temp_dir().join("fonths-corrupt-test.ttf");
+        let _ = fs::write(&corrupt, b"NOT_A_FONT_FILE_123456");
+        let bad = analyze_font_file(&corrupt);
+        assert!(!bad.supported);
+        assert!(bad.error_reason.is_some());
+        let _ = fs::remove_file(&corrupt);
     }
 }

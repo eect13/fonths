@@ -323,7 +323,7 @@ test("Rust indexer overlays STAT names; STAT values tests-only; no rayon; no fon
   const cargo = readFileSync(join(root, "src-tauri/Cargo.toml"), "utf8");
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
   assert.match(prod, /fn stat_axis_names/);
-  assert.match(prod, /face\.tables\(\)\.stat/);
+  assert.match(prod, /font\.stat\(\)|face\.tables\(\)\.stat/);
   assert.match(prod, /if name == tag/);
   assert.doesNotMatch(prod, /stat\.subtables\(\)/);
   assert.doesNotMatch(prod, /subtable_for_axis\s*\(/);

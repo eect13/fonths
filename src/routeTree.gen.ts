@@ -13,7 +13,6 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as DuplicatesRouteImport } from './routes/duplicates'
 import { Route as GlyphsRouteImport } from './routes/glyphs'
 import { Route as PlaygroundRouteImport } from './routes/playground'
-import { Route as SkiaRouteImport } from './routes/skia'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -35,25 +34,18 @@ const PlaygroundRoute = PlaygroundRouteImport.update({
   path: '/playground',
   getParentRoute: () => rootRouteImport,
 } as any)
-const SkiaRoute = SkiaRouteImport.update({
-  id: '/skia',
-  path: '/skia',
-  getParentRoute: () => rootRouteImport,
-} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/duplicates': typeof DuplicatesRoute
   '/glyphs': typeof GlyphsRoute
   '/playground': typeof PlaygroundRoute
-  '/skia': typeof SkiaRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/duplicates': typeof DuplicatesRoute
   '/glyphs': typeof GlyphsRoute
   '/playground': typeof PlaygroundRoute
-  '/skia': typeof SkiaRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -61,14 +53,13 @@ export interface FileRoutesById {
   '/duplicates': typeof DuplicatesRoute
   '/glyphs': typeof GlyphsRoute
   '/playground': typeof PlaygroundRoute
-  '/skia': typeof SkiaRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/duplicates' | '/glyphs' | '/playground' | '/skia'
+  fullPaths: '/' | '/duplicates' | '/glyphs' | '/playground'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/duplicates' | '/glyphs' | '/playground' | '/skia'
-  id: '__root__' | '/' | '/duplicates' | '/glyphs' | '/playground' | '/skia'
+  to: '/' | '/duplicates' | '/glyphs' | '/playground'
+  id: '__root__' | '/' | '/duplicates' | '/glyphs' | '/playground'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -76,7 +67,6 @@ export interface RootRouteChildren {
   DuplicatesRoute: typeof DuplicatesRoute
   GlyphsRoute: typeof GlyphsRoute
   PlaygroundRoute: typeof PlaygroundRoute
-  SkiaRoute: typeof SkiaRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -109,13 +99,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PlaygroundRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/skia': {
-      id: '/skia'
-      path: '/skia'
-      fullPath: '/skia'
-      preLoaderRoute: typeof SkiaRouteImport
-      parentRoute: typeof rootRouteImport
-    }
   }
 }
 
@@ -124,7 +107,6 @@ const rootRouteChildren: RootRouteChildren = {
   DuplicatesRoute: DuplicatesRoute,
   GlyphsRoute: GlyphsRoute,
   PlaygroundRoute: PlaygroundRoute,
-  SkiaRoute: SkiaRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

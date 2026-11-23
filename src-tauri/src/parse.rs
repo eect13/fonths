@@ -1,18 +1,25 @@
-//! Font metadata via `ttf-parser`. WOFF1 is inflated to SFNT first. WOFF2 stays JS.
+//! Zero-copy OpenType font metadata, layout, cmap, and system-font parser powered by
+//! Google Fontations (`read-fonts`) + `memmap2` (plus WOFF1 & WOFF2 decompression).
+//!
+//! Replaces legacy `ttf-parser` and Windows DirectWrite COM enumeration while keeping
+//! 100% of existing Tauri command names and JSON payloads intact.
 
-// c253 #2: heavy commands are `async` + spawn_blocking wrappers over `*_blocking`
-// bodies, because Tauri runs sync commands on the main (UI) thread.
 use crate::activate;
+use crate::scanner::read_name_string;
 use flate2::read::ZlibDecoder;
+use memmap2::Mmap;
+use read_fonts::{
+    tables::cmap::{CmapSubtable, PlatformId},
+    types::{NameId, Tag},
+    FileRef, FontRef, TableProvider,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
-use std::fs::File;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use tauri::AppHandle;
-use ttf_parser::Face;
 
 #[derive(Serialize, Clone)]
 pub struct CmapGlyph {
@@ -142,81 +149,160 @@ fn decode_woff1(data: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-fn sfnt_bytes(data: &[u8]) -> Result<Vec<u8>, String> {
+enum SfntSlice<'a> {
+    Borrowed(&'a [u8]),
+    Owned(Vec<u8>),
+}
+
+impl<'a> SfntSlice<'a> {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            SfntSlice::Borrowed(b) => b,
+            SfntSlice::Owned(v) => v.as_slice(),
+        }
+    }
+}
+
+fn sfnt_view<'a>(data: &'a [u8]) -> Result<SfntSlice<'a>, String> {
     if data.len() < 4 {
         return Err("file too small".into());
     }
     if data.starts_with(b"wOFF") {
-        return decode_woff1(data);
+        return Ok(SfntSlice::Owned(decode_woff1(data)?));
     }
     if data.starts_with(b"wOF2") {
-        return Err("woff2".into());
+        let decoded = wuff::decompress_woff2(data).map_err(|e| format!("woff2: {e:?}"))?;
+        return Ok(SfntSlice::Owned(decoded));
     }
-    Ok(data.to_vec())
+    Ok(SfntSlice::Borrowed(data))
 }
 
-fn with_face<T>(data: &[u8], f: impl FnOnce(&Face<'_>) -> T) -> Result<T, String> {
-    let owned = match sfnt_bytes(data) {
-        Ok(v) => v,
-        Err(e) if e == "woff2" => return Err("woff2".into()),
-        Err(e) => return Err(e),
-    };
-    let count = ttf_parser::fonts_in_collection(&owned).unwrap_or(1);
-    let mut last_err = String::from("no faces");
-    for i in 0..count {
-        match Face::parse(&owned, i) {
-            Ok(face) => return Ok(f(&face)),
-            Err(e) => last_err = format!("ttf-parser: {e} (faces {count})"),
+fn with_face<T>(data: &[u8], f: impl FnOnce(&FontRef<'_>) -> T) -> Result<T, String> {
+    let view = sfnt_view(data)?;
+    let file_ref = FileRef::new(view.as_slice()).map_err(|e| format!("read-fonts: {e}"))?;
+    match file_ref {
+        FileRef::Font(font) => Ok(f(&font)),
+        FileRef::Collection(col) => {
+            let count = col.len();
+            let mut last_err = String::from("no faces");
+            for i in 0..count {
+                match col.get(i) {
+                    Ok(font) => return Ok(f(&font)),
+                    Err(e) => last_err = format!("read-fonts: {e} (faces {count})"),
+                }
+            }
+            Err(last_err)
         }
     }
-    Err(last_err)
 }
 
-fn all_faces<T>(data: &[u8], mut f: impl FnMut(u32, &Face<'_>) -> T) -> Result<Vec<T>, String> {
-    let owned = sfnt_bytes(data)?;
-    let count = ttf_parser::fonts_in_collection(&owned).unwrap_or(1);
-    let mut out = Vec::new();
-    for i in 0..count {
-        match Face::parse(&owned, i) {
-            Ok(face) => out.push(f(i, &face)),
-            Err(_) => continue,
+fn all_faces<T>(
+    data: &[u8],
+    mut f: impl FnMut(u32, usize, &FontRef<'_>) -> T,
+) -> Result<Vec<T>, String> {
+    let view = sfnt_view(data)?;
+    let file_ref = FileRef::new(view.as_slice()).map_err(|e| format!("read-fonts: {e}"))?;
+    match file_ref {
+        FileRef::Font(font) => Ok(vec![f(0, 1, &font)]),
+        FileRef::Collection(col) => {
+            let count = col.len() as usize;
+            let mut out = Vec::with_capacity(count);
+            for i in 0..col.len() {
+                if let Ok(font) = col.get(i) {
+                    out.push(f(i, count, &font));
+                }
+            }
+            if out.is_empty() {
+                Err("no faces".into())
+            } else {
+                Ok(out)
+            }
         }
     }
-    if out.is_empty() {
-        Err("no faces".into())
-    } else {
-        Ok(out)
-    }
 }
 
-fn cmap_from_face(face: &Face<'_>) -> Vec<CmapGlyph> {
-    let Some(cmap) = face.tables().cmap else {
+fn is_unicode_cmap_encoding(platform_id: PlatformId, encoding_id: u16) -> bool {
+    platform_id == PlatformId::Unicode
+        || (platform_id == PlatformId::Windows && matches!(encoding_id, 1 | 10))
+}
+
+fn cmap_from_face(font: &FontRef<'_>) -> Vec<CmapGlyph> {
+    let Ok(cmap) = font.cmap() else {
         return Vec::new();
     };
     const CMAP_GLYPH_CAP: usize = 8192;
     let mut seen = HashSet::new();
     let mut out = Vec::new();
-    for subtable in cmap.subtables {
-        if !subtable.is_unicode() {
+    let data = cmap.offset_data();
+    for rec in cmap.encoding_records() {
+        if !is_unicode_cmap_encoding(rec.platform_id(), rec.encoding_id()) {
             continue;
         }
-        subtable.codepoints(|cp| {
+        let Ok(subtable) = rec.subtable(data) else {
+            continue;
+        };
+        let mut push_pair = |cp: u32, gid: u32| -> bool {
             if out.len() >= CMAP_GLYPH_CAP {
-                return;
+                return true;
             }
             if cp < 0x20 || (0xD800..=0xDFFF).contains(&cp) {
-                return;
+                return false;
             }
             if !seen.insert(cp) {
-                return;
+                return false;
             }
-            let gid = subtable.glyph_index(cp).map(|g| g.0).unwrap_or(0);
             out.push(CmapGlyph {
                 cp,
-                gid,
+                gid: gid.min(u32::from(u16::MAX)) as u16,
                 name: String::new(),
             });
-        });
+            out.len() >= CMAP_GLYPH_CAP
+        };
+        match subtable {
+            CmapSubtable::Format4(t) => {
+                for (cp, gid) in t.iter() {
+                    if push_pair(cp, gid.to_u32()) {
+                        break;
+                    }
+                }
+            }
+            CmapSubtable::Format12(t) => {
+                for (cp, gid) in t.iter() {
+                    if push_pair(cp, gid.to_u32()) {
+                        break;
+                    }
+                }
+            }
+            CmapSubtable::Format0(t) => {
+                for (cp, gid) in t.iter() {
+                    if push_pair(cp, gid.to_u32()) {
+                        break;
+                    }
+                }
+            }
+            CmapSubtable::Format6(t) => {
+                for (cp, gid) in t.iter() {
+                    if push_pair(cp, gid.to_u32()) {
+                        break;
+                    }
+                }
+            }
+            CmapSubtable::Format10(t) => {
+                for (cp, gid) in t.iter() {
+                    if push_pair(cp, gid.to_u32()) {
+                        break;
+                    }
+                }
+            }
+            CmapSubtable::Format13(t) => {
+                for (cp, gid) in t.iter() {
+                    if push_pair(cp, gid.to_u32()) {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
         if out.len() >= CMAP_GLYPH_CAP {
             break;
         }
@@ -239,49 +325,45 @@ fn snap_fvar(n: f32) -> f64 {
     (x * 65536.0).round() / 65536.0
 }
 
-fn name_by_id(face: &Face<'_>, name_id: u16) -> Option<String> {
-    for n in face.names() {
-        if n.name_id != name_id {
-            continue;
-        }
-        if let Some(s) = n.to_string() {
-            let t = s.trim();
-            if !t.is_empty() {
-                return Some(t.to_string());
-            }
-        }
-    }
-    None
+fn name_by_id(font: &FontRef<'_>, name_id: NameId) -> Option<String> {
+    read_name_string(font, name_id)
 }
 
-/// Design-axis names from STAT. Overlay when fvar's name is missing or just the tag.
-/// Axis *value* tables (Regular/Bold, 14pt, elidable, linkedValue, format 4) stay unread
-/// here — fvar named instances already chip those. STAT-only axes (Inter `ital`) are not
-/// fvar sliders. ttf-parser 0.25 Format2 skip-on-match in the per-axis lookup is inverted;
-/// tests walk every value table themselves. Production never reads those tables.
-fn stat_axis_names(face: &Face<'_>) -> HashMap<String, String> {
-    let Some(stat) = face.tables().stat else {
+/// Design-axis names from STAT (`font.stat()`). Overlay when `fvar`'s name is missing or just the tag.
+/// STAT-only axes (such as Inter `ital`) are never promoted to `fvar` sliders.
+fn stat_axis_names(font: &FontRef<'_>) -> HashMap<String, String> {
+    let Ok(stat) = font.stat() else {
+        return HashMap::new();
+    };
+    let Ok(design_axes) = stat.design_axes() else {
         return HashMap::new();
     };
     let mut out = HashMap::new();
-    for axis in stat.axes {
-        let tag = axis.tag.to_string();
-        if let Some(name) = name_by_id(face, axis.name_id) {
+    for axis in design_axes {
+        let tag = axis.axis_tag().to_string();
+        if let Some(name) = name_by_id(font, axis.axis_name_id()) {
             out.insert(tag, name);
         }
     }
     out
 }
 
-fn axes_from_face(face: &Face<'_>) -> Vec<FontAxisOut> {
-    let stat_names = stat_axis_names(face);
+fn axes_from_face(font: &FontRef<'_>) -> Vec<FontAxisOut> {
+    let Ok(fvar) = font.fvar() else {
+        return Vec::new();
+    };
+    let Ok(records) = fvar.axes() else {
+        return Vec::new();
+    };
+    let stat_names = stat_axis_names(font);
     let mut axes = Vec::new();
-    for axis in face.variation_axes() {
-        let tag = axis.tag.to_string();
-        if axis.hidden && tag != "ital" {
+    for axis in records {
+        let tag = axis.axis_tag().to_string();
+        let hidden = (axis.flags() & 0x0001) != 0;
+        if hidden && tag != "ital" {
             continue;
         }
-        let mut name = name_by_id(face, axis.name_id).unwrap_or_else(|| tag.clone());
+        let mut name = name_by_id(font, axis.axis_name_id()).unwrap_or_else(|| tag.clone());
         if name == tag {
             if let Some(stat) = stat_names.get(&tag) {
                 name = stat.clone();
@@ -290,66 +372,110 @@ fn axes_from_face(face: &Face<'_>) -> Vec<FontAxisOut> {
         axes.push(FontAxisOut {
             tag,
             name,
-            min: snap_fvar(axis.min_value),
-            max: snap_fvar(axis.max_value),
-            def_value: snap_fvar(axis.def_value),
+            min: snap_fvar(axis.min_value().to_f32()),
+            max: snap_fvar(axis.max_value().to_f32()),
+            def_value: snap_fvar(axis.default_value().to_f32()),
         });
     }
     axes
 }
 
-fn panose_from_face(face: &Face<'_>) -> Option<Vec<u8>> {
-    let data = face.raw_face().table(ttf_parser::Tag::from_bytes(b"OS/2"))?;
-    if data.len() < 42 {
-        return None;
-    }
-    Some(data[32..42].to_vec())
+fn weight_from_face(font: &FontRef<'_>) -> u16 {
+    font.os2()
+        .ok()
+        .map(|o| o.us_weight_class())
+        .filter(|&w| w > 0)
+        .unwrap_or(400)
 }
 
-fn family_class_from_face(face: &Face<'_>) -> Option<u16> {
-    let data = face.raw_face().table(ttf_parser::Tag::from_bytes(b"OS/2"))?;
-    let val = u16be(data, 30)?;
-    (val != 0).then_some(val)
-}
-
-fn fixed_pitch_from_face(face: &Face<'_>) -> Option<bool> {
-    if let Some(post) = face.raw_face().table(ttf_parser::Tag::from_bytes(b"post")) {
-        if let Some(v) = u32be(post, 12) {
-            return Some(v != 0);
+fn is_italic_face(font: &FontRef<'_>) -> bool {
+    if let Ok(os2) = font.os2() {
+        // OS/2 fsSelection bit 0 = ITALIC, bit 9 = OBLIQUE
+        let bits = os2.fs_selection().bits();
+        if (bits & 0x0001) != 0 || (bits & 0x0200) != 0 {
+            return true;
         }
     }
-    Some(face.is_monospaced())
+    font.head()
+        .ok()
+        .map(|h| (h.mac_style().bits() & 0x0002) != 0)
+        .unwrap_or(false)
 }
 
-fn metrics_from_face(face: &Face<'_>) -> FontMetricsOut {
+fn is_variable_face(font: &FontRef<'_>) -> bool {
+    font.fvar()
+        .ok()
+        .and_then(|fv| fv.axes().ok())
+        .map(|a| !a.is_empty())
+        .unwrap_or(false)
+}
+
+fn metrics_from_face(font: &FontRef<'_>) -> FontMetricsOut {
+    let upem = font.head().ok().map(|h| h.units_per_em()).unwrap_or(1000);
+    let os2 = font.os2().ok();
+    let weight_class = os2
+        .as_ref()
+        .map(|o| o.us_weight_class())
+        .filter(|&w| w > 0)
+        .unwrap_or(400);
+    let width_class = os2
+        .as_ref()
+        .map(|o| o.us_width_class())
+        .filter(|&w| w > 0)
+        .unwrap_or(5);
+    let x_height = os2.as_ref().and_then(|o| o.sx_height()).filter(|&n| n > 0);
+    let cap_height = os2.as_ref().and_then(|o| o.s_cap_height()).filter(|&n| n > 0);
+    let panose = os2.as_ref().map(|o| o.panose_10().to_vec());
+    let family_class = os2
+        .as_ref()
+        .map(|o| o.s_family_class() as u16)
+        .filter(|&v| v != 0);
+    let is_fixed_pitch = font
+        .post()
+        .ok()
+        .map(|p| p.is_fixed_pitch() != 0)
+        .or_else(|| {
+            font.table_data(Tag::new(b"post"))
+                .and_then(|d| u32be(d.as_bytes(), 12))
+                .map(|v| v != 0)
+        });
+
     FontMetricsOut {
-        upem: face.units_per_em(),
-        weight_class: face.weight().to_number(),
-        width_class: face.width().to_number(),
-        x_height: face.x_height().filter(|n| *n > 0),
-        cap_height: face.capital_height().filter(|n| *n > 0),
-        panose: panose_from_face(face),
-        family_class: family_class_from_face(face),
-        is_fixed_pitch: fixed_pitch_from_face(face),
+        upem,
+        weight_class,
+        width_class,
+        x_height,
+        cap_height,
+        panose,
+        family_class,
+        is_fixed_pitch,
     }
 }
 
-fn layout_from_face(face: &Face<'_>) -> FontLayout {
-    let mut ot = HashSet::new();
-    for layout in [face.tables().gsub, face.tables().gpos].into_iter().flatten() {
-        for feat in layout.features {
-            ot.insert(feat.tag.to_string());
+fn layout_from_face(font: &FontRef<'_>) -> FontLayout {
+    let mut ot = BTreeSet::new();
+    if let Ok(gsub) = font.gsub() {
+        if let Ok(flist) = gsub.feature_list() {
+            for rec in flist.feature_records() {
+                ot.insert(rec.feature_tag().to_string());
+            }
         }
     }
-    let mut ot_features: Vec<String> = ot.into_iter().collect();
-    ot_features.sort();
-    let axes = axes_from_face(face);
+    if let Ok(gpos) = font.gpos() {
+        if let Ok(flist) = gpos.feature_list() {
+            for rec in flist.feature_records() {
+                ot.insert(rec.feature_tag().to_string());
+            }
+        }
+    }
+    let axes = axes_from_face(font);
+    let glyph_count = font.maxp().ok().map(|m| m.num_glyphs()).unwrap_or(0);
     FontLayout {
         variable: !axes.is_empty(),
-        glyph_count: face.number_of_glyphs(),
+        glyph_count,
         axes,
-        ot_features,
-        metrics: Some(metrics_from_face(face)),
+        ot_features: ot.into_iter().collect(),
+        metrics: Some(metrics_from_face(font)),
     }
 }
 
@@ -360,17 +486,7 @@ fn hex_sha256(bytes: &[u8]) -> String {
 }
 
 fn hash_file(path: &Path) -> Result<String, String> {
-    let mut file = File::open(path).map_err(|e| e.to_string())?;
-    let mut hasher = Sha256::new();
-    let mut buf = [0u8; 65536];
-    loop {
-        let n = file.read(&mut buf).map_err(|e| e.to_string())?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+    crate::fast_parse::sha256_file_streaming(path).map_err(|e| e.to_string())
 }
 
 fn nearly_same(a: &[u8], b: &[u8]) -> DiffOut {
@@ -438,22 +554,15 @@ pub fn parse_layout_for_path_cached(path: &Path) -> Result<FontLayout, String> {
             }
         }
     }
-    // Targeted partial SFNT read skips glyf/CFF/COLR/CBDT (~10-22x faster on large fonts);
-    // falls back to full read for TTC/OTC collections or unusual containers.
-    let layout = match crate::fast_parse::read_metadata_sfnt_bytes(path) {
-        Ok(Some(compact)) => match all_faces(&compact, |_, face| layout_from_face(face))
-            .and_then(merge_layouts)
-        {
-            Ok(l) => l,
-            Err(_) => {
-                let data = std::fs::read(path).map_err(|e| e.to_string())?;
-                merge_layouts(all_faces(&data, |_, face| layout_from_face(face))?)?
-            }
-        },
-        _ => {
-            let data = std::fs::read(path).map_err(|e| e.to_string())?;
-            merge_layouts(all_faces(&data, |_, face| layout_from_face(face))?)?
-        }
+    // Zero-copy mmap + Fontations (`read-fonts`) touches only metadata pages on disk.
+    let file = crate::fast_parse::open_shared_read(path).map_err(|e| e.to_string())?;
+    let layout = if let Ok(mmap) = unsafe { Mmap::map(&file) } {
+        merge_layouts(all_faces(&mmap, |_, _, face| layout_from_face(face))?)?
+    } else if let Ok(Some(compact)) = crate::fast_parse::read_metadata_sfnt_bytes(path) {
+        merge_layouts(all_faces(&compact, |_, _, face| layout_from_face(face))?)?
+    } else {
+        let data = std::fs::read(path).map_err(|e| e.to_string())?;
+        merge_layouts(all_faces(&data, |_, _, face| layout_from_face(face))?)?
     };
     if let Some(k) = key {
         if let Ok(mut cache) = layout_cache().lock() {
@@ -481,8 +590,13 @@ pub fn parse_family_cmap_blocking(app: AppHandle, family: String) -> Result<Vec<
         }
     }
     let path = activate::read_family_font_blocking(app, family, None)?;
-    let data = std::fs::read(&path).map_err(|e| e.to_string())?;
-    let glyphs = with_face(&data, cmap_from_face)?;
+    let file = crate::fast_parse::open_shared_read(Path::new(&path)).map_err(|e| e.to_string())?;
+    let glyphs = if let Ok(mmap) = unsafe { Mmap::map(&file) } {
+        with_face(&mmap, cmap_from_face)?
+    } else {
+        let data = std::fs::read(&path).map_err(|e| e.to_string())?;
+        with_face(&data, cmap_from_face)?
+    };
     if let Ok(mut cache) = cmap_cache().lock() {
         cache.insert(key, glyphs.clone());
     }
@@ -556,7 +670,7 @@ pub fn parse_font_layout_blocking(bytes: Vec<u8>) -> Result<FontLayout, String> 
     with_face(&bytes, layout_from_face)
 }
 
-/// Every face in a TTC / OTC. WOFF2 is rejected here — JS FontFace handles preview.
+/// Every face in a TTC / OTC / TTF / OTF / WOFF1 / WOFF2.
 #[tauri::command]
 pub async fn parse_font_layouts(bytes: Vec<u8>) -> Result<Vec<FontLayout>, String> {
     tauri::async_runtime::spawn_blocking(move || parse_font_layouts_blocking(bytes))
@@ -565,7 +679,7 @@ pub async fn parse_font_layouts(bytes: Vec<u8>) -> Result<Vec<FontLayout>, Strin
 }
 
 pub fn parse_font_layouts_blocking(bytes: Vec<u8>) -> Result<Vec<FontLayout>, String> {
-    all_faces(&bytes, |_, face| layout_from_face(face))
+    all_faces(&bytes, |_, _, face| layout_from_face(face))
 }
 
 #[tauri::command]
@@ -616,20 +730,12 @@ pub struct FontIndexOut {
     #[serde(rename = "otFeatures")]
     pub ot_features: Vec<String>,
     /// Face in a TTC/OTC (0 for single fonts). Collection faces get `checksum#index`
-    /// (same key as the JS parser) so the importer keeps every face.
+    /// so the importer keeps every face.
     #[serde(rename = "faceIndex")]
     pub face_index: u32,
 }
 
 fn index_one_path(path: &Path) -> Result<Vec<FontIndexOut>, String> {
-    let ext = path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    if ext == "woff2" {
-        return Err("woff2".into());
-    }
     let cache_key = path_mtime_size_key(path);
     if let Some(ref k) = cache_key {
         if let Ok(cache) = index_cache().lock() {
@@ -640,104 +746,20 @@ fn index_one_path(path: &Path) -> Result<Vec<FontIndexOut>, String> {
     }
     let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
     let file_size = meta.len();
+    if file_size < 12 {
+        return Err("file too small".into());
+    }
     let file_name = path
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("font.ttf")
         .to_string();
     let path_s = path.to_string_lossy().into_owned();
-    let is_collection_ext = matches!(ext.as_str(), "ttc" | "otc");
-    // For large single-face fonts (> 256 KB), avoid loading multi-MB glyf/CFF tables into RAM:
-    // stream-hash in 64 KB chunks and parse only targeted SFNT metadata tables.
-    let out = if !is_collection_ext && file_size > 256 * 1024 {
-        if let (Ok(checksum), Ok(Some(compact))) = (
-            crate::fast_parse::sha256_file_streaming(path),
-            crate::fast_parse::read_metadata_sfnt_bytes(path),
-        ) {
-            match all_faces(&compact, |index, face| {
-                let (family, full_name) = face_installed_names(face);
-                let layout = layout_from_face(face);
-                FontIndexOut {
-                    path: path_s.clone(),
-                    file_name: file_name.clone(),
-                    file_size,
-                    family,
-                    full_name,
-                    weight: face.weight().to_number(),
-                    italic: face.is_italic(),
-                    variable: layout.variable,
-                    axes: layout.axes,
-                    metrics: layout.metrics,
-                    checksum: checksum.clone(),
-                    glyph_count: layout.glyph_count,
-                    ot_features: layout.ot_features,
-                    face_index: index,
-                }
-            }) {
-                Ok(rows) if !rows.is_empty() => rows,
-                _ => {
-                    let data = std::fs::read(path).map_err(|e| e.to_string())?;
-                    let collection = ttf_parser::fonts_in_collection(&data).unwrap_or(1) > 1;
-                    all_faces(&data, |index, face| {
-                        let (family, full_name) = face_installed_names(face);
-                        let layout = layout_from_face(face);
-                        FontIndexOut {
-                            path: path_s.clone(),
-                            file_name: file_name.clone(),
-                            file_size,
-                            family,
-                            full_name,
-                            weight: face.weight().to_number(),
-                            italic: face.is_italic(),
-                            variable: layout.variable,
-                            axes: layout.axes,
-                            metrics: layout.metrics,
-                            checksum: if collection {
-                                format!("{checksum}#{index}")
-                            } else {
-                                checksum.clone()
-                            },
-                            glyph_count: layout.glyph_count,
-                            ot_features: layout.ot_features,
-                            face_index: index,
-                        }
-                    })?
-                }
-            }
-        } else {
-            let data = std::fs::read(path).map_err(|e| e.to_string())?;
-            let checksum = hex_sha256(&data);
-            let collection = ttf_parser::fonts_in_collection(&data).unwrap_or(1) > 1;
-            all_faces(&data, |index, face| {
-                let (family, full_name) = face_installed_names(face);
-                let layout = layout_from_face(face);
-                FontIndexOut {
-                    path: path_s.clone(),
-                    file_name: file_name.clone(),
-                    file_size,
-                    family,
-                    full_name,
-                    weight: face.weight().to_number(),
-                    italic: face.is_italic(),
-                    variable: layout.variable,
-                    axes: layout.axes,
-                    metrics: layout.metrics,
-                    checksum: if collection {
-                        format!("{checksum}#{index}")
-                    } else {
-                        checksum.clone()
-                    },
-                    glyph_count: layout.glyph_count,
-                    ot_features: layout.ot_features,
-                    face_index: index,
-                }
-            })?
-        }
-    } else {
-        let data = std::fs::read(path).map_err(|e| e.to_string())?;
-        let checksum = hex_sha256(&data);
-        let collection = ttf_parser::fonts_in_collection(&data).unwrap_or(1) > 1;
-        all_faces(&data, |index, face| {
+    let file = crate::fast_parse::open_shared_read(path).map_err(|e| e.to_string())?;
+
+    let out = if let Ok(mmap) = unsafe { Mmap::map(&file) } {
+        let checksum = hex_sha256(&mmap);
+        all_faces(&mmap, |index, total, face| {
             let (family, full_name) = face_installed_names(face);
             let layout = layout_from_face(face);
             FontIndexOut {
@@ -746,12 +768,39 @@ fn index_one_path(path: &Path) -> Result<Vec<FontIndexOut>, String> {
                 file_size,
                 family,
                 full_name,
-                weight: face.weight().to_number(),
-                italic: face.is_italic(),
+                weight: weight_from_face(face),
+                italic: is_italic_face(face),
                 variable: layout.variable,
                 axes: layout.axes,
                 metrics: layout.metrics,
-                checksum: if collection {
+                checksum: if total > 1 {
+                    format!("{checksum}#{index}")
+                } else {
+                    checksum.clone()
+                },
+                glyph_count: layout.glyph_count,
+                ot_features: layout.ot_features,
+                face_index: index,
+            }
+        })?
+    } else {
+        let data = std::fs::read(path).map_err(|e| e.to_string())?;
+        let checksum = hex_sha256(&data);
+        all_faces(&data, |index, total, face| {
+            let (family, full_name) = face_installed_names(face);
+            let layout = layout_from_face(face);
+            FontIndexOut {
+                path: path_s.clone(),
+                file_name: file_name.clone(),
+                file_size,
+                family,
+                full_name,
+                weight: weight_from_face(face),
+                italic: is_italic_face(face),
+                variable: layout.variable,
+                axes: layout.axes,
+                metrics: layout.metrics,
+                checksum: if total > 1 {
                     format!("{checksum}#{index}")
                 } else {
                     checksum.clone()
@@ -762,9 +811,9 @@ fn index_one_path(path: &Path) -> Result<Vec<FontIndexOut>, String> {
             }
         })?
     };
+
     if let Some(k) = cache_key {
         if let Ok(mut cache) = index_cache().lock() {
-            // Scale to 100k+ font libraries without mid-import full-cache thrash.
             if cache.len() >= 131_072 {
                 cache.clear();
             }
@@ -775,7 +824,7 @@ fn index_one_path(path: &Path) -> Result<Vec<FontIndexOut>, String> {
 }
 
 /// Watch-folder / 20k local: parse on disk in parallel std::thread::scope worker threads,
-/// no File bytes into JS. Do not rayon without a profiler — stdlib threads cap at 8 workers.
+/// zero-copy via memmap2 + read-fonts. Do not rayon without a profiler — stdlib threads cap at 8 workers.
 #[tauri::command]
 pub async fn index_font_paths(paths: Vec<String>) -> Result<Vec<FontIndexOut>, String> {
     tauri::async_runtime::spawn_blocking(move || index_font_paths_blocking(paths))
@@ -846,146 +895,178 @@ pub struct SystemFontOut {
     pub weight: u16,
 }
 
-/// Windows Fonts CPL name: typographic family (ID 16) then Win32 family (ID 1).
-/// Full name is ID 4. Never the file stem unless the name table is missing.
-fn face_installed_names(face: &Face<'_>) -> (String, String) {
-    let mut family = None;
-    let mut typo = None;
-    let mut full = None;
-    for n in face.names() {
-        let Some(s) = n.to_string() else { continue };
-        let t = s.trim();
-        if t.is_empty() {
-            continue;
-        }
-        if n.name_id == ttf_parser::name_id::TYPOGRAPHIC_FAMILY {
-            typo = Some(t.to_string());
-        } else if n.name_id == ttf_parser::name_id::FAMILY && family.is_none() {
-            family = Some(t.to_string());
-        } else if n.name_id == ttf_parser::name_id::FULL_NAME && full.is_none() {
-            full = Some(t.to_string());
-        }
-    }
-    let family = typo.or(family).unwrap_or_default();
-    let full = full.unwrap_or_else(|| family.clone());
+/// Typographic family (ID 16) then Win32 family (ID 1); full name is ID 4.
+fn face_installed_names(font: &FontRef<'_>) -> (String, String) {
+    let family = read_name_string(font, NameId::TYPOGRAPHIC_FAMILY_NAME)
+        .or_else(|| read_name_string(font, NameId::FAMILY_NAME))
+        .unwrap_or_default();
+    let full = read_name_string(font, NameId::FULL_NAME).unwrap_or_else(|| family.clone());
     (family, full)
 }
 
-fn system_font_dirs() -> Vec<std::path::PathBuf> {
+fn system_font_dirs() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
-        let windir = std::env::var("SYSTEMROOT")
-            .or_else(|_| std::env::var("WINDIR"))
-            .unwrap_or_else(|_| "C:\\Windows".into());
-        vec![std::path::PathBuf::from(windir).join("Fonts")]
+        vec![crate::scanner::windows_system_fonts_dir()]
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     {
         let mut dirs = vec![
-            std::path::PathBuf::from("/usr/share/fonts"),
-            std::path::PathBuf::from("/usr/local/share/fonts"),
+            PathBuf::from("/System/Library/Fonts"),
+            PathBuf::from("/Library/Fonts"),
         ];
         if let Ok(home) = std::env::var("HOME") {
-            dirs.push(std::path::PathBuf::from(&home).join(".fonts"));
-            dirs.push(std::path::PathBuf::from(home).join(".local/share/fonts"));
+            dirs.push(PathBuf::from(home).join("Library/Fonts"));
+        }
+        dirs
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let mut dirs = vec![
+            PathBuf::from("/usr/share/fonts"),
+            PathBuf::from("/usr/local/share/fonts"),
+        ];
+        if let Ok(home) = std::env::var("HOME") {
+            dirs.push(PathBuf::from(&home).join(".fonts"));
+            dirs.push(PathBuf::from(home).join(".local/share/fonts"));
         }
         dirs
     }
 }
 
-fn push_system_font(path: &Path, out: &mut Vec<SystemFontOut>, seen: &mut HashSet<String>) {
-    let ext = path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    if !matches!(ext.as_str(), "ttf" | "otf" | "ttc" | "otc") {
-        return;
-    }
-    let Ok(meta) = std::fs::metadata(path) else {
-        return;
-    };
-    if meta.len() < 256 || meta.len() > 24 * 1024 * 1024 {
-        return;
-    }
-    let file_name = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("font.ttf")
-        .to_string();
-    let Ok(data) = std::fs::read(path) else {
-        return;
-    };
-    let path_s = path.to_string_lossy().into_owned();
-    let mut added = false;
-    if let Ok(faces) = all_faces(&data, |_, face| {
-        let (family, full) = face_installed_names(face);
-        let italic = face.is_italic();
-        let variable = face.is_variable();
-        let weight = face.weight().to_number();
-        (family, full, italic, variable, weight)
-    }) {
-        for (family, full, italic, variable, weight) in faces {
-            let family = family.trim().to_string();
-            if family.is_empty() {
-                continue;
-            }
-            let key = family.to_ascii_lowercase();
-            if !seen.insert(key) {
-                continue;
-            }
-            let full_name = {
-                let f = full.trim();
-                if f.is_empty() || f.eq_ignore_ascii_case(&family) {
-                    family.clone()
-                } else {
-                    f.to_string()
-                }
-            };
-            out.push(SystemFontOut {
-                family,
-                full_name,
-                path: path_s.clone(),
-                file_name: file_name.clone(),
-                italic,
-                variable,
-                weight,
-            });
-            added = true;
-            if out.len() >= 800 {
-                return;
-            }
-        }
-    }
-    let _ = added;
-}
-
-fn walk_system_dir(dir: &Path, out: &mut Vec<SystemFontOut>, seen: &mut HashSet<String>, depth: u8) {
-    if out.len() >= 800 || depth > 4 {
+fn collect_system_font_paths(dir: &Path, out: &mut Vec<PathBuf>, depth: u8) {
+    if depth > 4 {
         return;
     }
     let Ok(rd) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in rd.flatten() {
-        if out.len() >= 800 {
-            return;
-        }
         let path = entry.path();
         if path.is_dir() {
-            walk_system_dir(&path, out, seen, depth + 1);
+            collect_system_font_paths(&path, out, depth + 1);
             continue;
         }
-        push_system_font(&path, out, seen);
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if matches!(ext.as_str(), "ttf" | "otf" | "ttc" | "otc") {
+            out.push(path);
+        }
     }
 }
 
+fn parse_system_font_file(path: &Path) -> Vec<SystemFontOut> {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return Vec::new();
+    };
+    if meta.len() < 256 || meta.len() > 32 * 1024 * 1024 {
+        return Vec::new();
+    }
+    let Ok(file) = crate::fast_parse::open_shared_read(path) else {
+        return Vec::new();
+    };
+    let Ok(mmap) = (unsafe { Mmap::map(&file) }) else {
+        return Vec::new();
+    };
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("font.ttf")
+        .to_string();
+    let path_s = path.to_string_lossy().into_owned();
+
+    let Ok(faces) = all_faces(&mmap, |_, _, face| {
+        let (family, full) = face_installed_names(face);
+        let italic = is_italic_face(face);
+        let variable = is_variable_face(face);
+        let weight = weight_from_face(face);
+        (family, full, italic, variable, weight)
+    }) else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::with_capacity(faces.len());
+    for (family, full, italic, variable, weight) in faces {
+        let family = family.trim().to_string();
+        if family.is_empty() {
+            continue;
+        }
+        let full_name = {
+            let f = full.trim();
+            if f.is_empty() || f.eq_ignore_ascii_case(&family) {
+                family.clone()
+            } else {
+                f.to_string()
+            }
+        };
+        out.push(SystemFontOut {
+            family,
+            full_name,
+            path: path_s.clone(),
+            file_name: file_name.clone(),
+            italic,
+            variable,
+            weight,
+        });
+    }
+    out
+}
+
+/// Zero-copy parallel read-only scan of OS system font folders via `memmap2` + `read-fonts`.
+/// Never calls GDI `EnumFontFamiliesExW` or DirectWrite COM so session-activated fonts
+/// can never leak into the System Fonts drawer.
 fn walk_system_fonts() -> Vec<SystemFontOut> {
-    let mut out = Vec::new();
-    let mut seen = HashSet::new();
+    let mut files = Vec::new();
     for dir in system_font_dirs() {
         if dir.is_dir() {
-            walk_system_dir(&dir, &mut out, &mut seen, 0);
+            collect_system_font_paths(&dir, &mut files, 0);
+        }
+    }
+    if files.is_empty() {
+        return Vec::new();
+    }
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(2, 8)
+        .min(files.len());
+    let chunk_size = files.len().div_ceil(workers);
+    let raw: Vec<SystemFontOut> = std::thread::scope(|s| {
+        let mut handles = Vec::with_capacity(workers);
+        for chunk in files.chunks(chunk_size) {
+            handles.push(s.spawn(move || {
+                let mut local = Vec::with_capacity(chunk.len());
+                for p in chunk {
+                    local.extend(parse_system_font_file(p));
+                }
+                local
+            }));
+        }
+        let mut merged = Vec::with_capacity(files.len());
+        for h in handles {
+            if let Ok(mut part) = h.join() {
+                merged.append(&mut part);
+            }
+        }
+        merged
+    });
+
+    let mut seen = HashSet::new();
+    let mut out = Vec::with_capacity(raw.len());
+    for row in raw {
+        #[cfg(windows)]
+        if !crate::scanner::is_system_windows_fonts_dir(Path::new(&row.path)) {
+            continue;
+        }
+        let key = row.family.to_ascii_lowercase();
+        if seen.insert(key) {
+            out.push(row);
+            if out.len() >= 800 {
+                break;
+            }
         }
     }
     out.sort_by_key(|a| a.family.to_lowercase());
@@ -1000,23 +1081,8 @@ pub async fn list_system_fonts() -> Result<Vec<SystemFontOut>, String> {
 }
 
 pub fn list_system_fonts_blocking() -> Result<Vec<SystemFontOut>, String> {
-    // Snapshot C:\Windows\Fonts via DirectWrite (read-only system collection filtered strictly
-    // to Windows\Fonts), falling back to a read-only file walk only if needed. Never
-    // EnumFontFamiliesExW — session AddFontResourceExW fonts must never appear as system fonts.
     static CACHE: OnceLock<Vec<SystemFontOut>> = OnceLock::new();
-    Ok(CACHE
-        .get_or_init(|| {
-            #[cfg(windows)]
-            {
-                if let Ok(rows) = crate::dwrite::list_system_fonts_dwrite() {
-                    if !rows.is_empty() {
-                        return rows;
-                    }
-                }
-            }
-            walk_system_fonts()
-        })
-        .clone())
+    Ok(CACHE.get_or_init(walk_system_fonts).clone())
 }
 
 #[tauri::command]
@@ -1049,12 +1115,13 @@ pub fn open_system_fonts_folder() -> Result<String, String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use read_fonts::tables::stat::AxisValue;
 
     #[test]
     fn stat_overlays_tag_only_fvar_names() {
         let bytes = include_bytes!("../../tests/fixtures/stat-overlay.ttf");
-        let face = Face::parse(bytes, 0).expect("overlay ttf");
-        assert!(face.tables().stat.is_some(), "STAT table present");
+        let face = FontRef::new(bytes).expect("overlay ttf");
+        assert!(face.stat().is_ok(), "STAT table present");
         let axes = axes_from_face(&face);
         let opsz = axes.iter().find(|a| a.tag == "opsz").expect("opsz");
         assert_eq!(opsz.name, "Optical size");
@@ -1069,10 +1136,14 @@ pub(crate) mod tests {
     #[test]
     fn figtree_real_vf_bytes() {
         let bytes = include_bytes!("../../tests/fixtures/Figtree-wght.ttf");
-        let face = Face::parse(bytes, 0).expect("Figtree");
-        let stat = face.tables().stat.expect("STAT");
-        assert_eq!(stat.axes.len(), 2, "wght + STAT-only ital — not Inter's opsz+wght+ital");
-        assert_eq!(stat.subtables().count(), 8);
+        let face = FontRef::new(bytes).expect("Figtree");
+        let stat = face.stat().expect("STAT");
+        assert_eq!(
+            stat.design_axes().unwrap().len(),
+            2,
+            "wght + STAT-only ital — not Inter's opsz+wght+ital"
+        );
+        assert_eq!(stat.offset_to_axis_values().unwrap().unwrap().axis_values().len(), 8);
         let axes = axes_from_face(&face);
         let wght = axes.iter().find(|a| a.tag == "wght").expect("wght");
         assert_eq!(wght.name, "Weight");
@@ -1085,10 +1156,11 @@ pub(crate) mod tests {
     #[test]
     fn inter_real_vf_bytes_not_figtree_shaped() {
         let bytes = include_bytes!("../../tests/fixtures/Inter-opsz-wght.ttf");
-        let face = Face::parse(bytes, 0).expect("Inter");
-        let stat = face.tables().stat.expect("STAT");
-        assert_eq!(stat.axes.len(), 3);
-        let tags: Vec<String> = stat.axes.into_iter().map(|a| a.tag.to_string()).collect();
+        let face = FontRef::new(bytes).expect("Inter");
+        let stat = face.stat().expect("STAT");
+        let daxes = stat.design_axes().unwrap();
+        assert_eq!(daxes.len(), 3);
+        let tags: Vec<String> = daxes.iter().map(|a| a.axis_tag().to_string()).collect();
         assert_eq!(tags, ["opsz", "wght", "ital"]);
         let mut n1 = 0u16;
         let mut n2 = 0u16;
@@ -1096,20 +1168,23 @@ pub(crate) mod tests {
         let mut n4 = 0u16;
         let mut regular_linked = None;
         let mut roman_linked = None;
-        for sub in stat.subtables() {
-            match sub {
-                ttf_parser::stat::AxisValueSubtable::Format1(_) => n1 += 1,
-                ttf_parser::stat::AxisValueSubtable::Format2(_) => n2 += 1,
-                ttf_parser::stat::AxisValueSubtable::Format3(f) => {
+        let array = stat.offset_to_axis_values().unwrap().unwrap();
+        for av in array.axis_values().iter() {
+            match av.unwrap() {
+                AxisValue::Format1(_) => n1 += 1,
+                AxisValue::Format2(_) => n2 += 1,
+                AxisValue::Format3(f) => {
                     n3 += 1;
-                    if (f.value.0 - 400.0).abs() < 0.01 {
-                        regular_linked = Some(f.linked_value.0);
+                    let val = f.value().to_f32();
+                    let linked = f.linked_value().to_f32();
+                    if (val - 400.0).abs() < 0.01 {
+                        regular_linked = Some(linked);
                     }
-                    if f.value.0.abs() < 0.01 {
-                        roman_linked = Some(f.linked_value.0);
+                    if val.abs() < 0.01 {
+                        roman_linked = Some(linked);
                     }
                 }
-                ttf_parser::stat::AxisValueSubtable::Format4(_) => n4 += 1,
+                AxisValue::Format4(_) => n4 += 1,
             }
         }
         assert_eq!((n1, n2, n3, n4), (15, 0, 2, 0), "Inter has no format 2/4");
@@ -1139,8 +1214,6 @@ pub(crate) mod tests {
         assert!(names.iter().any(|n| n == "Beta"), "{names:?}");
     }
 
-    /// Card 36: test-time TTC builder from the 532-byte overlay fixture (mirrors
-    /// scripts/ttc-fixture.mjs). Each face gets its own name table.
     pub(crate) fn c36_build_ttc(faces: &[(&str, &str)]) -> Vec<u8> {
         let base: &[u8] = include_bytes!("../../tests/fixtures/stat-overlay.ttf");
         let be16 = |o: usize| u16::from_be_bytes([base[o], base[o + 1]]);
@@ -1242,8 +1315,6 @@ pub(crate) mod tests {
         ("Fixture Shared", "Bold"),
     ];
 
-    /// Card 36 item 3: watch-folder indexing keeps every collection face with its own
-    /// key (the JS importer dedups on checksum, so a shared whole-file hash dropped 9).
     #[test]
     fn index_ttc_keeps_every_face_with_its_own_key() {
         let dir = std::env::temp_dir().join(format!("fm-c36-ttc-{}", std::process::id()));
@@ -1264,7 +1335,6 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Real Noto Sans CJK Regular TTC, opt-in (set FM_NOTO_TTC; not committed, 19 MB).
     #[test]
     fn index_real_noto_cjk_ttc_ten_faces() {
         let Some(path) = std::env::var_os("FM_NOTO_TTC") else {
@@ -1298,7 +1368,6 @@ pub(crate) mod tests {
         let l2 = parse_layout_for_path_cached(&path).expect("cached parse");
         assert_eq!(l1.glyph_count, l2.glyph_count);
 
-        // Overwrite with Inter (different size + font) -> cache key changes and returns Inter layout.
         let inter = include_bytes!("../../tests/fixtures/Inter-opsz-wght.ttf");
         std::fs::write(&path, inter).unwrap();
         let k2 = path_mtime_size_key(&path).expect("key 2");
@@ -1315,7 +1384,7 @@ pub(crate) mod tests {
         assert!(!rows.is_empty());
         for row in &rows {
             assert!(
-                crate::dwrite::is_system_windows_fonts_dir(Path::new(&row.path)),
+                crate::scanner::is_system_windows_fonts_dir(Path::new(&row.path)),
                 "system font path must stay in Windows\\Fonts: {}",
                 row.path
             );

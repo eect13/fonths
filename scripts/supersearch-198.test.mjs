@@ -139,8 +139,8 @@ test("store SuperSearch wiring + import metrics + native OS/2", () => {
   assert.doesNotMatch(store, /font\.variable && !Number\.isNaN\(w\)/);
   const rust = readFileSync(join(root, "src-tauri/src/parse.rs"), "utf8");
   assert.match(rust, /fn metrics_from_face/);
-  assert.match(rust, /fn panose_from_face/);
-  assert.match(rust, /weight_class: face\.weight\(\)\.to_number\(\)/);
+  assert.match(rust, /panose_10\(\)/);
+  assert.match(rust, /us_weight_class\(\)/);
   const chips = readFileSync(join(root, "src/components/font-studio/search-chips.tsx"), "utf8");
   assert.match(chips, /SEARCH_PRESETS/);
   const inspector = readFileSync(join(root, "src/components/font-studio/font-inspector.tsx"), "utf8");
