@@ -418,7 +418,7 @@ test("13. Fonths 2.0.0 Skia + Fontations + Windows Activator replaces DirectWrit
   const inspectorTsx = readFileSync(join(process.cwd(), "src/components/font-studio/font-inspector.tsx"), "utf8");
   const appShellTsx = readFileSync(join(process.cwd(), "src/components/font-studio/app-shell.tsx"), "utf8");
 
-  assert.match(cargoToml, /version = "2\.2\.0"/);
+  assert.match(cargoToml, /version = "2\.2\.1"/);
   assert.doesNotMatch(cargoToml, /skia-safe/);
   assert.match(cargoToml, /read-fonts/);
   assert.match(cargoToml, /skrifa/);
@@ -514,7 +514,7 @@ test("14. Live Skia Inspector (italic/weight/auto-height/scroll), watched dedupe
   assert.match(settingsTsx, /data-testid="start-minimized-switch"/);
 });
 
-test("15. Fonths 2.2.0 headless daemon, state honesty, live sliders, and SuperSearch fixes", () => {
+test("15. Fonths 2.2.1 headless daemon, state honesty, live sliders, and SuperSearch fixes", () => {
   const daemonRs = readFileSync(join(process.cwd(), "src-tauri/src/daemon.rs"), "utf8");
   const libRs = readFileSync(join(process.cwd(), "src-tauri/src/lib.rs"), "utf8");
   const sliderTsx = readFileSync(join(process.cwd(), "src/components/ui/slider.tsx"), "utf8");
@@ -558,7 +558,7 @@ test("15. Fonths 2.2.0 headless daemon, state honesty, live sliders, and SuperSe
   assert.match(chipsTsx, /filterLibrary\(pool, scope, "", favorites, liveIds, collections, customTags, facet, recentIds\)/);
 });
 
-test("16. Fonths 2.2.0 pure-Rust Fontations/HarfRust/font:// stack, NTFS hardlink staging, daemon adoption, and honest counts", () => {
+test("16. Fonths 2.2.1 pure-Rust Fontations/HarfRust/font:// stack, NTFS hardlink staging, daemon adoption, and honest counts", () => {
   const activateRs = readFileSync(join(process.cwd(), "src-tauri/src/activate.rs"), "utf8");
   const sessionStageRs = readFileSync(join(process.cwd(), "src-tauri/src/session_stage.rs"), "utf8");
   const fontProtoRs = readFileSync(join(process.cwd(), "src-tauri/src/font_protocol.rs"), "utf8");

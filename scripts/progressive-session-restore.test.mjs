@@ -80,7 +80,7 @@ test("1.0.190: Restoring chrome + session_boot_push_ready", () => {
   assert.match(activateRs, /Restoring \{\}\/\{\}/);
   assert.match(downloadBar, /restoring && job\.running/);
   assert.match(downloadBar, /Restoring \$\{processed/);
-  assert.match(downloadBar, /session GDI restore/);
+  assert.match(downloadBar, /Win32 Session Table restore/);
 });
 
 test("1.0.190 HOLD: maps still skip-copy only; no fake Activated from maps", () => {

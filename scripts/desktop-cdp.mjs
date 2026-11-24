@@ -205,11 +205,12 @@ try {
   await p1.waitForSelector('[data-testid="delete-mode-card"]', { timeout: 10_000 });
   await p1.waitForSelector('[data-testid="gdi-restore-card"]', { timeout: 5_000 });
   await p1.waitForSelector('[data-testid="purge-non-google-btn"]', { timeout: 5_000 });
+  await p1.waitForSelector('[data-testid="prefer-static-faces-switch"]', { timeout: 5_000 });
   await p1.waitForSelector('[data-testid="dwrite-engine-card"]', { timeout: 5_000 });
   const engineCardText = await p1.locator('[data-testid="dwrite-engine-card"]').innerText();
   assert.ok(
-    engineCardText.includes("Skia") && engineCardText.includes("Fontations"),
-    `Expected Skia + Fontations engine card, got: ${engineCardText}`,
+    engineCardText.includes("Fontations") && engineCardText.includes("HarfRust") && engineCardText.includes("Win32 Session Table"),
+    `Expected Fontations + HarfRust + Win32 Session Table engine card, got: ${engineCardText}`,
   );
   await p1.click('[data-testid="delete-mode-permanent"]');
   await p1.click('[data-testid="clean-temp-cache-btn"]');
@@ -406,6 +407,17 @@ try {
   await p2.keyboard.press("Escape");
   await p2.waitForTimeout(200);
 
+  await p2.evaluate(() =>
+    window.__TAURI_INTERNALS__.invoke("set_desktop_prefs", {
+      closeToTray: false,
+      startWithWindows: false,
+      preferStaticFaces: false,
+      fastSessionResume: false,
+      deleteMode: "permanent",
+    }),
+  );
+  await p2.waitForTimeout(300);
+
   assert.equal(r2.pageErrors.length, 0, `Run 2 pageErrors: ${r2.pageErrors.join("; ")}`);
 
   await r2.browser.close();
@@ -413,7 +425,7 @@ try {
   const ex2 = await waitExit(r2.child, 15_000);
   assert.equal(!ex2.timedOut && ex2.exitCode === 0, true);
 
-  console.log("desktop-cdp.e2e.mjs: PASS (Skia + Fontations, Inspector Canvas, Notification Center, Playground, Smart Deletion, Smart Import, 2-launch persistence)");
+  console.log("desktop-cdp.e2e.mjs: PASS (Fontations + HarfRust, Win32 Session Table, Inspector Canvas, Notification Center, Playground, Smart Deletion, Smart Import, 2-launch persistence)");
 } finally {
   if (child1 && child1.exitCode === null) try { process.kill(child1.pid); } catch { /* ignore */ }
   if (child2 && child2.exitCode === null) try { process.kill(child2.pid); } catch { /* ignore */ }

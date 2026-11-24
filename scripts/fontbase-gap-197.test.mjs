@@ -36,8 +36,9 @@ test("close-to-tray + startup prefs", () => {
   assert.match(main, /set_desktop_prefs/);
   assert.match(main, /set_prefer_static_faces/);
   assert.match(main, /Start Menu/);
-  assert.equal(DEFAULT_DESKTOP_PREFS.closeToTray, false);
+  assert.equal(DEFAULT_DESKTOP_PREFS.closeToTray, true);
   assert.equal(DEFAULT_DESKTOP_PREFS.preferStaticFaces, false);
+  assert.equal(coerceDesktopPrefs({ closeToTray: false }).closeToTray, false);
   assert.equal(coerceDesktopPrefs({ closeToTray: 1, startWithWindows: true }).startWithWindows, true);
   assert.equal(coerceDesktopPrefs({ preferStaticFaces: 1 }).preferStaticFaces, true);
 });

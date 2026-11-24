@@ -86,6 +86,7 @@ export function FontInspector() {
   const [italicOn, setItalicOn] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<"local" | "google" | null>(null);
   const [parsedTags, setParsedTags] = useState<string[] | undefined>();
+  const [otParsed, setOtParsed] = useState(false);
   const [skiaPaths, setSkiaPaths] = useState<string[]>([]);
   const fontRef = useRef(font);
   fontRef.current = font;
@@ -105,6 +106,7 @@ export function FontInspector() {
     setFeatures(useFontStore.getState().featurePrefs[cur.id] ?? {});
     setTagDraft("");
     setParsedTags(cur.otFeatures);
+    setOtParsed(cur.otFeatures !== undefined);
     setSkiaPaths([]);
 
     const id = cur.id;
@@ -116,21 +118,32 @@ export function FontInspector() {
         );
         const layout = await nativeFamilyLayout(family);
         if (layout) {
-          if (!cancelled && layout.otFeatures?.length) setParsedTags(layout.otFeatures);
+          const tags = layout.otFeatures ?? [];
+          if (!cancelled) {
+            setParsedTags(tags);
+            setOtParsed(true);
+          }
           const store = useFontStore.getState();
           if (layout.axes?.length) store.patchFontAxes(id, layout.axes);
           const metrics = fontMetricsFromLayout(layout);
           if (metrics) store.patchFontMetrics(id, metrics);
-          if (layout.otFeatures?.length) return;
+          return;
         }
         let buf: ArrayBuffer | null = null;
         const blob = (await idbGet(id)) || (await idbGet(previewCacheId(id)));
         if (blob) buf = await blob.arrayBuffer();
-        if (!buf) return;
+        if (!buf) {
+          if (!cancelled) setOtParsed(true);
+          return;
+        }
         const { otFeaturesFromBuffer } = await import("@/lib/fonts/parse-font");
         const tags = await otFeaturesFromBuffer(buf);
-        if (!cancelled && tags.length) setParsedTags(tags);
+        if (!cancelled) {
+          setParsedTags(tags);
+          setOtParsed(true);
+        }
       } catch {
+        if (!cancelled) setOtParsed(true);
         /* CSS toggles still apply */
       }
     })();
@@ -587,9 +600,11 @@ export function FontInspector() {
             <section className="space-y-2">
               <Label>SuperSearch</Label>
               <p className="text-xs text-muted-foreground">
-                {searchMetrics.xh == null || searchMetrics.contrast == null
-                  ? "xh/contrast unknown until OS/2 is read (uploads and on-disk). Catalog-only families still match weight, width, variable, and axis ranges."
-                  : "From OS/2 + head. Tap a chip to filter the library."}
+                {font.metrics
+                  ? searchMetrics.xh == null && searchMetrics.contrast == null
+                    ? "Parsed by Fontations OS/2 + head (this font omits x-height/PANOSE contrast). Tap a chip to filter."
+                    : "From Fontations OS/2 + head. Tap a chip to filter the library."
+                  : "xh/contrast unknown until OS/2 is read (uploads and on-disk). Catalog-only families still match weight, width, variable, and axis ranges."}
               </p>
               <div className="flex flex-wrap gap-1">
                 {searchChips.map((chip) => (
@@ -643,8 +658,10 @@ export function FontInspector() {
               </div>
               <p className="text-xs text-muted-foreground">
                 {layoutTags?.length
-                  ? `${layoutTags.length} GSUB/GPOS tags in this file. liga/calt/kern on by default. Toggle and watch the line below.`
-                  : "Reading GSUB… common tags until the file is parsed. Off means explicitly disable."}
+                  ? `${layoutTags.length} GSUB/GPOS tags in this file (Fontations). liga/calt/kern on by default. Toggle and watch the preview below.`
+                  : otParsed
+                    ? "Parsed by Fontations — this file defines no optional GSUB/GPOS feature tables. Common toggles still apply via HarfRust."
+                    : "Reading GSUB/GPOS via Fontations… common toggles available below."}
               </p>
               {skiaPaths.length > 0 && colorKindOf(font) === "none" ? (
                 <div

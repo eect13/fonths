@@ -10,7 +10,7 @@ export type DesktopPrefs = {
 };
 
 export const DEFAULT_DESKTOP_PREFS: DesktopPrefs = {
-  closeToTray: false,
+  closeToTray: true,
   startWithWindows: false,
   startMinimized: false,
   preferStaticFaces: false,
@@ -21,7 +21,7 @@ export const DEFAULT_DESKTOP_PREFS: DesktopPrefs = {
 export function coerceDesktopPrefs(raw: unknown): DesktopPrefs {
   const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   return {
-    closeToTray: Boolean(o.closeToTray),
+    closeToTray: o.closeToTray === undefined ? true : Boolean(o.closeToTray),
     startWithWindows: Boolean(o.startWithWindows),
     startMinimized: Boolean(o.startMinimized),
     preferStaticFaces: Boolean(o.preferStaticFaces),

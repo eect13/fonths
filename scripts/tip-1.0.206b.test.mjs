@@ -17,8 +17,8 @@ const version = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 
 test("206b keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "2.2.0");
-  assert.match(version, /2\.2\.0/);
+  assert.equal(pkg.version, "2.2.1");
+  assert.match(version, /2\.2\.1/);
 });
 
 test("hydrate seeds KNOWN_GDI_SESSION_INCAPABLE into settled", () => {

@@ -26,7 +26,7 @@ use tauri::{
 
 static QUITTING: AtomicBool = AtomicBool::new(false);
 static HANDED_OFF_TO_DAEMON: AtomicBool = AtomicBool::new(false);
-static CLOSE_TO_TRAY: AtomicBool = AtomicBool::new(false);
+static CLOSE_TO_TRAY: AtomicBool = AtomicBool::new(true);
 static START_MINIMIZED: AtomicBool = AtomicBool::new(false);
 
 fn set_tray_tooltip(app: &tauri::AppHandle, text: &str) {

@@ -103,33 +103,33 @@ export function windowsColorNote(kind: ColorKind, source?: string) {
   if (source === "local") return uploadedColorNote(kind);
   switch (kind) {
     case "colrv1":
-      return "This window/Chrome/Edge: color. Word & Adobe: we also install a same-name outline file so the family still types. Color in Word is Windows 11 DirectWrite; Adobe prefers OpenType-SVG (we try that too). Word may still swap emoji for Segoe — pick the family in the font list, not the emoji picker.";
+      return "Previewed in full color here. Word on Windows 11 supports COLRv1 color; Adobe prefers OpenType-SVG. Fonths also registers a same-name outline fallback in the Win32 Session Table so legacy apps still type. Pick the family in the font list rather than the emoji picker.";
     case "svg":
-      return "Adobe Illustrator/Photoshop and some Word/DirectWrite paths show OpenType-SVG color. This window draws plain outlines. We also install outlines so every computer can still set the family.";
+      return "Adobe Illustrator/Photoshop and modern Word support OpenType-SVG color. Fonths also registers an outline fallback in the Win32 Session Table so every app can still set the family.";
     case "cbdt":
-      return "Windows Word (DirectWrite) can show CBDT color. Adobe and GDI need the outline fallback we install under the same family name.";
+      return "Modern Word supports CBDT color bitmaps; Adobe and legacy apps use the outline fallback Fonths registers under the same family name.";
     case "colrv0":
-      return "Word and many apps since Windows 8.1 can show COLRv0 color. Adobe is mixed; outlines are always installed as backup.";
+      return "Word and most modern Windows apps render COLRv0 color; outlines are always registered as backup.";
     case "sbix":
-      return "Color on macOS. On Windows, DirectWrite (Word) may show it; Adobe usually needs outlines, which we install.";
+      return "Color on macOS. On Windows, some apps support sbix while Adobe uses the outline fallback we register.";
     default:
       return "";
   }
 }
 
 function uploadedColorNote(kind: ColorKind) {
-  const asIs = "Your file is installed as it is, with no extra outline file.";
+  const asIs = "Your file is registered as it is, with no extra outline file.";
   switch (kind) {
     case "colrv1":
-      return `This window, Chrome and Edge show COLRv1 color. Word shows it on Windows 11 (DirectWrite); apps without COLRv1 draw the font's plain outlines, or blanks if it has none. ${asIs}`;
+      return `Previewed in full COLRv1 color here. Word supports COLRv1 on Windows 11; apps without COLRv1 draw plain outlines or blanks. ${asIs}`;
     case "svg":
-      return `Adobe apps and some Word/DirectWrite paths show OpenType-SVG color. This window (Chromium) draws plain outlines instead. ${asIs}`;
+      return `Adobe apps and modern Word render OpenType-SVG color; Chromium-based views draw plain outlines. ${asIs}`;
     case "cbdt":
-      return `Word (DirectWrite) can show CBDT color bitmaps. Adobe and older apps can't, so glyphs may be blank there. ${asIs}`;
+      return `Modern Word renders CBDT color bitmaps; Adobe and older apps may show blanks. ${asIs}`;
     case "colrv0":
-      return `Word and most apps since Windows 8.1 show COLRv0 color; others draw the plain outlines. ${asIs}`;
+      return `Word and most modern Windows apps show COLRv0 color; others draw plain outlines. ${asIs}`;
     case "sbix":
-      return `sbix is a macOS color format. On Windows, Word (DirectWrite) may show it; other apps may show blanks. ${asIs}`;
+      return `sbix is a macOS color format. On Windows, apps without sbix support may show blanks. ${asIs}`;
     default:
       return "";
   }

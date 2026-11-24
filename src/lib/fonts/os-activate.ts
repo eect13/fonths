@@ -800,7 +800,7 @@ function toastSessionRecoveryLocked(locked: number, attempted = 0) {
   const attemptedBit =
     attempted > 0 ? ` after Remove (attempted ${attempted.toLocaleString()})` : "";
   toast.error(`Session recovery: ${faces}`, {
-    description: `Prior quit left GDI maps held by fontdrvhost/Adobe${attemptedBit}. Deactivate-all or reboot, then Repair — Heal cannot rewrite locked TTFs.`,
+    description: `Prior quit left Win32 session stage files held by fontdrvhost/Adobe${attemptedBit}. Keep Headless Background Daemon ON in Settings (or Deactivate-all / reboot) so files stay unlocked.`,
     duration: 28_000,
     action: { label: "Open folder", onClick: () => void openActivatedFolder() },
   });
@@ -809,11 +809,11 @@ function toastSessionRecoveryLocked(locked: number, attempted = 0) {
 function toastGdiPressure(objects: number, quota: number, message?: string) {
   const n = Math.max(0, objects);
   const cap = quota > 0 ? quota : 10_000;
-  toast.message(`GDI objects ${n.toLocaleString()} / ${cap.toLocaleString()}`, {
+  toast.message(`Win32 handle quota ${n.toLocaleString()} / ${cap.toLocaleString()}`, {
     id: "gdi-pressure",
     description:
       message ||
-      "Windows per-process quota is 10,000 GDI objects (HFONT/HDC), not one per activated family. Deactivate some typefaces if this window hitchs. Live marks stay honest.",
+      "Windows per-process handle ceiling is 10,000, not one per activated family. Deactivate some typefaces if this window hitches. Live marks stay honest.",
     duration: 16_000,
   });
 }

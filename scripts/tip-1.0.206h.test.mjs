@@ -27,8 +27,8 @@ const readme = readFileSync(join(root, "README.md"), "utf8");
 const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
 
 test("206h keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.2.0");
-  assert.match(version, /2\.2\.0/);
+  assert.equal(pkg.version, "2.2.1");
+  assert.match(version, /2\.2\.1/);
 });
 
 test("P1 remaining count uses same filter as activateSet queue", () => {

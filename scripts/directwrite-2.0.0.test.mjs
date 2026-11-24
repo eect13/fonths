@@ -24,12 +24,12 @@ const loaderTs = read("src/lib/fonts/loader.ts");
 const desktopSettingsTsx = read("src/components/font-studio/desktop-settings.tsx");
 
 test("2.0.0 version metadata synced across Cargo, Tauri, npm, and version.ts", () => {
-  assert.equal(pkg.version, "2.2.0");
-  assert.equal(pkgLock.version, "2.2.0");
-  assert.equal(pkgLock.packages[""].version, "2.2.0");
-  assert.equal(tauriConf.version, "2.2.0");
-  assert.match(cargoToml, /version = "2\.2\.0"/);
-  assert.match(versionTs, /export const APP_VERSION = "2\.2\.0";/);
+  assert.equal(pkg.version, "2.2.1");
+  assert.equal(pkgLock.version, "2.2.1");
+  assert.equal(pkgLock.packages[""].version, "2.2.1");
+  assert.equal(tauriConf.version, "2.2.1");
+  assert.match(cargoToml, /version = "2\.2\.1"/);
+  assert.match(versionTs, /export const APP_VERSION = "2\.2\.1";/);
 });
 
 test("Pure-Rust Fontations + HarfRust + font:// engine replaces legacy DirectWrite, ttf-parser, and skia-safe", () => {
@@ -106,9 +106,9 @@ test("session performance & Card 292 fixes (batched HKCU, clean-exit boot, B1/B2
   assert.match(desktopSettingsTsx, /data-testid="clean-temp-cache-btn"/);
   assert.match(desktopSettingsTsx, /data-testid="sync-google-cdn-btn"/);
 
-  // B9 removal of false Always-Admin text while preserving gdi-maps pin
+  // B9 removal of false Always-Admin text while preserving kept session stage copy
   assert.doesNotMatch(desktopSettingsTsx, /Always-Admin/);
-  assert.match(desktopSettingsTsx, /Copies under gdi-maps stay/);
+  assert.match(desktopSettingsTsx, /Hardlinked session stage stays ready/);
 });
 
 test("root remnant files remain removed in 2.0.0 copy", () => {

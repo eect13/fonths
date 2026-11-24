@@ -221,7 +221,7 @@ export function DownloadBar() {
                 : scanning
                   ? " · checking Documents, not downloading yet"
                   : restoring
-                    ? " · session GDI restore — UI stays interactive"
+                    ? " · Win32 Session Table restore — UI stays interactive"
                     : registering
                       ? " · intact files register only — no fetch"
                       : remaining === 0 && skipped

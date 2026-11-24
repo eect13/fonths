@@ -193,11 +193,11 @@ export function DesktopSettings() {
           <Settings />
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-h-[85vh] overflow-y-auto">
+      <DialogContent className="max-h-[85vh] overflow-y-auto pb-8">
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>
-            Appearance, startup, deletion behavior, Google CDN updates, and Skia + Fontations engine status.
+            Appearance, startup, deletion behavior, Google CDN updates, and Fontations + HarfRust engine status.
           </DialogDescription>
         </DialogHeader>
 
@@ -270,22 +270,35 @@ export function DesktopSettings() {
           </label>
         </div>
 
-        {/* Group 3: GDI Session Restore (separate from Windows startup) */}
+        {/* Group 3: Win32 Session Table & Font Format Policy */}
         <div className="space-y-2" data-testid="gdi-restore-card">
           <label className="fm-settings-row flex items-center justify-between gap-3 rounded-md bg-secondary text-sm">
             <div>
               <p className="font-medium flex items-center gap-1.5">
                 <Zap className="size-3.5" />
-                Fast GDI session restore
+                Fast Win32 Session Table restore
               </p>
               <p className="text-xs text-muted-foreground">
-                Automatic on reopen — Copies under gdi-maps stay so the next launch restores fast, skipping deep SFNT re-checks on verified folders.
+                Automatic on reopen — Hardlinked session stage stays ready so the next launch restores fast, skipping deep SFNT re-checks on verified folders.
               </p>
             </div>
             <Switch
               data-testid="fast-gdi-restore-switch"
               checked={prefs.fastSessionResume !== false}
               onCheckedChange={(on) => setDesktopPrefs({ fastSessionResume: on })}
+            />
+          </label>
+          <label className="fm-settings-row flex items-center justify-between gap-3 rounded-md bg-secondary text-sm">
+            <div>
+              <p className="font-medium">Prefer static fonts (compatibility mode)</p>
+              <p className="text-xs text-muted-foreground">
+                Download and register separate static weights instead of 1 Variable TTF per family. Turn ON if older apps struggle with variable fonts; leave OFF for 4–8× faster activation.
+              </p>
+            </div>
+            <Switch
+              data-testid="prefer-static-faces-switch"
+              checked={Boolean(prefs.preferStaticFaces)}
+              onCheckedChange={(on) => setDesktopPrefs({ preferStaticFaces: on })}
             />
           </label>
         </div>
@@ -333,11 +346,11 @@ export function DesktopSettings() {
         </div>
 
         {/* Group 4: Font Engine & Library Folders */}
-        <div className="fm-settings-stack fm-settings-row rounded-md bg-secondary" data-testid="dwrite-engine-card">
+        <div className="fm-settings-stack fm-settings-row mb-1 rounded-md bg-secondary" data-testid="dwrite-engine-card">
           <div className="min-w-0">
             <p className="text-sm font-medium flex items-center gap-1.5">
               <Cpu className="size-3.5" />
-              Font Engine (Skia + Fontations)
+              Font Engine (Fontations + HarfRust)
               {engineInfo?.elevated ? (
                 <span className="inline-flex items-center gap-1 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary">
                   <ShieldCheck className="size-3" />
@@ -347,13 +360,13 @@ export function DesktopSettings() {
             </p>
             <p className="text-xs text-muted-foreground">
               {engineInfo
-                ? `${engineInfo.engine} · ${engineInfo.activationMode} · System Fonts protected (${engineInfo.systemFontCount.toLocaleString()} installed in Windows\\Fonts)`
-                : "Skia (FreeType + HarfBuzz) rendering & zero-copy Fontations parsing with temporary session activation. System Fonts remain protected."}
+                ? `${engineInfo.engine} · Win32 Session Table (${engineInfo.activationMode}) · System Fonts protected (${engineInfo.systemFontCount.toLocaleString()} installed in Windows\\Fonts)`
+                : "Pure-Rust Fontations (read-fonts + skrifa + harfrust) + font:// protocol with Win32 Session Table activation. System Fonts remain protected."}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
               Google: {googleCount.toLocaleString()} catalog · Watched: {uploadCount.toLocaleString()} · On disk: {diskCount.toLocaleString()} · Active: {liveCount.toLocaleString()}
               {gdiState
-                ? ` · GDI: ${gdiState.liveFaceCount.toLocaleString()} faces (${gdiState.gdiObjects.toLocaleString()} / ${gdiState.gdiQuota.toLocaleString()} handles)`
+                ? ` · Win32 Session Table: ${gdiState.liveFaceCount.toLocaleString()} faces (${gdiState.gdiObjects.toLocaleString()} / ${gdiState.gdiQuota.toLocaleString()} handles)`
                 : ""}
             </p>
           </div>
@@ -405,7 +418,8 @@ export function DesktopSettings() {
               type="button"
               size="sm"
               variant="outline"
-              aria-label="Refresh Documents folder"
+              aria-label="Optimize Library (replace redundant static fonts with Variable TTF)"
+              title="Replace redundant static weights with 1 Variable TTF per family to cut file count and speed up activation"
               data-testid="refresh-documents-settings"
               onClick={() => {
                 void (async () => {
@@ -498,8 +512,8 @@ export function DesktopSettings() {
                 })();
               }}
             >
-              <RefreshCw className="size-3.5 mr-1" />
-              Refresh
+              <Zap className="size-3.5 mr-1" />
+              Optimize Library
             </Button>
           </div>
         </div>

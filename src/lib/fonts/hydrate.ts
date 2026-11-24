@@ -232,9 +232,21 @@ export function useHydrateFonts() {
       if (desktop) {
         // Keep persisted IDs safe across localStorage writes while startup restore is running.
         setBootRestoringIds(wantIds);
-        // Instant startup restore: render remembered active state immediately on frame 0 (< 10ms)
-        // instead of blanking to [] while background GDI session verification catches up.
-        useFontStore.getState().restoreActivation(wantIds, []);
+        // Honest startup state: if the headless daemon is already holding the live Win32 Session
+        // Table, show remembered active fonts immediately; on a cold boot, mark them pending until
+        // Win32 Session Table restore actually confirms each family live.
+        let daemonLive = false;
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          daemonLive = Boolean(await invoke<boolean>("daemon_status"));
+        } catch {
+          daemonLive = false;
+        }
+        if (daemonLive) {
+          useFontStore.getState().restoreActivation(wantIds, []);
+        } else {
+          useFontStore.getState().restoreActivation([], wantIds);
+        }
         const persistNames: string[] = [];
         const seenPersist = new Set<string>();
         for (const id of wantIds) {
@@ -308,11 +320,20 @@ export function useHydrateFonts() {
           const bootLive = liveIdsFromReadyNames(readyChunk).filter(
             (id) => !stNow.pendingDeactivateSet.has(id),
           );
-          const stillWanted = wantIds.filter(
-            (id) => stNow.activatedSet.has(id) && !stNow.pendingDeactivateSet.has(id),
-          );
-          const live = Array.from(new Set([...stillWanted, ...bootLive]));
-          stNow.restoreActivation(live, []);
+          if (daemonLive) {
+            const stillWanted = wantIds.filter(
+              (id) => stNow.activatedSet.has(id) && !stNow.pendingDeactivateSet.has(id),
+            );
+            const live = Array.from(new Set([...stillWanted, ...bootLive]));
+            stNow.restoreActivation(live, []);
+          } else {
+            const liveSet = new Set(bootLive);
+            const remainingPending = wantIds.filter(
+              (id) => !liveSet.has(id) && !stNow.pendingDeactivateSet.has(id),
+            );
+            const live = bootLive;
+            stNow.restoreActivation(live, remainingPending);
+          }
         });
         const bootReady = boot.ready.slice();
         const sessionNames = bootReady;

@@ -65,9 +65,9 @@ test("tab panes do not read sessionStorage during the first render", () => {
   assert.doesNotMatch(density, /current = readUiDensity\(\)/);
 });
 
-test("settings copy matches kept gdi-maps", () => {
+test("settings copy matches kept session stage", () => {
   const settings = read("src/components/font-studio/desktop-settings.tsx");
-  assert.match(settings, /Copies under gdi-maps stay/);
+  assert.match(settings, /Hardlinked session stage stays ready/);
   assert.doesNotMatch(settings, /does not leave GDI maps/);
   assert.match(read("src-tauri/src/activate.rs"), /Keep gdi-maps files/);
 });
