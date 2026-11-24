@@ -31,6 +31,8 @@ export function SearchChips() {
   const collections = useFontStore((s) => s.collections);
   const activated = useFontStore((s) => s.activated);
   const recentIds = useFontStore((s) => s.recentIds);
+  const autoHideDuplicates = useFontStore((s) => s.autoHideDuplicates);
+  const duplicateHideIds = useFontStore((s) => s.duplicateHideIds);
   const deferredLocal = useDeferredValue(localFonts);
   const deferredGoogle = useDeferredValue(googleFonts);
 
@@ -38,9 +40,26 @@ export function SearchChips() {
     const skipLocals = scope === "gfonts" || scope === "google" || scope === "system";
     const liveIds = scope === "activated" ? activated : EMPTY_IDS;
     const pool = poolForScope(scope, skipLocals ? [] : deferredLocal, deferredGoogle, systemFonts, liveIds);
-    const list = filterLibrary(pool, scope, "", favorites, liveIds, collections, customTags, "", recentIds);
+    let list = filterLibrary(pool, scope, "", favorites, liveIds, collections, customTags, facet, recentIds);
+    if (autoHideDuplicates && duplicateHideIds.length) {
+      const hidden = new Set(duplicateHideIds);
+      list = list.filter((f) => !hidden.has(f.id));
+    }
     return countSearchPresets(list, customTags);
-  }, [scope, deferredLocal, deferredGoogle, systemFonts, customTags, favorites, collections, activated, recentIds]);
+  }, [
+    scope,
+    facet,
+    deferredLocal,
+    deferredGoogle,
+    systemFonts,
+    customTags,
+    favorites,
+    collections,
+    activated,
+    recentIds,
+    autoHideDuplicates,
+    duplicateHideIds,
+  ]);
 
   const chips = SEARCH_PRESETS.filter((chip) => queryHasToken(query, chip.token) || (counts[chip.id] ?? 0) > 0);
   if (!chips.length && !facetOn) return null;

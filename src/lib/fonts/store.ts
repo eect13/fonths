@@ -36,6 +36,7 @@ import { DEFAULT_PREVIEW, isFacetScope } from "./types";
 import { fontLicense, refineLicense, coerceLicense } from "./license";
 import { fontMime } from "./fs-drop";
 import { coerceDesktopPrefs, DEFAULT_DESKTOP_PREFS, type DesktopPrefs } from "@/lib/desktop/prefs";
+import { isDesktopShellSync } from "@/lib/desktop/open-fonts";
 import { fontMatchesSearch, mergeMetrics, parseSearchQuery } from "./metrics";
 import { filterFontsWithIndex } from "./search-index";
 import { snapAxes } from "./axes";
@@ -1367,6 +1368,10 @@ export const useFontStore = create<FontState>()(
                   folderPathForFile(file ?? ({ webkitRelativePath: "" } as File), opts?.collectionName),
                 );
                 // Per face: every face of a TTC/OTC is its own extracted SFNT + file name.
+                const shouldAutoActivateFile =
+                  opts?.autoActivate !== undefined
+                    ? opts.autoActivate
+                    : !opts?.originPaths?.length;
                 const diskKey = `${parsed.family}\u0000${parsed.fileName || file?.name || ""}`;
                 if (!originSlice?.[i] && file && !savedDisk.has(diskKey)) {
                   savedDisk.add(diskKey);
@@ -1374,6 +1379,8 @@ export const useFontStore = create<FontState>()(
                     family: parsed.family,
                     fileName: parsed.fileName || file.name,
                     buffer: parsed.buffer,
+                    autoActivate: shouldAutoActivateFile,
+                    fontId: id,
                   });
                 }
               }
@@ -1433,10 +1440,15 @@ export const useFontStore = create<FontState>()(
                   opts?.autoActivate !== undefined
                     ? opts.autoActivate
                     : !opts?.originPaths?.length;
+                const desktopShell = isDesktopShellSync();
                 return {
                   localFonts: [...waveRecords, ...s.localFonts],
+                  // State honesty: on desktop, mark pending until Rust confirms OS activation
+                  // (never guess Live before `register_font_path` succeeds).
                   ...(shouldAutoActivate
-                    ? withActivated(Array.from(new Set([...s.activated, ...waveIds])))
+                    ? desktopShell
+                      ? withPending(Array.from(new Set([...s.pendingActivate, ...waveIds])))
+                      : withActivated(Array.from(new Set([...s.activated, ...waveIds])))
                     : {}),
                   collections,
                   scope: collectionId ? (`collection:${collectionId}` as const) : s.scope,

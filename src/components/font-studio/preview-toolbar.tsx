@@ -88,7 +88,7 @@ export function PreviewToolbar() {
               aria-label="Font size"
             />
           </div>
-          <div className="hidden w-24 items-center gap-1.5 xl:flex" onPointerDown={(e) => e.stopPropagation()}>
+          <div className="hidden w-24 items-center gap-1.5 lg:flex" onPointerDown={(e) => e.stopPropagation()}>
             <span className="w-8 shrink-0 text-right font-mono text-[10px] tabular-nums text-muted-foreground" title="Letter spacing (em)">
               {preview.letterSpacing.toFixed(2)}
             </span>

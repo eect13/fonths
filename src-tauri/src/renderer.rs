@@ -69,6 +69,7 @@ struct RenderParams {
     italic: bool,
     align: String,
     line_height: Option<f32>,
+    letter_spacing: Option<f32>,
     auto_height: bool,
 }
 
@@ -440,6 +441,9 @@ impl Worker {
             text_style.set_height(lh);
             text_style.set_height_override(true);
         }
+        if let Some(ls) = p.letter_spacing.filter(|v| v.is_finite() && v.abs() > 0.0001 && v.abs() <= 2.0) {
+            text_style.set_letter_spacing(ls * font_size);
+        }
         for (tag, &value) in &p.features {
             if tag.len() == 4 {
                 text_style.add_font_feature(tag, value);
@@ -611,6 +615,7 @@ pub async fn render_font_specimen(
     italic: Option<bool>,
     align: Option<String>,
     line_height: Option<f32>,
+    letter_spacing: Option<f32>,
 ) -> Result<tauri::ipc::Response, String> {
     let bytes = state
         .submit(RenderParams {
@@ -627,6 +632,7 @@ pub async fn render_font_specimen(
             italic: italic.unwrap_or(false),
             align: align.unwrap_or_default(),
             line_height,
+            letter_spacing,
             auto_height: true,
         })
         .await?;
@@ -794,5 +800,24 @@ mod tests {
         let texts: Vec<_> = kept.iter().map(|r| r.params.text.clone()).collect();
         assert_eq!(texts, vec!["b", "2"]);
         assert_eq!(r1.try_recv().unwrap(), Err(SUPERSEDED.to_string()));
+    }
+
+    #[test]
+    fn letter_spacing_changes_rendered_pixels() {
+        let mut worker = Worker::new(4);
+        let mut p = RenderParams {
+            font_paths: vec![fixture("Figtree-wght.ttf")],
+            text: "Tracking".into(),
+            font_size: 40.0,
+            width: 480,
+            height: 200,
+            color_hex: "#000".into(),
+            auto_height: true,
+            ..Default::default()
+        };
+        let tight = worker.render(&p).unwrap();
+        p.letter_spacing = Some(0.18);
+        let wide = worker.render(&p).unwrap();
+        assert_ne!(tight.pixels, wide.pixels, "letter_spacing must change rendered Skia output");
     }
 }

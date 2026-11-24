@@ -367,7 +367,8 @@ export function FontInspector() {
                   weight={font.variable ? (axisStyle.fontWeight ?? weight) : weight}
                   italic={effectiveItalicOn}
                   align={preview.align}
-                  lineHeight={1.3}
+                  lineHeight={preview.lineHeight}
+                  letterSpacing={preview.letterSpacing}
                 />
               </div>
             ) : (
@@ -385,8 +386,9 @@ export function FontInspector() {
               lang={scriptLang(font)}
               style={{
                 fontFamily: stack,
-                fontSize: "1.25rem",
-                lineHeight: 1.3,
+                fontSize: `${Math.max(16, Math.min(48, Math.round((preview.fontSize || 36) * 0.65)))}px`,
+                lineHeight: preview.lineHeight,
+                letterSpacing: `${preview.letterSpacing}em`,
                 ...featureCss,
                 fontWeight: font.variable ? (axisStyle.fontWeight ?? weight) : weight,
                 fontStyle: resolvedFontStyle,

@@ -34,7 +34,8 @@ export type SearchClause =
   | { kind: "name"; value: string; negated?: boolean }
   | { kind: "category"; values: string[]; negated?: boolean }
   | { kind: "source"; values: string[]; negated?: boolean }
-  | { kind: "script"; values: string[]; negated?: boolean };
+  | { kind: "script"; values: string[]; negated?: boolean }
+  | { kind: "feature"; tag: string; negated?: boolean };
 
 export const SEARCH_PRESETS: { id: string; label: string; token: string; hint: string; group?: string }[] = [
   { id: "xh-high", label: "High x-height", token: "xh:0.52-1", hint: "OS/2 sxHeight / UPM", group: "xh" },
@@ -262,10 +263,32 @@ function stripQuotes(raw: string): string {
 }
 
 function splitSearchValues(raw: string): string[] {
-  return raw
-    .split(",")
-    .map((part) => stripQuotes(part.trim()).trim())
-    .filter(Boolean);
+  const parts: string[] = [];
+  let cur = "";
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < raw.length; i += 1) {
+    const ch = raw[i]!;
+    if (quote) {
+      cur += ch;
+      if (ch === quote && raw[i - 1] !== "\\") quote = null;
+      continue;
+    }
+    if ((ch === '"' || ch === "'") && raw[i - 1] !== "\\") {
+      quote = ch;
+      cur += ch;
+      continue;
+    }
+    if (ch === ",") {
+      const cleaned = stripQuotes(cur.trim()).trim();
+      if (cleaned) parts.push(cleaned);
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  const tail = stripQuotes(cur.trim()).trim();
+  if (tail) parts.push(tail);
+  return parts;
 }
 
 function normalizeCategoryToken(v: string): string {
@@ -485,6 +508,13 @@ export function parseSearchQuery(query: string): SearchClause[] {
         continue;
       }
     }
+    if (key === "ot" || key === "feature" || key === "feat") {
+      const tags = splitSearchValues(rawVal).filter((t) => /^[a-z0-9]{4}$/.test(t));
+      if (tags.length) {
+        for (const tag of tags) out.push({ kind: "feature", tag, ...negProp });
+        continue;
+      }
+    }
     if (key === "has") {
       if (val === "variable" || val === "var" || val === "vf") {
         out.push({ kind: "flag", flag: "variable", ...negProp });
@@ -495,8 +525,12 @@ export function parseSearchQuery(query: string): SearchClause[] {
         continue;
       }
       const tag = val === "slant" ? "slnt" : val;
-      if (AXIS_TAG.test(tag) || /^[a-z]{4}$/.test(tag)) {
+      if (AXIS_TAG.test(tag)) {
         out.push({ kind: "axis", tag, min: -Infinity, max: Infinity, ...negProp });
+        continue;
+      }
+      if (/^[a-z0-9]{4}$/.test(tag)) {
+        out.push({ kind: "feature", tag, ...negProp });
         continue;
       }
     }
@@ -633,13 +667,22 @@ function matchClause(
       return vals.includes(fontLicense(font));
     }
     case "category":
-      return clause.values.includes(font.category.toLowerCase());
+      return clause.values.some(
+        (v) =>
+          v === font.category.toLowerCase() ||
+          (v === "icons" && tags.some((t) => t.toLowerCase() === "icons")),
+      );
     case "source":
       return clause.values.includes(font.source.toLowerCase());
     case "script": {
       const kind = scriptKindOf(font).toLowerCase();
       return clause.values.some((v) => v === kind || (v === "latin" && font.coversLatin));
     }
+    case "feature":
+      return (
+        (font.otFeatures ?? []).some((t) => t.toLowerCase() === clause.tag) ||
+        (font.axes ?? []).some((a) => a.tag.toLowerCase() === clause.tag)
+      );
     case "flag":
       return clause.flag === "variable" ? isVariableFamily(font) : Boolean(font.italic);
     case "range": {
@@ -656,8 +699,14 @@ function matchClause(
         return lo && hi;
       }
       if (clause.field === "weight") {
-        const [min, max] = weightSpan(font, metrics);
-        return overlaps(min, max, clause.min, clause.max, clause.minExclusive, clause.maxExclusive);
+        const wght = previewWghtAxis(font);
+        if (wght) {
+          return overlaps(wght.min, wght.max, clause.min, clause.max, clause.minExclusive, clause.maxExclusive);
+        }
+        const discrete = font.weights?.length ? font.weights : [metrics.weightClass];
+        return discrete.some((w) =>
+          overlaps(w, w, clause.min, clause.max, clause.minExclusive, clause.maxExclusive),
+        );
       }
       const [min, max] = widthSpan(font, metrics);
       return overlaps(min, max, clause.min, clause.max, clause.minExclusive, clause.maxExclusive);

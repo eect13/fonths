@@ -76,9 +76,9 @@ function frontendInvokeCommands() {
 }
 
 test("206v keeps ProductVersion 1.0.206 and TIP_SHA path", () => {
-  assert.equal(pkg.version, "2.0.0");
-  assert.equal(tauri.version, "2.0.0");
-  assert.match(version, /2\.0\.0/);
+  assert.equal(pkg.version, "2.1.0");
+  assert.equal(tauri.version, "2.1.0");
+  assert.match(version, /2\.1\.0/);
   assert.match(writeTipSha, /TIP_SHA\.txt/);
   assert.match(beforeBuild, /write-tip-sha\.mjs|TIP_SHA/);
 });

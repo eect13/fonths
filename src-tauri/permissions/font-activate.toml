@@ -57,6 +57,7 @@ commands.allow = [
   "list_system_fonts",
   "open_system_fonts_folder",
   "set_desktop_prefs",
+  "daemon_status",
   "list_leftover_stage_files",
   "recycle_leftover_stage_files",
   "cleanup_temp_stage_files",

@@ -423,5 +423,5 @@ export function startWatchPolling() {
       tick();
       if (document.visibilityState === "visible") void refreshWatchedFolders();
     });
-  }, 8000);
+  }, 1500);
 }

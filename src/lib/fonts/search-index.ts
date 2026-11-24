@@ -6,6 +6,7 @@
  * shrinking candidate scans dramatically for queries >= 3 characters.
  */
 
+import { isWoff2OnlyVariableFamily } from "./heal-catalog.ts";
 import { licenseSearchHay } from "./license.ts";
 import {
   fontMatchesSearchWithCache,
@@ -42,11 +43,12 @@ function buildHay(font: FontRecord, tags: string[]): string {
     font.source,
     font.category,
     ...tags,
-    font.variable || font.catalogVariable ? "variable" : "",
+    !isWoff2OnlyVariableFamily(font.family) && (font.variable || font.catalogVariable) ? "variable" : "",
     font.italic ? "italic" : "",
     font.fileName ?? "",
     licenseSearchHay(font),
     ...(font.axes ?? []).map((a) => a.tag),
+    ...(font.otFeatures ?? []),
   ]
     .join(" ")
     .toLowerCase();

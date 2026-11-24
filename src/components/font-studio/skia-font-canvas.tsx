@@ -28,6 +28,7 @@ export interface SkiaFontCanvasProps {
   italic?: boolean;
   align?: "left" | "center" | "right";
   lineHeight?: number;
+  letterSpacing?: number;
   className?: string;
 }
 
@@ -53,6 +54,7 @@ export const SkiaFontCanvas = memo(function SkiaFontCanvas({
   italic = false,
   align = "left",
   lineHeight = 1.3,
+  letterSpacing = 0,
   className,
 }: SkiaFontCanvasProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -144,6 +146,7 @@ export const SkiaFontCanvas = memo(function SkiaFontCanvas({
       italic,
       align,
       lineHeight,
+      letterSpacing,
     };
 
     const epoch = ++renderEpochRef.current;
@@ -208,6 +211,7 @@ export const SkiaFontCanvas = memo(function SkiaFontCanvas({
     italic,
     align,
     lineHeight,
+    letterSpacing,
   ]);
 
   return (

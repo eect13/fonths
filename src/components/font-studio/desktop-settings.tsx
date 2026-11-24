@@ -232,9 +232,9 @@ export function DesktopSettings() {
         <div className="space-y-2" data-testid="background-mode-card">
           <label className="fm-settings-row flex items-center justify-between gap-3 rounded-md bg-secondary text-sm">
             <div>
-              <p className="font-medium">Run in background (Close to tray)</p>
+              <p className="font-medium">Run in background (Headless daemon)</p>
               <p className="text-xs text-muted-foreground">
-                Keep Fonths running in the tray with active fonts loaded when you close the window — avoids repeated unload/reload locks while Adobe or Word are open.
+                Closing the window hands active fonts off to the lightweight pure-Rust tray daemon (~6 MB RAM) and exits WebView2 — keeping fonts live in Word, Adobe, and Figma with zero idle browser memory.
               </p>
             </div>
             <Switch
@@ -259,7 +259,7 @@ export function DesktopSettings() {
             <div>
               <p className="font-medium">Start minimized in background</p>
               <p className="text-xs text-muted-foreground">
-                Start hidden in the system tray at Windows login while restoring your active fonts quietly.
+                Launch the pure-Rust headless daemon (`--daemon`) at Windows login to activate your saved fonts immediately without opening WebView2.
               </p>
             </div>
             <Switch

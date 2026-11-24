@@ -418,7 +418,7 @@ test("13. Fonths 2.0.0 Skia + Fontations + Windows Activator replaces DirectWrit
   const inspectorTsx = readFileSync(join(process.cwd(), "src/components/font-studio/font-inspector.tsx"), "utf8");
   const appShellTsx = readFileSync(join(process.cwd(), "src/components/font-studio/app-shell.tsx"), "utf8");
 
-  assert.match(cargoToml, /version = "2\.0\.0"/);
+  assert.match(cargoToml, /version = "2\.1\.0"/);
   assert.match(cargoToml, /skia-safe.*textlayout.*embed-freetype.*freetype-woff2/);
   assert.match(cargoToml, /read-fonts/);
   assert.match(cargoToml, /lru/);
@@ -505,4 +505,48 @@ test("14. Live Skia Inspector (italic/weight/auto-height/scroll), watched dedupe
   assert.match(libRs, /start_minimized: Option<bool>/);
   assert.match(settingsTsx, /data-testid="run-in-background-switch"/);
   assert.match(settingsTsx, /data-testid="start-minimized-switch"/);
+});
+
+test("15. Fonths 2.1.0 headless daemon, state honesty, live sliders, and SuperSearch fixes", () => {
+  const daemonRs = readFileSync(join(process.cwd(), "src-tauri/src/daemon.rs"), "utf8");
+  const libRs = readFileSync(join(process.cwd(), "src-tauri/src/lib.rs"), "utf8");
+  const sliderTsx = readFileSync(join(process.cwd(), "src/components/ui/slider.tsx"), "utf8");
+  const inspectorTsx = readFileSync(join(process.cwd(), "src/components/font-studio/font-inspector.tsx"), "utf8");
+  const osActivateTs = readFileSync(join(process.cwd(), "src/lib/fonts/os-activate.ts"), "utf8");
+  const hydrateTs = readFileSync(join(process.cwd(), "src/lib/fonts/hydrate.ts"), "utf8");
+  const chipsTsx = readFileSync(join(process.cwd(), "src/components/font-studio/search-chips.tsx"), "utf8");
+
+  // 1. Two-process headless daemon architecture
+  assert.match(daemonRs, /pub const DAEMON_ARG: &str = "--daemon"/);
+  assert.match(daemonRs, /session_begin_headless/);
+  assert.match(daemonRs, /session_end_headless/);
+  assert.match(libRs, /pub mod daemon;/);
+  assert.match(libRs, /fn daemon_status\(\)/);
+  assert.match(libRs, /fn handoff_to_daemon_and_exit/);
+
+  // 2. State management honesty (no guessing on upload or boot restore)
+  assert.match(osActivateTs, /if \(register\)/);
+  assert.match(osActivateTs, /item\.autoActivate/);
+  assert.match(hydrateTs, /await installFontOnSystem\(localFont\)/);
+
+  // 3. Preview sliders (no double onInput, live lineHeight + letterSpacing in Inspector)
+  assert.doesNotMatch(sliderTsx, /onInput=/);
+  assert.match(inspectorTsx, /lineHeight=\{preview\.lineHeight\}/);
+  assert.match(inspectorTsx, /letterSpacing=\{preview\.letterSpacing\}/);
+
+  // 4. SuperSearch fixes: discrete static weight matching, OpenType feature search, category:icons, facet-aware chips
+  const staticGap = makeFont({ id: "s-gap", family: "Gap Sans", weights: [300, 900], variable: false });
+  assert.equal(fontMatchesSearch(staticGap, parseSearchQuery("weight:500"), {}), false);
+  assert.equal(fontMatchesSearch(staticGap, parseSearchQuery("weight:300"), {}), true);
+  assert.equal(fontMatchesSearch(staticGap, parseSearchQuery("weight:900"), {}), true);
+
+  const otFont = makeFont({ id: "ot-1", family: "Pro Serif", otFeatures: ["liga", "smcp", "ss01"] });
+  assert.equal(fontMatchesSearch(otFont, parseSearchQuery("has:smcp"), {}), true);
+  assert.equal(fontMatchesSearch(otFont, parseSearchQuery("ot:ss01"), {}), true);
+  assert.equal(fontMatchesSearch(otFont, parseSearchQuery("has:dlig"), {}), false);
+
+  const iconFont = makeFont({ id: "ico-1", family: "Material Symbols", category: "display", tags: ["icons"] });
+  assert.equal(fontMatchesSearch(iconFont, parseSearchQuery("category:icons"), {}), true);
+
+  assert.match(chipsTsx, /filterLibrary\(pool, scope, "", favorites, liveIds, collections, customTags, facet, recentIds\)/);
 });

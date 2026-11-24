@@ -1,4 +1,5 @@
 pub mod activator;
+pub mod daemon;
 pub mod renderer;
 pub mod scanner;
 
@@ -23,6 +24,7 @@ use tauri::{
 };
 
 static QUITTING: AtomicBool = AtomicBool::new(false);
+static HANDED_OFF_TO_DAEMON: AtomicBool = AtomicBool::new(false);
 static CLOSE_TO_TRAY: AtomicBool = AtomicBool::new(false);
 static START_MINIMIZED: AtomicBool = AtomicBool::new(false);
 
@@ -58,6 +60,7 @@ fn quit_gracefully(app: &tauri::AppHandle) {
     }
     let handle = app.clone();
     std::thread::spawn(move || {
+        daemon::signal_daemon_stop();
         activator::cleanup_on_exit(&handle);
         activate::session_end(&handle);
         // Clean Tauri/WebView2 teardown so EBWebView-Admin releases its SingletonLock
@@ -71,6 +74,31 @@ fn quit_gracefully(app: &tauri::AppHandle) {
         std::thread::sleep(budget);
         std::process::exit(0);
     });
+}
+
+/// Ephemeral UI exit-on-close: hand active fonts off to the ~6 MB pure-Rust headless daemon
+/// and terminate the WebView2 UI process immediately without unloading any fonts.
+fn handoff_to_daemon_and_exit(app: &tauri::AppHandle) {
+    if HANDED_OFF_TO_DAEMON.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    activate::persist_session_handoff(app);
+    let _ = daemon::spawn_daemon(true);
+    let _ = app.remove_tray_by_id("main");
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.hide();
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        handle.exit(0);
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        std::process::exit(0);
+    });
+}
+
+#[tauri::command]
+fn daemon_status() -> bool {
+    daemon::is_daemon_running()
 }
 
 #[tauri::command]
@@ -138,7 +166,7 @@ fn apply_start_with_windows(on: bool, start_minimized: bool) -> Result<(), Strin
         let link = dir.join("Fonths.cmd");
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let exe_str = exe.display().to_string();
-        let arg_tail = if start_minimized { " --minimized" } else { "" };
+        let launch_cmd = daemon::startup_launch_args(&exe, start_minimized);
 
         if win_admin::is_elevated() {
             let _ = std::process::Command::new("schtasks.exe")
@@ -146,7 +174,6 @@ fn apply_start_with_windows(on: bool, start_minimized: bool) -> Result<(), Strin
                 .creation_flags(CREATE_NO_WINDOW)
                 .status();
             if on {
-                let tr = format!("\"{exe_str}\"{arg_tail}");
                 let status = std::process::Command::new("schtasks.exe")
                     .args([
                         "/Create",
@@ -157,7 +184,7 @@ fn apply_start_with_windows(on: bool, start_minimized: bool) -> Result<(), Strin
                         "/RL",
                         "HIGHEST",
                         "/TR",
-                        &tr,
+                        &launch_cmd,
                         "/F",
                     ])
                     .creation_flags(CREATE_NO_WINDOW)
@@ -179,7 +206,7 @@ fn apply_start_with_windows(on: bool, start_minimized: bool) -> Result<(), Strin
                 }
             }
         } else if on {
-            let body = format!("@echo off\r\nstart \"\" \"{exe_str}\"{arg_tail}\r\n");
+            let body = format!("@echo off\r\nstart \"\" {launch_cmd}\r\n");
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             std::fs::write(&link, body).map_err(|e| e.to_string())?;
         } else if link.exists() {
@@ -358,6 +385,12 @@ pub fn run() {
         println!("Fonths {} (commit {BUILD_SHA})", env!("CARGO_PKG_VERSION"));
         return;
     }
+    // Pure-Rust headless tray daemon: exits before Tauri/WebView2 ever initializes (~6–10 MB RAM).
+    if std::env::args().any(|a| a == daemon::DAEMON_ARG) {
+        let handoff = std::env::args().any(|a| a == daemon::HANDOFF_ARG);
+        daemon::run_headless_daemon(handoff);
+        return;
+    }
     #[cfg(windows)]
     {
         win_admin::wait_for_relaunch_parent_pid();
@@ -384,50 +417,52 @@ pub fn run() {
                 activate::session_begin(&handle);
             });
 
-            let show = MenuItem::with_id(app, "show", "Show Fonths", true, None::<&str>)?;
-            let folder = MenuItem::with_id(app, "folder", "Open Documents folder", true, None::<&str>)?;
-            let cancel_docs = MenuItem::with_id(
-                app,
-                "cancel_docs_refresh",
-                "Cancel Documents refresh",
-                true,
-                None::<&str>,
-            )?;
-            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &folder, &cancel_docs, &quit])?;
+            if !daemon::is_daemon_running() {
+                let show = MenuItem::with_id(app, "show", "Show Fonths", true, None::<&str>)?;
+                let folder = MenuItem::with_id(app, "folder", "Open Documents folder", true, None::<&str>)?;
+                let cancel_docs = MenuItem::with_id(
+                    app,
+                    "cancel_docs_refresh",
+                    "Cancel Documents refresh",
+                    true,
+                    None::<&str>,
+                )?;
+                let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+                let menu = Menu::with_items(app, &[&show, &folder, &cancel_docs, &quit])?;
 
-            let icon = app
-                .default_window_icon()
-                .cloned()
-                .expect("app icon");
+                let icon = app
+                    .default_window_icon()
+                    .cloned()
+                    .expect("app icon");
 
-            TrayIconBuilder::with_id("main")
-                .icon(icon)
-                .tooltip("Fonths")
-                .menu(&menu)
-                .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => show_main(app),
-                    "folder" => {
-                        let _ = activate::open_activation_folder(app.clone(), None);
-                    }
-                    "cancel_docs_refresh" => {
-                        activate::request_docs_vf_cancel_native(app.clone());
-                    }
-                    "quit" => quit_gracefully(app),
-                    _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        show_main(tray.app_handle());
-                    }
-                })
-                .build(app)?;
+                TrayIconBuilder::with_id("main")
+                    .icon(icon)
+                    .tooltip("Fonths")
+                    .menu(&menu)
+                    .show_menu_on_left_click(false)
+                    .on_menu_event(|app, event| match event.id.as_ref() {
+                        "show" => show_main(app),
+                        "folder" => {
+                            let _ = activate::open_activation_folder(app.clone(), None);
+                        }
+                        "cancel_docs_refresh" => {
+                            activate::request_docs_vf_cancel_native(app.clone());
+                        }
+                        "quit" => quit_gracefully(app),
+                        _ => {}
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            show_main(tray.app_handle());
+                        }
+                    })
+                    .build(app)?;
+            }
 
             if std::env::args().any(|a| a == "--minimized") {
                 if let Some(win) = app.get_webview_window("main") {
@@ -440,6 +475,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             set_desktop_prefs,
+            daemon_status,
             scanner::scan_font_directory,
             renderer::render_font_preview,
             renderer::render_font_specimen,
@@ -510,8 +546,12 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 if CLOSE_TO_TRAY.load(Ordering::SeqCst) {
-                    let _ = window.hide();
-                    set_tray_tooltip(window.app_handle(), "Fonths — running in background");
+                    if activate::sandbox_active() {
+                        let _ = window.hide();
+                        set_tray_tooltip(window.app_handle(), "Fonths — running in background");
+                    } else {
+                        handoff_to_daemon_and_exit(window.app_handle());
+                    }
                     return;
                 }
                 quit_gracefully(window.app_handle());
@@ -521,8 +561,12 @@ pub fn run() {
         .expect("error while building Fonths")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
+                if HANDED_OFF_TO_DAEMON.load(Ordering::SeqCst) {
+                    return;
+                }
                 activator::cleanup_on_exit(app);
                 if !QUITTING.load(Ordering::SeqCst) {
+                    daemon::signal_daemon_stop();
                     activate::session_end(app);
                 }
             }

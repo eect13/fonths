@@ -1032,6 +1032,7 @@ async function writeAndRegister(
   fileName: string,
   bytes: Uint8Array,
   source: "google" | "local" = "local",
+  register = true,
 ) {
   // Card 36: non-ASCII families get their own u-<hash> folder (same as Rust).
   // FontBase-style separation: Google Fonts under Google/, uploaded/added files under Uploads/.
@@ -1042,7 +1043,7 @@ async function writeAndRegister(
   const { join } = await import("@tauri-apps/api/path");
   // c263: the backend's library root (sandbox-aware), never a hard-coded Documents path.
   const root = await managedDocumentsRoot();
-  if (!root) throw new Error("Font Manager library folder unavailable");
+  if (!root) throw new Error("Fonths library folder unavailable");
   const dir = await join(root, container, fam);
   const abs = await join(dir, file);
   await mkdir(dir, { recursive: true });
@@ -1064,8 +1065,10 @@ async function writeAndRegister(
   }
   const sourceMarker = await join(dir, ".download-source");
   await writeFile(sourceMarker, new TextEncoder().encode(source)).catch(() => undefined);
-  await tauriInvoke("register_font_path", { path: abs, family });
-  installedCache.add(family.toLowerCase());
+  if (register) {
+    await tauriInvoke("register_font_path", { path: abs, family });
+    installedCache.add(family.toLowerCase());
+  }
 }
 
 async function fetchBytes(url: string): Promise<Uint8Array | null> {
@@ -2154,7 +2157,13 @@ export function resumeDownloadQueue() {
   toast.message("Resumed", { id: "fm-queue-state", description: "Same queue, same percent." });
 }
 
-const uploadQueue: { family: string; fileName: string; bytes: Uint8Array }[] = [];
+const uploadQueue: {
+  family: string;
+  fileName: string;
+  bytes: Uint8Array;
+  autoActivate: boolean;
+  fontId?: string;
+}[] = [];
 let uploadPumping = false;
 let uploadsSaved = 0;
 let uploadQueuePaused = false;
@@ -2177,6 +2186,7 @@ async function pumpUploads() {
   if (uploadPumping) return;
   uploadPumping = true;
   try {
+    let anyRegistered = false;
     while (uploadQueue.length) {
       if (uploadQueuePaused) {
         return;
@@ -2188,21 +2198,36 @@ async function pumpUploads() {
       const item = uploadQueue.shift();
       if (!item) break;
       try {
-        await writeAndRegister(item.family, item.fileName, item.bytes, "local");
+        await writeAndRegister(item.family, item.fileName, item.bytes, "local", item.autoActivate);
+        if (item.autoActivate) {
+          anyRegistered = true;
+          if (item.fontId) {
+            const { useFontStore } = await import("./store");
+            useFontStore.getState().markLiveActivated([item.fontId]);
+          }
+        }
         uploadsSaved += 1;
       } catch (err) {
         console.error(err);
+        if (item.fontId) {
+          const { useFontStore } = await import("./store");
+          useFontStore.getState().clearPendingActivate([item.fontId]);
+        }
       }
       await yieldUi();
     }
     if (uploadsSaved) {
-      await tauriInvoke("flush_font_cache").catch(() => undefined);
+      if (anyRegistered) {
+        await tauriInvoke("flush_font_cache").catch(() => undefined);
+      }
       toast.success(
-        uploadsSaved === 1 ? "Upload saved to Uploads" : `${uploadsSaved} uploads saved to Uploads`,
+        uploadsSaved === 1 ? "Font saved to library" : `${uploadsSaved} fonts saved to library`,
         {
           id: "fm-upload-saved",
-          description: "Saved to Documents → Fonths → Uploads (separate from Providers → Google). Deactivating unloads from Windows without deleting files.",
-          action: { label: "Open Uploads", onClick: () => void openActivatedFolder("uploads") },
+          description: anyRegistered
+            ? "Saved and activated for Word, Adobe, and Figma. Deactivating unloads without deleting files."
+            : "Saved to library (inactive — Auto-activate was off).",
+          action: { label: "Open Folder", onClick: () => void openActivatedFolder("uploads") },
         },
       );
       uploadsSaved = 0;
@@ -2216,6 +2241,8 @@ export async function saveUploadToDisk(opts: {
   family: string;
   fileName: string;
   buffer: ArrayBuffer;
+  autoActivate?: boolean;
+  fontId?: string;
 }): Promise<void> {
   if (!(await inDesktopShell())) return;
   uploadQueueCancelled = false;
@@ -2223,6 +2250,8 @@ export async function saveUploadToDisk(opts: {
     family: opts.family,
     fileName: opts.fileName,
     bytes: new Uint8Array(opts.buffer),
+    autoActivate: opts.autoActivate !== false,
+    fontId: opts.fontId,
   });
   if (!uploadQueuePaused) void pumpUploads();
 }

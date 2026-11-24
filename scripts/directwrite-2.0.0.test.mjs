@@ -24,12 +24,12 @@ const loaderTs = read("src/lib/fonts/loader.ts");
 const desktopSettingsTsx = read("src/components/font-studio/desktop-settings.tsx");
 
 test("2.0.0 version metadata synced across Cargo, Tauri, npm, and version.ts", () => {
-  assert.equal(pkg.version, "2.0.0");
-  assert.equal(pkgLock.version, "2.0.0");
-  assert.equal(pkgLock.packages[""].version, "2.0.0");
-  assert.equal(tauriConf.version, "2.0.0");
-  assert.match(cargoToml, /version = "2\.0\.0"/);
-  assert.match(versionTs, /export const APP_VERSION = "2\.0\.0";/);
+  assert.equal(pkg.version, "2.1.0");
+  assert.equal(pkgLock.version, "2.1.0");
+  assert.equal(pkgLock.packages[""].version, "2.1.0");
+  assert.equal(tauriConf.version, "2.1.0");
+  assert.match(cargoToml, /version = "2\.1\.0"/);
+  assert.match(versionTs, /export const APP_VERSION = "2\.1\.0";/);
 });
 
 test("Skia + Fontations engine replaces legacy DirectWrite and ttf-parser with read-only system font guard", () => {

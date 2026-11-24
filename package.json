@@ -1,6 +1,6 @@
 {
   "name": "fonths",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Fonths 2.0 — High-performance Tauri v2 + Rust + Skia (FreeType + HarfBuzz) + Fontations typeface manager.",
   "sideEffects": false,
   "type": "module",

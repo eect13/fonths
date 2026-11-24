@@ -18,6 +18,7 @@ export interface RenderFontSpecimenOptions {
   italic?: boolean;
   align?: "left" | "center" | "right";
   lineHeight?: number;
+  letterSpacing?: number;
 }
 
 export interface SkiaSpecimenFrame {
@@ -48,6 +49,7 @@ export async function renderFontSpecimen(opts: RenderFontSpecimenOptions): Promi
     italic: Boolean(opts.italic),
     align: opts.align ?? "left",
     lineHeight: opts.lineHeight ?? null,
+    letterSpacing: opts.letterSpacing ?? null,
   });
   if (!(buffer instanceof ArrayBuffer) || buffer.byteLength < 8) {
     throw new Error("Empty Skia frame");

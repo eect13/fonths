@@ -22,7 +22,7 @@ test("inspector: no waterfall/glyphs strip; in-flow on desktop; glyph map link",
   assert.doesNotMatch(inspector, /ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz/);
   assert.match(inspector, /to="\/glyphs"/);
   assert.match(inspector, /md:static md:inset-auto md:z-auto md:w-inspector md:shrink-0/);
-  assert.match(inspector, /fontSize: "1\.25rem"/);
+  assert.match(inspector, /Math\.max\(16, Math\.min\(48/);
   assert.doesNotMatch(inspector, /3\.6vw/);
 });
 

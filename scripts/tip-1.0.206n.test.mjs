@@ -26,8 +26,8 @@ const tipI = readFileSync(join(root, "scripts/tip-1.0.206i.test.mjs"), "utf8");
 const HONEST_PREFER = "selected/favorites/visible/first-page/recent";
 
 test("206n keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.0.0");
-  assert.match(version, /2\.0\.0/);
+  assert.equal(pkg.version, "2.1.0");
+  assert.match(version, /2\.1\.0/);
 });
 
 test("docs mark 206n; tip hygiene + bulk opt + wall-clock prep/skip; no tip-install", () => {

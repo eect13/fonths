@@ -131,7 +131,7 @@ const FitSpecimen = memo(function FitSpecimen({
       guard += 1;
     }
     fittedPx.current = size;
-  }, [ready, loaded, faceTick, fitKey, maxSize, style.fontFamily, style.fontStyle, style.lineHeight, style.letterSpacing, specRef]);
+  }, [ready, loaded, faceTick, fitKey, maxSize, weight, style.fontFamily, style.fontStyle, style.lineHeight, style.letterSpacing, specRef]);
 
   return (
     <p
@@ -327,8 +327,8 @@ export const FontCard = memo(function FontCard({
     if (tag === "wght" || tag === "slnt") {
       const el = specRef.current;
       if (el) {
-        const next = { ...(axisValues ?? {}), [tag]: n };
-        const nextStyle = variationStyle(next, axes);
+        const next = { ...(styleValues ?? axisValues ?? {}), [tag]: n };
+        const nextStyle = variationStyle(next, styleAxes);
         paintWeight(
           el,
           nextStyle.fontWeight ?? cardWeight,

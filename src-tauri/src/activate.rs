@@ -68,6 +68,72 @@ fn documents_root(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Resolve `Documents\Fonths` without a Tauri `AppHandle` (used by the headless `--daemon` process).
+pub(crate) fn documents_root_headless() -> Option<PathBuf> {
+    if let Some(sb) = sandbox_root() {
+        return Some(sb.join("Documents").join("Fonths"));
+    }
+    #[cfg(windows)]
+    {
+        // Query Windows Known Folder `FOLDERID_Documents` ({FDD39AD0-238F-46AF-ADB4-6C85480369C7})
+        // so redirected OneDrive / custom Documents locations match `app.path().document_dir()`.
+        #[repr(C)]
+        struct GUID {
+            data1: u32,
+            data2: u16,
+            data3: u16,
+            data4: [u8; 8],
+        }
+        #[link(name = "shell32")]
+        extern "system" {
+            fn SHGetKnownFolderPath(
+                rfid: *const GUID,
+                dw_flags: u32,
+                h_token: isize,
+                ppsz_path: *mut *mut u16,
+            ) -> i32;
+        }
+        #[link(name = "ole32")]
+        extern "system" {
+            fn CoTaskMemFree(pv: *mut core::ffi::c_void);
+        }
+        const FOLDERID_DOCUMENTS: GUID = GUID {
+            data1: 0xFDD3_9AD0,
+            data2: 0x238F,
+            data3: 0x46AF,
+            data4: [0xAD, 0xB4, 0x6C, 0x85, 0x48, 0x03, 0x69, 0xC7],
+        };
+        let mut raw: *mut u16 = std::ptr::null_mut();
+        let hr = unsafe { SHGetKnownFolderPath(&FOLDERID_DOCUMENTS, 0, 0, &mut raw) };
+        if hr == 0 && !raw.is_null() {
+            let mut len = 0usize;
+            unsafe {
+                while *raw.add(len) != 0 {
+                    len += 1;
+                }
+                let slice = std::slice::from_raw_parts(raw, len);
+                let os = std::ffi::OsString::from_wide(slice);
+                CoTaskMemFree(raw as *mut core::ffi::c_void);
+                let p = PathBuf::from(os);
+                if !p.as_os_str().is_empty() {
+                    return Some(p.join("Fonths"));
+                }
+            }
+        }
+        if let Some(profile) = std::env::var_os("USERPROFILE") {
+            return Some(PathBuf::from(profile).join("Documents").join("Fonths"));
+        }
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Documents").join("Fonths"))
+    }
+}
+
+#[cfg(windows)]
+use std::os::windows::ffi::OsStringExt;
+
 const PROVIDERS_DIR: &str = "Providers";
 const GOOGLE_CONTAINER: &str = "Google";
 const UPLOADS_CONTAINER: &str = "Uploads";
@@ -4161,6 +4227,7 @@ pub fn session_begin(app: &AppHandle) {
         // 2) Validate/rebuild maps (preserve valid maps + session-active;
         //    re-stage missing copy-only) BEFORE recover clear.
         // 3) recover_stale_session — missing stage ≠ unlock→nuke.
+        let daemon_active = crate::daemon::is_daemon_running();
         let clean_exit = documents_root(app)
             .ok()
             .map(|root| {
@@ -4170,7 +4237,12 @@ pub fn session_begin(app: &AppHandle) {
                     && crate::session_stage::load_session_maps_in(&root).is_empty()
             })
             .unwrap_or(false);
-        if clean_exit {
+        if daemon_active {
+            // Headless daemon already holds the live GDI session — do not unload or clear HKCU.
+            if let (Ok(root), Some(maps_root)) = (documents_root(app), gdi_maps_root()) {
+                let _ = rebuild_session_maps_in(&root, &maps_root);
+            }
+        } else if clean_exit {
             migrate_shared_family_folders_on_boot(app);
         } else {
             if let Ok(root) = documents_root(app) {
@@ -4184,7 +4256,9 @@ pub fn session_begin(app: &AppHandle) {
             }
             recover_stale_session(app);
         }
-        winfont::clear_all_hkcu_session_entries();
+        if !daemon_active {
+            winfont::clear_all_hkcu_session_entries();
+        }
         // 1.0.156 leftover: session copies under the per-user Fonts tree.
         // Remove + delete that folder only — never C:\Windows\Fonts.
         purge_legacy_fontmanager_user_fonts_stage();
@@ -4396,6 +4470,142 @@ pub fn session_end(app: &AppHandle) {
     #[cfg(not(windows))]
     {
         clear_session_sidecars(app);
+    }
+}
+
+/// Flush live session maps & paths right before handing ownership off to the headless daemon.
+pub(crate) fn persist_session_handoff(app: &AppHandle) {
+    persist_activation_sidecars(app);
+}
+
+/// Headless pure-Rust login activation (`fonths.exe --daemon`): registers remembered
+/// `.session-families.json` families + pre-staged `gdi-maps` in parallel without WebView2.
+pub(crate) fn session_begin_headless() {
+    #[cfg(windows)]
+    {
+        let Some(root) = documents_root_headless() else {
+            return;
+        };
+        let active_file = session_active_file_in(&root);
+        let families: Vec<String> = fs::read(&active_file)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Vec<String>>(&b).ok())
+            .map(|v| dedupe_family_names(&v))
+            .unwrap_or_default();
+        let disk_maps = crate::session_stage::load_session_maps_in(&root);
+        if families.is_empty() && disk_maps.is_empty() {
+            return;
+        }
+        let fast_resume = fast_session_resume();
+        let mut to_register: Vec<(String, PathBuf)> = Vec::new();
+        let mut seen_paths: HashSet<PathBuf> = HashSet::new();
+
+        for fam in &families {
+            if known_gdi_incapable_entry(fam).is_some() {
+                continue;
+            }
+            for dir in family_locations_in(&root, fam) {
+                if !dir.is_dir() {
+                    continue;
+                }
+                let mut files = Vec::new();
+                walk_font_files(&dir, &mut files);
+                sort_faces_var_first(&mut files);
+                for path in files {
+                    if !fast_resume && !ttf_intact(&path) {
+                        continue;
+                    }
+                    if seen_paths.insert(path.clone()) {
+                        to_register.push((fam.clone(), path));
+                    }
+                }
+            }
+        }
+        // Also re-register any watched-folder / external local font paths recorded in `.session-maps.json`.
+        for entry in &disk_maps {
+            let src = PathBuf::from(&entry.source);
+            if src.is_file() && seen_paths.insert(src.clone()) {
+                let fam = if !entry.family.trim().is_empty() {
+                    entry.family.trim().to_string()
+                } else {
+                    src.file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("Local")
+                        .to_string()
+                };
+                to_register.push((fam, src));
+            }
+        }
+        if to_register.is_empty() {
+            return;
+        }
+
+        let _hkcu_batch = HkcuBatchGuard::new();
+        let workers = session_register_workers(to_register.len());
+        let queue = Arc::new(Mutex::new(VecDeque::from(to_register)));
+        let added_any = Arc::new(AtomicBool::new(false));
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            let q = Arc::clone(&queue);
+            let flag = Arc::clone(&added_any);
+            handles.push(thread::spawn(move || loop {
+                let next = q.lock().ok().and_then(|mut g| g.pop_front());
+                let Some((fam, path)) = next else {
+                    break;
+                };
+                if winfont::register_detailed_with_fast(&path, fast_resume)
+                    == winfont::RegisterOutcome::Ok
+                {
+                    winfont::bind(&fam, &path);
+                    flag.store(true, Ordering::SeqCst);
+                }
+            }));
+        }
+        for h in handles {
+            let _ = h.join();
+        }
+        drop(_hkcu_batch);
+
+        if added_any.load(Ordering::SeqCst) {
+            winfont::sync_hkcu_all_active_stages();
+            let maps = winfont::snapshot_face_maps();
+            let stage_paths = crate::session_stage::filter_session_paths_refuse_documents(
+                &winfont::snapshot_stage_paths(),
+            );
+            if !maps.is_empty() {
+                crate::session_stage::save_session_maps_in(&root, &maps);
+            }
+            if !stage_paths.is_empty() {
+                save_session_paths_in(&root, &stage_paths);
+            }
+            notify_fonts_changed();
+        }
+    }
+}
+
+/// Headless pure-Rust daemon exit: unloads every staged session path, clears HKCU keys,
+/// broadcasts `WM_FONTCHANGE`, clears sidecars, and writes `.session-clean-exit`.
+pub(crate) fn session_end_headless() {
+    #[cfg(windows)]
+    {
+        winfont::begin_unload();
+        winfont::clear_all_hkcu_session_entries();
+        let mut extra = winfont::snapshot_stage_paths();
+        let live_maps = winfont::snapshot_face_maps();
+        extra = merge_unique_paths(extra, crate::session_stage::stage_paths_from_maps(&live_maps));
+        let root_opt = documents_root_headless();
+        if let Some(ref root) = root_opt {
+            extra = merge_unique_paths(extra, load_session_paths_in(root));
+            let disk_maps = crate::session_stage::load_session_maps_in(root);
+            extra = merge_unique_paths(extra, crate::session_stage::stage_paths_from_maps(&disk_maps));
+        }
+        extra = crate::session_stage::filter_session_paths_refuse_documents(&extra);
+        let _ = winfont::unload_paths(extra, true);
+        if let Some(ref root) = root_opt {
+            clear_session_sidecars_in(root);
+            crate::session_stage::clear_session_maps_in(root);
+            crate::session_stage::write_clean_exit_marker_in(root);
+        }
     }
 }
 

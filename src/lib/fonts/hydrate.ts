@@ -301,12 +301,18 @@ export function useHydrateFonts() {
         };
         // 1.0.190 progressive Live: flush session_boot.ready as Adds succeed —
         // do not wait for boot.done (~2099) before restoreActivation.
+        // Never resurrect an ID the user explicitly deactivated during startup.
         const boot = await waitSessionBoot(180_000, (readyChunk, _done) => {
           if (cancelled) return;
-          // Merge remembered wantIds with progressive boot.ready so startup UI is instant and never flickers to 0.
-          const bootLive = liveIdsFromReadyNames(readyChunk);
-          const live = Array.from(new Set([...wantIds, ...bootLive]));
-          useFontStore.getState().restoreActivation(live, []);
+          const stNow = useFontStore.getState();
+          const bootLive = liveIdsFromReadyNames(readyChunk).filter(
+            (id) => !stNow.pendingDeactivateSet.has(id),
+          );
+          const stillWanted = wantIds.filter(
+            (id) => stNow.activatedSet.has(id) && !stNow.pendingDeactivateSet.has(id),
+          );
+          const live = Array.from(new Set([...stillWanted, ...bootLive]));
+          stNow.restoreActivation(live, []);
         });
         const bootReady = boot.ready.slice();
         const sessionNames = bootReady;
@@ -391,7 +397,7 @@ export function useHydrateFonts() {
           ? restoreSessionFromDisk(needRegister)
           : Promise.resolve({ ready: [] as string[], missing: [] as string[], onDisk: [] as string[] });
         void restore
-          .then((result) => {
+          .then(async (result) => {
             setBootRestoringIds(null);
             if (cancelled) return;
             const diskNames = result.onDisk;
@@ -399,19 +405,31 @@ export function useHydrateFonts() {
               noteDiskFamilies(diskNames);
               useFontStore.getState().setDiskFamilies(diskNames);
             }
+            const stBefore = useFontStore.getState();
             const allowNames = [...result.ready, ...sessionNames];
-            const live = liveIdsFromReadyNames(allowNames);
+            const live = liveIdsFromReadyNames(allowNames).filter(
+              (id) => !stBefore.pendingDeactivateSet.has(id),
+            );
             // Re-activate persisted local / watched-folder fonts that weren't found under Documents/.
+            // State honesty: await OS activation confirmation before marking Live (never guess).
             for (const id of wantIds) {
+              if (cancelled) return;
+              const cur = useFontStore.getState();
+              if (cur.pendingDeactivateSet.has(id) || !cur.activatedSet.has(id)) continue;
               const localFont = localById.get(id);
               if (localFont && !live.includes(id)) {
-                live.push(id);
-                void installFontOnSystem(localFont);
+                const ok = await installFontOnSystem(localFont).catch(() => false);
+                if (ok && !useFontStore.getState().pendingDeactivateSet.has(id)) {
+                  live.push(id);
+                }
               }
             }
-            useFontStore.getState().restoreActivation(live, []);
+            if (cancelled) return;
+            const stAfter = useFontStore.getState();
+            const finalLive = live.filter((id) => !stAfter.pendingDeactivateSet.has(id));
+            stAfter.restoreActivation(finalLive, []);
             void rememberSessionFamilies(
-              live
+              finalLive
                 .map((id) => findFont(id, localFonts, google)?.family ?? (id.startsWith("g:") ? id.slice(2) : ""))
                 .filter((name): name is string => Boolean(name)),
             );

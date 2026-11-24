@@ -58,7 +58,8 @@ export function AxisSliders({
         </div>
       ) : null}
       {axes.map((axis) => {
-        const value = values[axis.tag] ?? axis.def;
+        const raw = values[axis.tag] ?? axis.def;
+        const value = Number.isFinite(raw) ? Math.min(axis.max, Math.max(axis.min, raw)) : axis.def;
         const span = axis.max - axis.min;
         if (!(span > 0) && !isBinaryAxis(axis)) return null;
         if (isBinaryAxis(axis)) {
