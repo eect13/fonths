@@ -223,7 +223,7 @@ export const SkiaFontCanvas = memo(function SkiaFontCanvas({
       <canvas
         ref={canvasRef}
         data-testid="skia-font-canvas"
-        aria-label={`Skia preview of ${fontPaths[0] ?? "font"}`}
+        aria-label={`Fontations preview of ${fontPaths[0] ?? "font"}`}
         className="block h-full w-full"
         style={{ width: "100%", height: `${cssHeight}px` }}
       />

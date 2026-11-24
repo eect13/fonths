@@ -323,6 +323,15 @@ export function FontInspector() {
         title: `fvar ${axis.name || axis.tag}`,
       });
     }
+    const highlightOt = ["smcp", "liga", "dlig", "calt", "tnum", "onum", "zero", "frac", "swsh", "ss01", "ss02"];
+    const presentOt = (layoutTags ?? []).filter((t) => highlightOt.includes(t)).slice(0, 5);
+    for (const tag of presentOt) {
+      searchChips.push({
+        label: `ot:${tag}`,
+        token: `ot:${tag}`,
+        title: `Filter library by OpenType feature '${tag}'`,
+      });
+    }
   }
 
   return (
@@ -569,7 +578,7 @@ export function FontInspector() {
                   title={
                     canItalic
                       ? obliqueFallback
-                        ? "Synthetic oblique preview in Skia (no italic font file)"
+                        ? "Synthetic oblique preview via Fontations + HarfRust (no italic font file)"
                         : "Toggle italic"
                       : isItalicOnlyFace(font)
                         ? "Italic file"

@@ -2685,7 +2685,7 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
         if (!started) {
           lastFailedNames = names.slice();
           const details = names.map(
-            (n) => `${n} — on disk but GDI register failed or invoke timed out`,
+            (n) => `${n} — on disk but Win32 Session Table registration failed or timed out`,
           );
           job = {
             ...job,

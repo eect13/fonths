@@ -42,6 +42,29 @@ let inflight = false;
 let queued = false;
 let started = false;
 const unwatchers = new Map<string, () => void>();
+/** Tracks already-inspected/skipped watched file signatures (`normPath -> size:mtime` or `size:*`)
+ *  so duplicate or filtered files are never re-imported or re-toasted on subsequent polls. */
+const handledWatchedSigs = new Map<string, string>();
+
+function fileSig(size: number | undefined, mtime?: number) {
+  return mtime !== undefined ? `${size ?? 0}:${mtime}` : `${size ?? 0}:*`;
+}
+
+function sigMatches(stored: string | undefined, size: number | undefined, mtime: number | undefined) {
+  if (!stored) return false;
+  if (stored === `${size ?? 0}:${mtime ?? 0}`) return true;
+  return stored === `${size ?? 0}:*`;
+}
+
+export function clearWatchedFileMemory(root?: string) {
+  if (!root) {
+    handledWatchedSigs.clear();
+    return;
+  }
+  for (const key of Array.from(handledWatchedSigs.keys())) {
+    if (underWatch(key, root)) handledWatchedSigs.delete(key);
+  }
+}
 let managedUnwatch: (() => void) | null = null;
 let managedRootKey = "";
 let managedDebounce = 0;
@@ -75,8 +98,10 @@ export async function addWatchedFolder(): Promise<void> {
   }
   const store = useFontStore.getState();
   const existing = store.collections.find((c) => c.watchPath && norm(c.watchPath) === norm(picked.path));
-  let originPaths = picked.originPaths.slice();
-  let originSizes = (picked.originSizes ?? []).slice();
+  const initialPaths = picked.originPaths.slice();
+  const initialSizes = (picked.originSizes ?? []).slice();
+  let originPaths = initialPaths.slice();
+  let originSizes = initialSizes.slice();
   let autoActivate = existing?.autoActivate ?? true;
   let importFilter: SavedImportRule | undefined = existing?.importFilter;
   let skippedByRule = 0;
@@ -174,6 +199,11 @@ export async function addWatchedFolder(): Promise<void> {
       description: "No matching font files yet. New fonts dropped into that folder will appear automatically.",
     });
   }
+  // Record every file seen during initial watch setup (including skipped duplicates/filtered files)
+  // BEFORE refreshWatchedFolders runs so unchanged skipped files never re-trigger duplicate toasts.
+  for (let i = 0; i < initialPaths.length; i += 1) {
+    handledWatchedSigs.set(norm(initialPaths[i]!), fileSig(initialSizes[i]));
+  }
   lastSig = "";
   void bindNativeWatch();
   void refreshWatchedFolders();
@@ -222,13 +252,29 @@ export async function refreshWatchedFolders(): Promise<void> {
       }
       const freshPaths: string[] = [];
       const freshSizes: number[] = [];
+      const freshMtimes: number[] = [];
       for (let i = 0; i < listed.paths.length; i += 1) {
         const origin = listed.paths[i]!;
-        const prev = knownByPath.get(norm(origin)) ?? [];
-        if (prev.length && (prev[0]!.fileSize ?? 0) === listed.sizes[i]) continue;
+        const key = norm(origin);
+        const curSig = fileSig(listed.sizes[i], listed.mtimes[i]);
+        const prev = knownByPath.get(key) ?? [];
+        if (prev.length && (prev[0]!.fileSize ?? 0) === listed.sizes[i]) {
+          handledWatchedSigs.set(key, curSig);
+          continue;
+        }
+        // Skip unchanged files that were already inspected/skipped as duplicates or filtered out.
+        if (!prev.length && sigMatches(handledWatchedSigs.get(key), listed.sizes[i], listed.mtimes[i])) {
+          handledWatchedSigs.set(key, curSig);
+          continue;
+        }
         for (const face of prev) await removeLocalFont(face.id);
         freshPaths.push(origin);
         freshSizes.push(listed.sizes[i] ?? 0);
+        freshMtimes.push(listed.mtimes[i] ?? 0);
+      }
+      // Mark all newly seen paths as handled immediately so skipped duplicates never loop on next poll.
+      for (let i = 0; i < freshPaths.length; i += 1) {
+        handledWatchedSigs.set(norm(freshPaths[i]!), fileSig(freshSizes[i], freshMtimes[i]));
       }
       let dedupedFresh = freshPaths;
       if (freshPaths.length > 1) {
@@ -260,15 +306,19 @@ export async function refreshWatchedFolders(): Promise<void> {
           collectionId: folder.id,
           collectionName: folder.name,
         });
-        if (result.duplicates > 0) {
+        if (result.duplicates > 0 && !latest.autoHideDuplicates) {
           toast.message(
             `${result.duplicates} duplicate file${result.duplicates === 1 ? "" : "s"} skipped in ${folder.name}`,
+            { id: `watch-dup-${folder.id}` },
           );
         }
-        if (collisions.length > 0 && result.added > 0) {
+        if (collisions.length > 0 && result.added > 0 && !latest.autoHideDuplicates) {
           toast.message(
             `${collisions.length} new file${collisions.length === 1 ? "" : "s"} in ${folder.name} share a family with existing fonts`,
-            { description: "Check the Duplicates tab to hide or resolve overlapping families." },
+            {
+              id: `watch-collision-${folder.id}`,
+              description: "Check the Duplicates tab to hide or resolve overlapping families.",
+            },
           );
         }
       }

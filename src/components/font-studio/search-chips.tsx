@@ -40,13 +40,29 @@ export function SearchChips() {
     const skipLocals = scope === "gfonts" || scope === "google" || scope === "system";
     const liveIds = scope === "activated" ? activated : EMPTY_IDS;
     const pool = poolForScope(scope, skipLocals ? [] : deferredLocal, deferredGoogle, systemFonts, liveIds);
-    let list = filterLibrary(pool, scope, "", favorites, liveIds, collections, customTags, facet, recentIds);
+    let baseList = filterLibrary(pool, scope, "", favorites, liveIds, collections, customTags, facet, recentIds);
     if (autoHideDuplicates && duplicateHideIds.length) {
       const hidden = new Set(duplicateHideIds);
-      list = list.filter((f) => !hidden.has(f.id));
+      baseList = baseList.filter((f) => !hidden.has(f.id));
     }
-    return countSearchPresets(list, customTags);
+    const trimmedQuery = query.trim();
+    if (!trimmedQuery) {
+      return countSearchPresets(baseList, customTags);
+    }
+    // When filters are already active, intersect counts against the active query so chip numbers
+    // show exact remaining matches (removing each chip's own token when that chip is already ON).
+    const out: Record<string, number> = {};
+    for (const preset of SEARCH_PRESETS) {
+      const active = queryHasToken(trimmedQuery, preset.token);
+      const effectiveQuery = active ? toggleSearchPreset(trimmedQuery, preset.token).trim() : trimmedQuery;
+      const scoped = effectiveQuery
+        ? filterLibrary(baseList, scope, effectiveQuery, favorites, liveIds, collections, customTags, facet, recentIds)
+        : baseList;
+      out[preset.id] = countSearchPresets(scoped, customTags)[preset.id] ?? 0;
+    }
+    return out;
   }, [
+    query,
     scope,
     facet,
     deferredLocal,
@@ -84,7 +100,11 @@ export function SearchChips() {
             )}
           >
             {chip.label}
-            {n > 0 ? <span className="tabular-nums text-foreground">{n.toLocaleString()}</span> : null}
+            {n > 0 ? (
+              <span className={cn("tabular-nums", on ? "text-primary-foreground/85" : "text-foreground")}>
+                {n.toLocaleString()}
+              </span>
+            ) : null}
           </button>
         );
       })}

@@ -312,7 +312,7 @@ export async function confirmDeactivateSet(ids: string[], label: string): Promis
   } else if (choice === "keep-fast") {
     toggleFastSessionResumePref(true);
     toast.success("Fonts kept active · Fast Resume enabled", {
-      description: "Next launch will trust already-complete folders and pre-staged GDI maps without re-checking every header.",
+      description: "Next launch will trust already-complete folders and pre-staged Win32 Session Table files without re-checking every header.",
     });
   }
 }

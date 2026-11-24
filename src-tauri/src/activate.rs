@@ -3081,6 +3081,7 @@ fn delete_font_file(path: &Path) -> Result<(), String> {
         return Ok(());
     }
     unregister_path(path);
+    crate::font_protocol::evict_path(path);
     intact_forget(path);
     gdi_flush_local();
     for attempt in 0..5u32 {
@@ -9955,8 +9956,10 @@ fn purge_family_dirs_in(root: &Path, family: &str) -> Result<(), String> {
         walk_font_files(&dir, &mut files);
         for path in &files {
             unregister_path(path);
+            crate::font_protocol::evict_path(path);
             intact_forget(path);
         }
+        crate::font_protocol::evict_dir(&dir);
         gdi_flush_local();
         if let Err(err) = recycle_user_font_dir(&dir) {
             last_err = err;
@@ -13511,8 +13514,10 @@ fn recycle_or_leave(dir: &Path) -> Result<bool, String> {
         walk_font_files(dir, &mut files);
         for path in &files {
             unregister_path(path);
+            crate::font_protocol::evict_path(path);
             intact_forget(path);
         }
+        crate::font_protocol::evict_dir(&dir);
         gdi_flush_local();
         recycle_bin_windows(dir)?;
         eprintln!("[fm] prune: moved {} to the Recycle Bin", dir.display());
@@ -13620,8 +13625,10 @@ fn purge_non_google_fonts_in(
         walk_font_files(dir, &mut files);
         for path in &files {
             unregister_path(path);
+            crate::font_protocol::evict_path(path);
             intact_forget(path);
         }
+        crate::font_protocol::evict_dir(&dir);
         gdi_flush_local();
         let res = if permanent {
             fs::remove_dir_all(dir).map_err(|e| e.to_string())

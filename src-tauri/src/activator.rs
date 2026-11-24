@@ -135,6 +135,12 @@ pub fn activate_font(
     if is_windows_system_fonts_path(trimmed) {
         return Err("Refusing to activate fonts inside C:\\Windows\\Fonts".to_string());
     }
+    if crate::session_stage::must_not_register_as_gdi_path(Path::new(trimmed)) {
+        return Err(
+            "Refusing to directly register Documents\\Fonths files; use staged activation instead"
+                .to_string(),
+        );
+    }
     if !Path::new(trimmed).is_file() {
         return Err(format!("Font file does not exist: '{trimmed}'"));
     }

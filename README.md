@@ -1,16 +1,18 @@
-# Fonths 2.0.0
+# Fonths 2.2.2
 
-A high-performance, cross-platform-ready Windows desktop font manager built with **Tauri v2 (Rust)**, **Skia (`skia-safe` with embedded FreeType + HarfBuzz)**, **Google Fontations (`read-fonts` + `memmap2`)**, and **React 19** that lets you scan, render with 100% OpenType fidelity, inspect, organize, and temporarily activate Google Fonts and local typefaces in **Adobe Photoshop / Illustrator / InDesign, Microsoft Word, Affinity, and Figma**—**without permanently installing them into `C:\Windows\Fonts`**.
+A high-performance, cross-platform-ready Windows desktop font manager built with **Tauri v2 (Rust)**, **100% pure-Rust Google Fontations (`read-fonts` + `skrifa`) + `harfrust` + `tiny-skia`**, **`rayon`**, a **zero-copy `font://` custom URI protocol**, a **~6 MB pure-Rust headless tray daemon (`--daemon`)**, and **React 19**. Scan, inspect, preview with 100% OpenType fidelity, organize, and temporarily activate Google Fonts and local typefaces in **Adobe Photoshop / Illustrator / InDesign, Microsoft Word, Affinity, and Figma**—**without permanently installing them into `C:\Windows\Fonts`**.
 
-Active fonts use **temporary system-wide Windows GDI activation** (`AddFontResourceExW` with `FONT_RESOURCE_CHARACTERISTICS(0)` + `SendNotifyMessageW(HWND_BROADCAST, WM_FONTCHANGE)`) and session-only staging under `%LOCALAPPDATA%\Fonths\gdi-maps`, with automatic cleanup hooked into `RunEvent::Exit` so quitting cleanly unloads every activated font and leaves `C:\Windows\Fonts` untouched.
+Active fonts use **temporary system-wide Win32 Session Table activation** (`AddFontResourceExW` with `FONT_RESOURCE_CHARACTERISTICS(0)` + coalesced `SendNotifyMessageW(HWND_BROADCAST, WM_FONTCHANGE)`) backed by **zero-copy NTFS hardlink staging** under `%LOCALAPPDATA%\Fonths\gdi-maps`, with diff-based HKCU session sync and automatic teardown on Quit so `C:\Windows\Fonts` stays completely untouched.
 
 ---
 
-## Core Architecture (v2.0.0)
+## Core Architecture (v2.2.2)
 
-- **Zero-Copy OpenType Metadata & Feature Scanner (`src-tauri/src/scanner.rs` & `parse.rs`):** Replaces legacy `ttf-parser` and Windows DirectWrite COM with **Google Fontations (`read-fonts`) + `memmap2`** (plus pure-Rust `wuff` decoding for `.woff2`). Recursively scans `.ttf`, `.otf`, `.ttc`, and `.woff2` directories and read-only OS system fonts (`C:\Windows\Fonts`) without OS installation, extracting family/subfamily/PostScript names, variable font `fvar` axes + `STAT` overlays, full `cmap` glyphs, `OS/2` metrics, and deduplicated GSUB + GPOS `opentype_features` (`liga`, `dlig`, `ss01–ss20`, `smcp`, `onum`, `kern`, etc.).
-- **Dedicated Skia Render Worker & LRU Cache (`src-tauri/src/renderer.rs`):** Spawns a dedicated background OS thread owning `FontMgr::custom_empty().unwrap_or_else(FontMgr::new)` (embedded FreeType) and an `LruCache<String, skia_safe::Typeface>` (capacity 100), servicing async `render_font_preview` requests via `std::sync::mpsc` + `tokio::sync::oneshot`. Applies variable axes via `FontArguments` (`VariationPosition`) and OpenType features via HarfBuzz (`TextStyle::add_font_feature`), rendering onto `surfaces::raster_n32_premul` and returning raw **RGBA8888** pixel bytes over `tauri::ipc::Response` (zero PNG encoding overhead) directly into the existing **Font Inspector** `<canvas>` (`skia-font-canvas.tsx`).
-- **Temporary System-Wide Windows Activation (`src-tauri/src/activator.rs` & `activate.rs`):** Tracks active font paths in a `Mutex<HashSet<String>>` inside Tauri managed state (`ActivatorState`), exposes `activate_font` (`AddFontResourceExW` + `WM_FONTCHANGE`) and `deactivate_font` (`RemoveFontResourceExW` + `WM_FONTCHANGE`) with cross-platform `#[cfg(not(windows))]` stubs, and automatically deactivates all active fonts on `RunEvent::Exit` in `src-tauri/src/lib.rs`.
+- **Zero-Copy OpenType Scanner (`src-tauri/src/scanner.rs` & `parse.rs`):** Uses **Google Fontations (`read-fonts 0.47`) + `memmap2` + `rayon`** (plus pure-Rust `wuff` for `.woff2`) across all CPU cores to scan `.ttf`, `.otf`, `.ttc`, and `.woff2` files and read-only OS system fonts (`C:\Windows\Fonts`) without OS installation—extracting names, `fvar` axes + `STAT` overlays, full `cmap` glyphs, `OS/2` metrics, and deduplicated GSUB/GPOS OpenType features (`liga`, `dlig`, `ss01–ss20`, `smcp`, `onum`, `tnum`, `zero`, `kern`, etc.).
+- **Pure-Rust Fontations + HarfRust Specimen Renderer (`src-tauri/src/renderer.rs`):** Zero C++ dependencies (no `skia-safe`, no GDI rendering, no DirectWrite). Uses `read_fonts::model::Font`, `harfrust 0.16` (pure-Rust HarfBuzz shaping for all OpenType features & scripts), `skrifa 0.50` (hinted/unhinted variable outline scaling), and `tiny-skia 0.12` (anti-aliased RGBA8888 output), returning raw pixel buffers over `tauri::ipc::Response` with latest-wins per-slot coalescing directly into the **Font Inspector** `<canvas>`.
+- **Zero-Copy `font://` Custom URI Protocol (`src-tauri/src/font_protocol.rs`):** Asynchronous Tauri URI scheme backed by an LRU `memmap2` cache + `rayon` I/O pool streaming local font bytes straight into WebView2 `@font-face` / `FontFace` with automatic mmap eviction before file deletion.
+- **Two-Process Headless Rust Tray Daemon (`src-tauri/src/daemon.rs`):** Default-ON background mode (`fonths.exe --daemon`, toggleable in Settings) boots before WebView2 (~6–10 MB RAM), restores saved session fonts at Windows login when Start Minimized is enabled, keeps active fonts live when the UI window closes (exiting WebView2 for zero idle browser RAM), and hands active sessions back to the UI in **< 20 ms** on reopen.
+- **Fast Win32 Session Table Activation (`src-tauri/src/activate.rs` & `session_stage.rs`):** NTFS hardlink staging (0 bytes copied on same volume), diff-based HKCU registry batch sync, Variable-TTF-first policy with 1-click **Optimize Library** and opt-in **Prefer static fonts (compatibility mode)** toggle in Settings, and strict honest live progress counts.
 
 ---
 
@@ -25,41 +27,36 @@ Active fonts use **temporary system-wide Windows GDI activation** (`AddFontResou
 ### Smart Local Font Import (Variable vs. Static & Format Filtering)
 ![Fonths Smart Import](docs/screenshots/smart-import.png)
 
-### Settings & Skia + Fontations Engine
+### Settings & Fontations + HarfRust Engine
 ![Fonths Settings](docs/screenshots/settings.png)
 
 ---
 
 ## Highlights
 
-- **Instant Startup Activation State & Automatic Fast Session Restore:** Restores your saved activation state immediately on frame 0 (`< 10 ms`) and flushes active families on window close (`beforeunload` / `pagehide`), while Fast Session Restore (`gdi-maps` pre-staged zero-copy re-Add, configurable in Settings) verifies and registers session faces in the background with strictly bounded progress (`done ≤ total ≤ library count`) and authoritative Rust tracking (`gdi_session_state`).
-- **Atomic Bulk Google Fonts Activation:** `Activate All` dispatches one prefer-ordered queue (`selected → favorites → visible → first-page → recent → remainder`) and clears transient `.web-build` markers on variable-font-primary folders before stamping `.complete`, preventing partial wave drops or false `Incomplete` flags.
-- **Up-to-Date Shipped Google Fonts Catalog (1,961 Families):** Ships the latest Google Fonts metadata snapshot (`1,961` families, `567` variable) out of the box—no immediate catalog update prompt on a fresh install—with optional live CDN revision sync and **Purge non-Google** cleanup.
-- **Zero-Copy Fontations (`read-fonts` + `memmap2`) & Skia (FreeType + HarfBuzz):** Replaces legacy `ttf-parser` and Windows DirectWrite COM with zero-copy memory-mapped OpenType scanning (`.ttf`, `.otf`, `.ttc`, `.woff2` + read-only `C:\Windows\Fonts`) and a dedicated Skia render worker (`LruCache` capacity 100) rendering raw RGBA8888 previews directly into the **Font Inspector** `<canvas>`.
-- **In-Place Watched Folders & Clean Provider Layout:**
-  - `Documents\Fonths\Providers\Google` — Downloaded Google Fonts catalog (with live CDN revision tracking & **Purge non-Google** cleanup)
-  - **Watched Folders** — Live-linked external folders (Dropbox, Drive, Downloads) where files stay strictly in place on disk (no internal `Uploads` folder copy) and auto-sync; stopping watching a folder removes it and its linked typefaces cleanly from Fonths without converting it into a Collection.
-- **Smart Duplicate & Variable/Static Detection on Watched Folders:** Automatically detects when a watched folder contains both **Variable** and **Static** files or collides with existing Google Fonts / library families, prompting **Variable only (Recommended)** / **Static only** / **Both** and **Skip colliding** / **Keep both** / **Prefer local (deactivate Google)**.
-- **Zero Unrequested Downloads:** `Google Fonts → ... → Activate all` never pre-downloads before confirmation, `Cancel` / `Esc` starts nothing, and in-flight cancellation stops downloads immediately.
-- **Built for 100,000+ Fonts:** Virtual scroll height scaling, `O(1)` LRU preview caching with Blob URL revocation, `O(1)` `scan-index.json` stamp caching on boot, inverted trigram SuperSearch, and parallel 8-thread quit unloading.
-- **Full Typography Studio:**
-  - **Live Playground with Lockable `Suggest pair`:** Lock **Heading** to cycle ideal **Body** companions, lock **Body** to cycle ideal **Heading** companions, or leave both unlocked for random high-contrast ideal pairings—plus Split/Single viewport, collapsible controls, variable font axes, Ink/Paper color pickers, zoom, and OpenType feature pills (`liga`, `dlig`, `smcp`, `tnum`, `onum`, `zero`, `frac`, `ss01`).
-  - **Glyphs & Skia-Powered Inspector:** Character map, live Skia FreeType + HarfBuzz `<canvas>` specimen, variable/slant sliders, OpenType GSUB/GPOS switches, metadata-driven style tags, and license details.
-  - **Duplicates Finder:** Fast `O(N)` detection of identical bytes, same-family local duplicates, and Google/System overlaps; enabling **Auto-hide & deactivate duplicates** hides and deactivates redundant duplicate faces, while turning it off restores visibility without altering activation state.
-  - **Notification Center & Desktop Context Menus:** Scrollable notification history with burst-coalescing toast protection and right-click menus on font cards.
-  - **Smart Deletion:** Configurable **Recycle Bin** vs. **Permanent Delete**, with automatic permanent cleanup for temporary/stage files.
+- **Headless Rust Daemon & Instant Reopen (< 20 ms):** Closing the window hands active fonts off to the ~6 MB pure-Rust daemon and exits WebView2; reopening adopts the daemon's live Win32 Session Table immediately without re-scanning or re-registering. On cold boot, the sidebar shows real progressive live counts matching Win32 registration.
+- **Pure-Rust Fontations + HarfRust + `font://` Protocol (59% Smaller Binary):** Dropped C++ `skia-safe` (~23.5 MB → ~9.5 MB `fonths.exe`, ~5.8 MB NSIS installer) while keeping 100% OpenType GSUB/GPOS shaping, live variable font axes, synthetic oblique, letter spacing, and line height.
+- **Atomic Bulk Google Fonts Activation & 1-Click Library Optimization:** Ships `1,961` Google Fonts (`567` variable) out of the box, prioritizes `selected → favorites → visible → first-page → recent`, uses NTFS hardlinks + Variable TTFs for 4–8× faster activation, and offers **Settings → Optimize Library** (plus **Prefer static fonts** for legacy app compatibility).
+- **In-Place Watched Folders & Smart Duplicate Protection:**
+  - `Documents\Fonths\Providers\Google` — Downloaded Google Fonts catalog (with live CDN revision sync & **Purge non-Google** cleanup)
+  - **Watched Folders** — Strictly in-place external folders (Dropbox, Drive, Downloads) with within-folder deduplication, Variable/Static prompts, family collision handling, and signature-tracked skipping so skipped duplicates never re-toast on background polls.
+- **Full SuperSearch & Live Typography Studio:**
+  - **SuperSearch:** Supports quoted phrases, `-negation`, `weight:>=700`, `axis:slnt`, `ot:smcp` / `has:liga`, `category:icons`, `license:open`, `xh:`, `contrast:`, live intersected chip counts, and clickable `axis:` / `ot:` chips inside the Inspector.
+  - **Live Playground:** Lockable `Suggest pair`, Split/Single viewports, variable axes, Ink/Paper pickers, zoom, and OpenType feature pills.
+  - **Font Inspector & Glyphs:** Fontations + HarfRust live `<canvas>` specimen, instant OS/2 + GSUB/GPOS inspection, variable/weight/italic/tracking/leading sliders, character map, and license details.
+  - **Duplicates Finder & Smart Deletion:** `O(N)` duplicate detection with **Auto-hide & deactivate duplicates**, configurable **Recycle Bin** vs. **Permanent Delete**, and automatic `font://` mmap eviction before unlink.
 
 ---
 
 ## Font Engine Comparison: FontBase vs. MainType vs. NexusFont vs. Fonths
 
-| Architecture Dimension | FontBase | MainType (High-Logic) | NexusFont | **Fonths 2.0.0** |
+| Architecture Dimension | FontBase | MainType (High-Logic) | NexusFont | **Fonths 2.2.2** |
 | --- | --- | --- | --- | --- |
-| **Runtime & UI** | Electron (Chromium + Node.js) | Native C++ / Win32 + `FmsService` | Native Delphi / Win32 | **Tauri v2 (Rust) + Skia (FreeType + HarfBuzz) + Fontations + React 19** |
-| **Watched / Local Folders** | Copies or links into `~/FontBase`; provider folders under `Providers/Google` | SQLite vault + synced disk folders | Strictly in-place folder references (`fontlist.dat`) | **Strictly in-place Watched Folders (zero `Uploads` duplication) + `Providers\Google`** |
-| **Startup Activation State** | Instant JSON state hydrate on frame 0 (`< 50 ms`) | Persistent Windows service keeps fonts live across app restarts | Fast binary index + background `AddFontResourceExW` | **Instant frame-0 state restore + zero-copy `gdi-maps` parallel re-Add** |
-| **Bulk Activation Queue** | Single batched provider queue | Service-managed transactional batch | Batched `AddFontResourceExW` + single trailing `WM_FONTCHANGE` | **Single atomic prefer-ordered queue + coalesced `WM_FONTCHANGE`** |
-| **Metadata & Rendering** | FreeType / JS parser | Native SFNT + SQLite cache | GDI / FreeType | **Zero-copy `read-fonts` + `memmap2` + dedicated Skia FreeType/HarfBuzz worker (raw RGBA8888)** |
+| **Runtime & UI** | Electron (Chromium + Node.js) | Native C++ / Win32 + `FmsService` | Native Delphi / Win32 | **Tauri v2 (Rust) + Pure-Rust Fontations/HarfRust + ~6 MB Headless Daemon + React 19** |
+| **Watched / Local Folders** | Copies or links into `~/FontBase`; `Providers/Google` | SQLite vault + synced disk folders | In-place folder references | **Strictly in-place Watched Folders + `Providers\Google` + 1-click VF Optimize** |
+| **Idle Background RAM** | ~150–300+ MB (Electron stays open) | Background Windows service | Tray Win32 app | **~6–10 MB pure-Rust tray daemon (WebView2 exits on close)** |
+| **Bulk Activation & Staging** | Direct `AddFontResourceExW` batch | Service-managed transactional batch | Batched `AddFontResourceExW` + `WM_FONTCHANGE` | **Zero-copy NTFS hardlink staging + `rayon` parallel scan + diff-based HKCU sync + 1 `WM_FONTCHANGE`** |
+| **Metadata & Rendering** | FreeType / JS parser | Native SFNT + SQLite cache | GDI / FreeType | **Zero-copy `read-fonts` + `skrifa` + `harfrust` + `tiny-skia` + zero-copy `font://` protocol** |
 
 ---
 
@@ -67,7 +64,7 @@ Active fonts use **temporary system-wide Windows GDI activation** (`AddFontResou
 
 ### Prerequisites
 - **Node.js** `>= 22`
-- **Rust** stable (`msvc` toolchain) + **Tauri v2** prerequisites (WebView2, WiX / NSIS for installers)
+- **Rust** stable (`msvc` toolchain, `>= 1.87`) + **Tauri v2** prerequisites (WebView2, WiX / NSIS for installers)
 
 ### Commands
 ```powershell
@@ -77,6 +74,8 @@ npm run lint
 npm test
 cargo test --manifest-path src-tauri/Cargo.toml --locked
 npm run build
+npm run test:e2e
+npm run test:desktop
 ```
 
 ### Build Windows Installers (NSIS & MSI)
@@ -84,10 +83,10 @@ npm run build
 npx tauri build
 ```
 Installers are written to:
-- `src-tauri/target/release/bundle/nsis/Fonths_2.0.0_x64-setup.exe`
-- `src-tauri/target/release/bundle/msi/Fonths_2.0.0_x64_en-US.msi`
+- `src-tauri/target/release/bundle/nsis/Fonths_2.2.2_x64-setup.exe`
+- `src-tauri/target/release/bundle/msi/Fonths_2.2.2_x64_en-US.msi`
 
-See [docs/ARCHITECTURE-2.0.0.md](docs/ARCHITECTURE-2.0.0.md) for architecture details, engine specifications, and the engineering changelog.
+See [docs/ARCHITECTURE-2.0.0.md](docs/ARCHITECTURE-2.0.0.md) for historical architecture notes.
 
 ---
 
@@ -100,7 +99,7 @@ See [docs/ARCHITECTURE-2.0.0.md](docs/ARCHITECTURE-2.0.0.md) for architecture de
 | --- | --- | --- |
 | **Library** | The file is in the catalog or on disk. | Word can use it. |
 | **Settled** | We already know this Windows session will refuse it (hard list: Gidugu), or a soft font was tried and Add returned 0. | It is activated. |
-| **Live** | `AddFontResourceExW` returned a number greater than 0 in this run of the app. | The file exists, a download finished, or a `.complete` file is present. |
+| **Live** | `AddFontResourceExW` returned a number greater than 0 in this session (or held by the live headless daemon). | The file exists, a download finished, or a `.complete` file is present. |
 
 ## Where the code lives
 
@@ -108,11 +107,11 @@ See [docs/ARCHITECTURE-2.0.0.md](docs/ARCHITECTURE-2.0.0.md) for architecture de
 | --- | --- |
 | `src/routes/` | Library `/`, Playground, Glyphs, Duplicates. |
 | `src/components/font-studio/` | Grid, Inspector, Playground, Smart Import, Download Bar, Notification Center, Settings. |
-| `src/lib/fonts/` | Store, activation bridge (`os-activate.ts`), smart import analysis (`import-options.ts`), trigram search (`search-index.ts`), virtual windowing. |
-| `src-tauri/src/` | Native Rust engine: `lib.rs`, `scanner.rs`, `renderer.rs`, `activator.rs`, `activate.rs`, `parse.rs`, `fast_parse.rs`, `google_cdn.rs`, `delete_ops.rs`, `namepatch.rs`, `session_stage.rs`. |
-| `scripts/*.test.mjs` | Automated unit & live WebView2 CDP E2E test suites (`npm test`, `npm run test:desktop`). |
+| `src/lib/fonts/` | Store, activation bridge (`os-activate.ts`), watched folders (`watch-folder.ts`), smart import analysis (`import-options.ts`), SuperSearch (`metrics.ts`, `search-index.ts`), virtual windowing. |
+| `src-tauri/src/` | Pure-Rust engine: `lib.rs`, `daemon.rs`, `font_protocol.rs`, `scanner.rs`, `renderer.rs`, `activate.rs`, `activator.rs`, `parse.rs`, `fast_parse.rs`, `google_cdn.rs`, `delete_ops.rs`, `namepatch.rs`, `session_stage.rs`. |
+| `scripts/*.test.mjs` | Automated unit & live WebView2 CDP E2E test suites (`npm test`, `npm run test:e2e`, `npm run test:desktop`). |
 
-UI stack: React 19, Vite, TanStack Router, Zustand, Tailwind CSS. Desktop: Tauri v2, Rust, Skia (`skia-safe` embedded FreeType + HarfBuzz), Google Fontations (`read-fonts` + `memmap2`).
+UI stack: React 19, Vite, TanStack Router, Zustand, Tailwind CSS. Desktop: Tauri v2, Rust, Google Fontations (`read-fonts` + `skrifa`), `harfrust`, `tiny-skia`, `rayon`, `memmap2`.
 
 ## API (what the window can ask Rust to do)
 

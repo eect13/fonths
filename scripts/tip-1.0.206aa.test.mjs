@@ -30,9 +30,9 @@ const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206aa keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "2.2.1");
-  assert.equal(tauri.version, "2.2.1");
-  assert.match(version, /2\.2\.1/);
+  assert.equal(pkg.version, "2.2.2");
+  assert.equal(tauri.version, "2.2.2");
+  assert.match(version, /2\.2\.2/);
 });
 
 test("P0-1: sync_documents_vf_policy and cancel_google_downloads are async commands", () => {

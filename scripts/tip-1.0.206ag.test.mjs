@@ -34,9 +34,9 @@ const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206ag keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "2.2.1");
-  assert.equal(tauri.version, "2.2.1");
-  assert.match(version, /2\.2\.1/);
+  assert.equal(pkg.version, "2.2.2");
+  assert.equal(tauri.version, "2.2.2");
+  assert.match(version, /2\.2\.2/);
 });
 
 test("1.0.207 removed the system-wide Escape shortcut", () => {

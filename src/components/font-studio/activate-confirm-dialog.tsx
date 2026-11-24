@@ -36,7 +36,7 @@ function FastResumeOptionRow({ testId }: { testId: string }) {
           Bypass deep disk check on next session (Fast Resume)
         </div>
         <div className="text-muted-foreground">
-          Trust already-complete folders and pre-staged GDI maps instead of re-verifying every font header.
+          Trust already-complete folders and pre-staged Win32 Session Table files instead of re-verifying every font header.
         </div>
       </div>
       <Switch
@@ -129,7 +129,7 @@ export function DeactivateConfirmDialog() {
           <DialogDescription>
             {canSplitGoogle
               ? `${req?.googleCount.toLocaleString()} Google Fonts and ${req?.localCount.toLocaleString()} imported/local fonts are active.`
-              : "Unloading clears Windows GDI / Adobe registration while keeping downloaded & pre-staged files ready on disk."}{" "}
+              : "Unloading clears Win32 Session Table / Adobe registration while keeping downloaded & staged files ready on disk."}{" "}
             Or keep them active with Fast Resume enabled so the next launch starts quickly without re-checking every folder.
           </DialogDescription>
         </DialogHeader>

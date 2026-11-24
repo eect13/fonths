@@ -159,7 +159,7 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
 
           <div className="relative min-w-0">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <HelpTip label="SuperSearch: quoted phrases, -negation, weight:>=700, axis:slnt, source:local, category:sans, script:arabic. Press /">
+            <HelpTip label="SuperSearch: quoted phrases, -negation, weight:>=700, axis:slnt, ot:smcp, source:local, category:sans, script:arabic. Press /">
               <Input
                 ref={searchRef}
                 value={query}
@@ -195,18 +195,33 @@ export function AppShell({ children: _children }: { children: ReactNode }) {
                     <HelpCircle className="size-3.5" />
                   </button>
                 </PopoverTrigger>
-                <PopoverContent align="end" data-testid="search-syntax-popover" className="w-80 space-y-2 text-xs">
-                  <p className="font-medium text-foreground">SuperSearch syntax</p>
+                <PopoverContent align="end" data-testid="search-syntax-popover" className="w-80 space-y-2.5 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="font-medium text-foreground">SuperSearch syntax</p>
+                    {query ? (
+                      <button
+                        type="button"
+                        onClick={() => setQuery("")}
+                        className="text-[11px] text-muted-foreground hover:text-foreground"
+                      >
+                        Reset
+                      </button>
+                    ) : null}
+                  </div>
                   <p className="text-muted-foreground">
-                    Combine free text, exact quotes, ranges, comparators (<code className="font-mono">&gt;= &lt;= +</code>), and <code className="font-mono">-</code> negation.
+                    Combine free text, exact quotes, ranges, comparators (<code className="font-mono">&gt;= &lt;= +</code>), OpenType tags (<code className="font-mono">ot:</code> / <code className="font-mono">has:</code>), and <code className="font-mono">-</code> negation.
                   </p>
                   <div className="flex flex-wrap gap-1">
                     {[
                       '"Space Grotesk"',
                       "weight:>=700",
                       "axis:slnt",
+                      "ot:smcp",
+                      "has:liga",
                       "source:local",
                       "category:sans",
+                      "category:icons",
+                      "license:open",
                       "-italic",
                       "tag:geometric,grotesk",
                     ].map((token) => (

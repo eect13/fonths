@@ -98,11 +98,41 @@ fn mime_for_font(path: &Path) -> &'static str {
     }
 }
 
-/// Evict a file from the mmap cache (call before deleting/replacing a font file on disk).
-#[allow(dead_code)]
+/// Evict a file from the mmap cache (call before deleting/replacing a font file on disk
+/// so Windows releases the memory-mapped section handle and never hits ERROR_SHARING_VIOLATION).
 pub fn evict_path(path: &Path) {
+    let target = path.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
     if let Ok(mut guard) = mmap_cache().lock() {
-        guard.pop(path);
+        let keys: Vec<PathBuf> = guard
+            .iter()
+            .filter_map(|(k, _)| {
+                let norm = k.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+                (norm == target).then(|| k.clone())
+            })
+            .collect();
+        for k in keys {
+            guard.pop(&k);
+        }
+    }
+}
+
+/// Evict every cached mmap under `dir` before deleting/recycling a family folder.
+pub fn evict_dir(dir: &Path) {
+    let mut prefix = dir.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+    if !prefix.ends_with('\\') {
+        prefix.push('\\');
+    }
+    if let Ok(mut guard) = mmap_cache().lock() {
+        let keys: Vec<PathBuf> = guard
+            .iter()
+            .filter_map(|(k, _)| {
+                let norm = k.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+                (norm.starts_with(&prefix) || norm == prefix.trim_end_matches('\\')).then(|| k.clone())
+            })
+            .collect();
+        for k in keys {
+            guard.pop(&k);
+        }
     }
 }
 
