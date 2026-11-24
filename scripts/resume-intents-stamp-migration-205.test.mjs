@@ -14,8 +14,8 @@ const version = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 
 test("version is 1.0.206", () => {
-  assert.equal(pkg.version, "2.1.0");
-  assert.match(version, /2\.1\.0/);
+  assert.equal(pkg.version, "2.2.0");
+  assert.match(version, /2\.2\.0/);
 });
 
 test("resumeGoogleFamilies passes parallel intents (never infer-only)", () => {

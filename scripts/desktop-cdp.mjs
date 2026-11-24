@@ -141,7 +141,7 @@ try {
   const p1 = r1.page;
 
   const dw = await p1.evaluate(() => window.__TAURI_INTERNALS__.invoke("dwrite_engine_info"));
-  assert.match(dw.engine, /Skia.*Fontations/i);
+  assert.match(dw.engine, /Fontations.*harfrust/i);
   assert.equal(typeof dw.elevated, "boolean");
 
   // Skia + Fontations v2.0.0 backend verification: zero-copy scan_font_directory + Skia RGBA8888 render_font_preview

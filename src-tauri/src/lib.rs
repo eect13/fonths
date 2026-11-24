@@ -1,5 +1,6 @@
 pub mod activator;
 pub mod daemon;
+pub mod font_protocol;
 pub mod renderer;
 pub mod scanner;
 
@@ -397,8 +398,11 @@ pub fn run() {
         win_admin::prepare_windows_session();
     }
     tauri::Builder::default()
-        .manage(renderer::SkiaRendererState::new())
+        .manage(renderer::FontationsRendererState::new())
         .manage(activator::ActivatorState::default())
+        .register_asynchronous_uri_scheme_protocol("font", |_ctx, request, responder| {
+            font_protocol::handle_request(request, responder);
+        })
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if QUITTING.load(Ordering::SeqCst) {
                 spawn_delayed_relaunch_on_quitting();

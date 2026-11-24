@@ -1,40 +1,35 @@
-//! Dedicated Skia (`skia-safe` with embedded FreeType + HarfBuzz) preview render worker
-//! and LRU `Typeface` cache.
+//! Dedicated pure-Rust Google Fontations (`read-fonts` + `skrifa`) + `harfrust` + `tiny-skia`
+//! preview render worker and LRU font cache.
 //!
-//! Because `skia_safe::Typeface` and `FontMgr` are `!Send`, a single dedicated background OS
-//! thread owns the `FontMgr` and `LruCache<String, Typeface>` (capacity 100) and services
-//! async Tauri render requests via `std::sync::mpsc` + `tokio::sync::oneshot`.
-//!
-//! Responsiveness:
-//! - **Latest-wins coalescing:** every request carries a `slot` (one per on-screen canvas).
-//!   Before rendering, the worker drains its queue and answers superseded requests for the
-//!   same slot with [`SUPERSEDED`], so dragging a slider never builds a render backlog.
-//! - **Face matching:** `render_font_specimen` receives every file of a family and picks the
-//!   face whose OS/2 weight / italic bits best match the request (cached per path), falling
-//!   back to a variable `ital`/`slnt` axis or a synthetic oblique skew when no italic exists.
-//! - **Auto height:** the specimen command lays out the paragraph first and returns a canvas
-//!   tall enough for every line (capped by `max_height`) so the Inspector never clips text.
+//! Zero C++ dependencies (no `skia-safe`, no GDI, no DirectWrite):
+//! - **Parsing & Variable Instances:** `read_fonts::model::Font` + `memmap2` + `wuff` (`.ttf`, `.otf`, `.ttc`, `.woff2`).
+//! - **OpenType Shaping:** `harfrust` (pure-Rust HarfBuzz) honors every OpenType GSUB/GPOS feature tag
+//!   (`liga`, `dlig`, `calt`, `kern`, `smcp`, `c2sc`, `onum`, `tnum`, `ss01`–`ss20`, `cv01`–`cv99`, etc.)
+//!   plus complex scripts and variable font variations.
+//! - **Outline Scaling & Rasterization:** `skrifa::ScalerFont` extracts scaled/hinted outlines into
+//!   `tiny_skia::Pixmap` for crisp anti-aliased RGBA8888 output.
+//! - **Responsiveness:** latest-wins per-slot coalescing, face matching across a family's files,
+//!   variable `wght`/`ital`/`slnt` support, synthetic oblique fallback, and auto-sized height.
 
+use harfrust::{Buffer, Feature, ShapeOptions, ShaperFont};
 use lru::LruCache;
 use memmap2::Mmap;
-use read_fonts::{FileRef, TableProvider};
-use skia_safe::{
-    font_arguments::{variation_position::Coordinate, VariationPosition},
-    surfaces,
-    textlayout::{
-        FontCollection, ParagraphBuilder, ParagraphStyle, TextAlign, TextStyle, TypefaceFontProvider,
-    },
-    AlphaType, Color, ColorType, Data, FontArguments, FontMgr, FourByteTag, ImageInfo, Typeface,
+use read_fonts::{
+    model::{glyph::outline::PathSink, Font as FontationsFont},
+    types::{GlyphId, Tag},
+    FileRef, TableProvider,
 };
+use skrifa::{DrawMemory, HintOptions, RasterTarget, ScalerFont};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::num::NonZeroUsize;
 use std::sync::{mpsc, Mutex};
 use std::thread;
 use tauri::State;
+use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Transform};
 use tokio::sync::oneshot;
 
-const TYPEFACE_CACHE_CAPACITY: usize = 100;
+const FONT_CACHE_CAPACITY: usize = 128;
 const STYLE_CACHE_CAPACITY: usize = 2048;
 const MAX_CANVAS_DIM: i32 = 4096;
 /// Horizontal shear used for synthetic oblique when a family ships no italic face.
@@ -42,7 +37,7 @@ const SYNTHETIC_OBLIQUE_SKEW: f32 = 0.2;
 /// Error string returned to callers whose request was replaced by a newer one for the same slot.
 pub const SUPERSEDED: &str = "superseded";
 
-/// Cheap per-file style facts read once with `read-fonts` (never loads the face into Skia).
+/// Cheap per-file style facts read once with `read-fonts`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct FaceStyle {
     weight: f32,
@@ -52,6 +47,8 @@ struct FaceStyle {
     wght_max: f32,
     has_ital_axis: bool,
     has_slnt_axis: bool,
+    slnt_min: f32,
+    slnt_max: f32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -86,19 +83,22 @@ struct RenderOutput {
     pixels: Vec<u8>,
 }
 
-/// Tauri managed state wrapping the sender channel to the dedicated Skia render OS thread.
-pub struct SkiaRendererState {
+/// Tauri managed state wrapping the sender channel to the dedicated Fontations render worker.
+/// Kept as `SkiaRendererState` alias so existing Tauri state management and call sites stay seamless.
+pub struct FontationsRendererState {
     tx: Mutex<mpsc::Sender<RenderRequest>>,
 }
 
-impl SkiaRendererState {
-    /// Spawn the dedicated background OS thread owning Skia's `FontMgr` and LRU `Typeface` cache.
+pub type SkiaRendererState = FontationsRendererState;
+
+impl FontationsRendererState {
+    /// Spawn the dedicated background OS thread owning the Fontations LRU font cache.
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel::<RenderRequest>();
         thread::Builder::new()
-            .name("fonths-skia-renderer".into())
+            .name("fonths-fontations-renderer".into())
             .spawn(move || run_render_loop(rx))
-            .expect("failed to spawn Skia render worker thread");
+            .expect("failed to spawn Fontations render worker thread");
         Self { tx: Mutex::new(tx) }
     }
 
@@ -108,21 +108,21 @@ impl SkiaRendererState {
             let guard = self
                 .tx
                 .lock()
-                .map_err(|_| "Skia renderer mutex poisoned".to_string())?;
+                .map_err(|_| "Fontations renderer mutex poisoned".to_string())?;
             guard
                 .send(RenderRequest {
                     params,
                     reply: reply_tx,
                 })
-                .map_err(|_| "Skia render worker channel closed".to_string())?;
+                .map_err(|_| "Fontations render worker channel closed".to_string())?;
         }
         reply_rx
             .await
-            .map_err(|_| "Skia render worker dropped response".to_string())?
+            .map_err(|_| "Fontations render worker dropped response".to_string())?
     }
 }
 
-impl Default for SkiaRendererState {
+impl Default for FontationsRendererState {
     fn default() -> Self {
         Self::new()
     }
@@ -131,40 +131,36 @@ impl Default for SkiaRendererState {
 fn parse_color_hex(hex: &str) -> Color {
     let clean = hex.trim().trim_start_matches('#');
     let byte = |s: &str, d: u8| u8::from_str_radix(s, 16).unwrap_or(d);
-    match clean.len() {
-        3 => Color::from_argb(
-            255,
+    let (r, g, b, a) = match clean.len() {
+        3 => (
             byte(&clean[0..1], 1) * 17,
             byte(&clean[1..2], 1) * 17,
             byte(&clean[2..3], 1) * 17,
-        ),
-        6 => Color::from_argb(
             255,
+        ),
+        6 => (
             byte(&clean[0..2], 0x11),
             byte(&clean[2..4], 0x11),
             byte(&clean[4..6], 0x11),
+            255,
         ),
-        8 => Color::from_argb(
+        8 => (
+            byte(&clean[0..2], 0x11),
+            byte(&clean[2..4], 0x11),
+            byte(&clean[4..6], 0x11),
             byte(&clean[6..8], 0xFF),
-            byte(&clean[0..2], 0x11),
-            byte(&clean[2..4], 0x11),
-            byte(&clean[4..6], 0x11),
         ),
-        _ => Color::from_argb(255, 0x11, 0x11, 0x11),
-    }
+        _ => (0x11, 0x11, 0x11, 255),
+    };
+    Color::from_rgba8(r, g, b, a)
 }
 
-fn tag_from_str(tag: &str) -> Option<FourByteTag> {
+fn tag_from_str(tag: &str) -> Option<Tag> {
     let bytes = tag.as_bytes();
     if bytes.len() != 4 {
         return None;
     }
-    Some(FourByteTag::from_chars(
-        bytes[0] as char,
-        bytes[1] as char,
-        bytes[2] as char,
-        bytes[3] as char,
-    ))
+    Some(Tag::new(&[bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
 fn face_style_from_bytes(bytes: &[u8]) -> Option<FaceStyle> {
@@ -199,6 +195,8 @@ fn face_style_from_bytes(bytes: &[u8]) -> Option<FaceStyle> {
         wght_max: weight,
         has_ital_axis: false,
         has_slnt_axis: false,
+        slnt_min: 0.0,
+        slnt_max: 0.0,
     };
     if let Ok(axes) = font.fvar().and_then(|f| f.axes()) {
         for axis in axes.iter() {
@@ -209,7 +207,11 @@ fn face_style_from_bytes(bytes: &[u8]) -> Option<FaceStyle> {
                     style.wght_max = axis.max_value().to_f32();
                 }
                 b"ital" => style.has_ital_axis = true,
-                b"slnt" => style.has_slnt_axis = true,
+                b"slnt" => {
+                    style.has_slnt_axis = true;
+                    style.slnt_min = axis.min_value().to_f32();
+                    style.slnt_max = axis.max_value().to_f32();
+                }
                 _ => {}
             }
         }
@@ -300,7 +302,6 @@ fn pick_face(candidates: &[(String, Option<FaceStyle>)], weight: f32, italic: bo
             synthetic_oblique: false,
         });
     }
-    // Unparseable styles: fall back to the first candidate (Skia may still decode it).
     Some(FacePick {
         path: candidates[0].0.clone(),
         style: None,
@@ -308,36 +309,262 @@ fn pick_face(candidates: &[(String, Option<FaceStyle>)], weight: f32, italic: bo
     })
 }
 
-fn load_typeface_from_path(font_mgr: &FontMgr, path: &str) -> Result<Typeface, String> {
+fn load_font_from_path(path: &str) -> Result<FontationsFont, String> {
     let raw = fs::read(path).map_err(|e| format!("Failed to read font '{path}': {e}"))?;
     if raw.len() < 12 {
         return Err(format!("Font file too small: '{path}'"));
     }
-    if let Some(tf) = font_mgr.new_from_data(Data::new_copy(&raw), 0) {
-        return Ok(tf);
+    let bytes = if raw.starts_with(b"wOF2") {
+        wuff::decompress_woff2(&raw)
+            .map_err(|e| format!("Failed to decompress WOFF2 '{path}': {e:?}"))?
+    } else {
+        raw
+    };
+    FontationsFont::new(bytes, 0)
+        .ok_or_else(|| format!("Fontations could not decode font '{path}'"))
+}
+
+/// Sink that transforms Y-up Skrifa glyph outlines directly into Y-down `tiny_skia::PathBuilder`.
+struct TinySkiaSink {
+    pb: PathBuilder,
+    origin_x: f32,
+    origin_y: f32,
+    skew: f32,
+}
+
+impl TinySkiaSink {
+    #[inline]
+    fn tx(&self, x: f32, y: f32) -> (f32, f32) {
+        // Font Y is up; canvas Y is down. Positive skew leans tops (+y) to the right.
+        (self.origin_x + x + self.skew * y, self.origin_y - y)
     }
-    // Fallback for WOFF2 if the active FreeType build did not decode the wrapper directly.
-    if raw.starts_with(b"wOF2") {
-        let decoded = wuff::decompress_woff2(&raw)
-            .map_err(|e| format!("Failed to decompress WOFF2 '{path}': {e:?}"))?;
-        if let Some(tf) = font_mgr.new_from_data(Data::new_copy(&decoded), 0) {
-            return Ok(tf);
+}
+
+impl PathSink for TinySkiaSink {
+    fn move_to(&mut self, x: f32, y: f32) {
+        let (px, py) = self.tx(x, y);
+        self.pb.move_to(px, py);
+    }
+
+    fn line_to(&mut self, x: f32, y: f32) {
+        let (px, py) = self.tx(x, y);
+        self.pb.line_to(px, py);
+    }
+
+    fn quad_to(&mut self, cx0: f32, cy0: f32, x: f32, y: f32) {
+        let (qx, qy) = self.tx(cx0, cy0);
+        let (px, py) = self.tx(x, y);
+        self.pb.quad_to(qx, qy, px, py);
+    }
+
+    fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
+        let (c0x, c0y) = self.tx(cx0, cy0);
+        let (c1x, c1y) = self.tx(cx1, cy1);
+        let (px, py) = self.tx(x, y);
+        self.pb.cubic_to(c0x, c0y, c1x, c1y, px, py);
+    }
+
+    fn close(&mut self) {
+        self.pb.close();
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ShapedGlyph {
+    glyph_id: GlyphId,
+    x_advance: f32,
+    x_offset: f32,
+    y_offset: f32,
+}
+
+struct ShapedLine {
+    glyphs: Vec<ShapedGlyph>,
+    width: f32,
+}
+
+fn shape_segment(
+    shaper: &ShaperFont<'_, '_>,
+    text: &str,
+    features: &[Feature],
+    px_scale: f32,
+    letter_spacing_px: f32,
+) -> ShapedLine {
+    if text.is_empty() {
+        return ShapedLine {
+            glyphs: Vec::new(),
+            width: 0.0,
+        };
+    }
+    let mut buffer = Buffer::new();
+    buffer.push_str(text);
+    buffer.guess_segment_properties();
+    if harfrust::shape(
+        shaper,
+        &mut buffer,
+        ShapeOptions::new().features(features),
+    )
+    .is_err()
+    {
+        return ShapedLine {
+            glyphs: Vec::new(),
+            width: 0.0,
+        };
+    }
+
+    let infos = buffer.glyph_infos();
+    let positions = buffer.glyph_positions();
+    let len = infos.len().min(positions.len());
+    let mut glyphs = Vec::with_capacity(len);
+    let mut width = 0.0f32;
+    for i in 0..len {
+        let adv = positions[i].x_advance as f32 * px_scale;
+        let extra = if i + 1 < len { letter_spacing_px } else { 0.0 };
+        let total_adv = adv + extra;
+        glyphs.push(ShapedGlyph {
+            glyph_id: GlyphId::new(infos[i].glyph_id),
+            x_advance: total_adv,
+            x_offset: positions[i].x_offset as f32 * px_scale,
+            y_offset: positions[i].y_offset as f32 * px_scale,
+        });
+        width += total_adv;
+    }
+    ShapedLine {
+        glyphs,
+        width: width.max(0.0),
+    }
+}
+
+/// Split `text` into word-wrapped lines using `harfrust` shaping widths so every final line
+/// is shaped intact (preserving ligatures, kerning, contextual alternates, and complex scripts).
+fn wrap_and_shape_lines(
+    shaper: &ShaperFont<'_, '_>,
+    text: &str,
+    features: &[Feature],
+    px_scale: f32,
+    letter_spacing_px: f32,
+    max_width: f32,
+) -> Vec<ShapedLine> {
+    let mut lines = Vec::new();
+    for para in text.split('\n') {
+        let trimmed_para = para.trim_end_matches('\r');
+        if trimmed_para.is_empty() {
+            lines.push(ShapedLine {
+                glyphs: Vec::new(),
+                width: 0.0,
+            });
+            continue;
+        }
+        let whole = shape_segment(shaper, trimmed_para, features, px_scale, letter_spacing_px);
+        if whole.width <= max_width {
+            lines.push(whole);
+            continue;
+        }
+
+        // Greedy word-boundary wrap; re-shapes each committed line intact for exact kerning/ligatures.
+        let mut current = String::new();
+        for token in trimmed_para.split_inclusive(char::is_whitespace) {
+            let word = token.trim_end_matches(char::is_whitespace);
+            let candidate = if current.is_empty() {
+                token.to_string()
+            } else {
+                format!("{current}{token}")
+            };
+            let cand_trimmed = candidate.trim_end_matches(char::is_whitespace);
+            let measured = shape_segment(shaper, cand_trimmed, features, px_scale, letter_spacing_px);
+            if measured.width <= max_width {
+                current = candidate;
+                continue;
+            }
+            if !current.trim_end().is_empty() {
+                lines.push(shape_segment(
+                    shaper,
+                    current.trim_end(),
+                    features,
+                    px_scale,
+                    letter_spacing_px,
+                ));
+                current.clear();
+            }
+            // If a single token still exceeds max_width, wrap by character cluster so long unbroken
+            // strings (URLs / CJK / German compounds) never clip horizontally.
+            let single = shape_segment(shaper, word, features, px_scale, letter_spacing_px);
+            if single.width <= max_width {
+                current = token.to_string();
+            } else {
+                let mut piece = String::new();
+                for ch in word.chars() {
+                    let mut next_piece = piece.clone();
+                    next_piece.push(ch);
+                    let m = shape_segment(shaper, &next_piece, features, px_scale, letter_spacing_px);
+                    if !piece.is_empty() && m.width > max_width {
+                        lines.push(shape_segment(
+                            shaper,
+                            &piece,
+                            features,
+                            px_scale,
+                            letter_spacing_px,
+                        ));
+                        piece.clear();
+                    }
+                    piece.push(ch);
+                }
+                if !piece.is_empty() {
+                    current = if token.len() > word.len() {
+                        format!("{piece} ")
+                    } else {
+                        piece
+                    };
+                }
+            }
+        }
+        if !current.trim_end().is_empty() {
+            lines.push(shape_segment(
+                shaper,
+                current.trim_end(),
+                features,
+                px_scale,
+                letter_spacing_px,
+            ));
         }
     }
-    Err(format!("Skia could not decode typeface from '{path}'"))
+    if lines.is_empty() {
+        lines.push(ShapedLine {
+            glyphs: Vec::new(),
+            width: 0.0,
+        });
+    }
+    lines
+}
+
+/// Convert `tiny-skia` premultiplied RGBA8888 pixels to unpremultiplied RGBA8888 for HTML5 Canvas `ImageData`.
+fn unpremultiply_rgba(premul: &[u8]) -> Vec<u8> {
+    let mut out = vec![0u8; premul.len()];
+    for (src, dst) in premul.chunks_exact(4).zip(out.chunks_exact_mut(4)) {
+        let a = src[3];
+        if a == 0 {
+            dst.copy_from_slice(&[0, 0, 0, 0]);
+        } else if a == 255 {
+            dst.copy_from_slice(src);
+        } else {
+            let a16 = u16::from(a);
+            dst[0] = ((u16::from(src[0]) * 255 + a16 / 2) / a16).min(255) as u8;
+            dst[1] = ((u16::from(src[1]) * 255 + a16 / 2) / a16).min(255) as u8;
+            dst[2] = ((u16::from(src[2]) * 255 + a16 / 2) / a16).min(255) as u8;
+            dst[3] = a;
+        }
+    }
+    out
 }
 
 struct Worker {
-    font_mgr: FontMgr,
-    typefaces: LruCache<String, Typeface>,
+    fonts: LruCache<String, FontationsFont>,
     styles: LruCache<String, Option<FaceStyle>>,
 }
 
 impl Worker {
-    fn new(typeface_capacity: usize) -> Self {
+    fn new(font_capacity: usize) -> Self {
         Self {
-            font_mgr: FontMgr::custom_empty().unwrap_or_else(FontMgr::new),
-            typefaces: LruCache::new(NonZeroUsize::new(typeface_capacity.max(1)).unwrap()),
+            fonts: LruCache::new(NonZeroUsize::new(font_capacity.max(1)).unwrap()),
             styles: LruCache::new(NonZeroUsize::new(STYLE_CACHE_CAPACITY).unwrap()),
         }
     }
@@ -351,13 +578,13 @@ impl Worker {
         s
     }
 
-    fn typeface(&mut self, path: &str) -> Result<Typeface, String> {
-        if let Some(tf) = self.typefaces.get(path) {
-            return Ok(tf.clone());
+    fn font(&mut self, path: &str) -> Result<FontationsFont, String> {
+        if let Some(f) = self.fonts.get(path) {
+            return Ok(f.clone());
         }
-        let tf = load_typeface_from_path(&self.font_mgr, path)?;
-        self.typefaces.put(path.to_string(), tf.clone());
-        Ok(tf)
+        let f = load_font_from_path(path)?;
+        self.fonts.put(path.to_string(), f.clone());
+        Ok(f)
     }
 
     fn render(&mut self, p: &RenderParams) -> Result<RenderOutput, String> {
@@ -377,7 +604,7 @@ impl Worker {
         let pick = if paths.len() == 1 && p.weight.is_none() && !p.italic {
             FacePick {
                 path: paths[0].clone(),
-                style: None,
+                style: self.style_of(&paths[0]),
                 synthetic_oblique: false,
             }
         } else {
@@ -389,91 +616,124 @@ impl Worker {
                 .ok_or_else(|| "No font file to render".to_string())?
         };
 
-        let base = self.typeface(&pick.path)?;
+        let base = self.font(&pick.path)?;
 
-        // Variable axes via FontArguments (VariationPosition). For a variable face picked by
-        // weight, make sure `wght` follows the requested weight even if the caller omitted it.
+        // Variable font coordinates: combine explicit variations with requested weight/italic axes.
         let mut variations = p.variations.clone();
-        if let (Some(style), Some(w)) = (pick.style, p.weight) {
-            if style.variable && !variations.contains_key("wght") && style.wght_max > style.wght_min {
-                variations.insert("wght".into(), w.clamp(style.wght_min, style.wght_max));
+        if let Some(style) = pick.style {
+            if style.variable {
+                if let Some(w) = p.weight {
+                    if !variations.contains_key("wght") && style.wght_max > style.wght_min {
+                        variations.insert("wght".into(), w.clamp(style.wght_min, style.wght_max));
+                    }
+                }
+                if p.italic {
+                    if style.has_ital_axis && !variations.contains_key("ital") {
+                        variations.insert("ital".into(), 1.0);
+                    } else if style.has_slnt_axis && !variations.contains_key("slnt") {
+                        let slnt_val = if style.slnt_min < 0.0 {
+                            style.slnt_min.max(-12.0)
+                        } else {
+                            style.slnt_max.min(12.0)
+                        };
+                        variations.insert("slnt".into(), slnt_val);
+                    }
+                }
             }
         }
+
         let active = if variations.is_empty() {
             base
         } else {
-            let mut coords: Vec<Coordinate> = variations
+            let mut pairs: Vec<(Tag, f32)> = variations
                 .iter()
-                .filter_map(|(tag, &value)| tag_from_str(tag).map(|axis| Coordinate { axis, value }))
+                .filter_map(|(tag, &val)| tag_from_str(tag).map(|t| (t, val)))
                 .collect();
-            coords.sort_by_key(|c| (c.axis.a(), c.axis.b(), c.axis.c(), c.axis.d()));
-            if coords.is_empty() {
+            pairs.sort_by_key(|(t, _)| t.to_be_bytes());
+            if pairs.is_empty() {
                 base
             } else {
-                let args = FontArguments::new().set_variation_design_position(VariationPosition {
-                    coordinates: &coords,
-                });
-                base.clone_with_arguments(&args).unwrap_or(base)
+                base.instance_builder().variations(pairs).build()
             }
         };
 
-        // Isolated provider: Skia Paragraph + HarfBuzz shape only with the exact on-disk face.
-        const PREVIEW_FAMILY_ALIAS: &str = "FonthsPreview";
-        let mut provider = TypefaceFontProvider::new();
-        provider.register_typeface(active.clone(), Some(PREVIEW_FAMILY_ALIAS));
-        let mut font_collection = FontCollection::new();
-        font_collection.set_asset_font_manager(Some(provider.into()));
-        font_collection.set_default_font_manager(self.font_mgr.clone(), None);
+        let units_per_em = active.units_per_em().max(1);
+        let px_scale = font_size / (units_per_em as f32);
 
-        let mut para_style = ParagraphStyle::new();
-        para_style.set_text_align(match p.align.as_str() {
-            "center" => TextAlign::Center,
-            "right" => TextAlign::Right,
-            _ => TextAlign::Left,
-        });
+        // Build OpenType feature list for HarfRust (every 4-char tag: liga, dlig, smcp, ss01..ss20, etc.).
+        let mut ot_features: Vec<Feature> = p
+            .features
+            .iter()
+            .filter_map(|(tag, &val)| {
+                let t = tag_from_str(tag)?;
+                Some(Feature::new(t, val.max(0) as u32, ..))
+            })
+            .collect();
+        ot_features.sort_by_key(|f| f.tag.to_be_bytes());
 
-        let mut text_style = TextStyle::new();
-        text_style.set_color(parse_color_hex(&p.color_hex));
-        text_style.set_font_size(font_size);
-        text_style.set_font_families(&[PREVIEW_FAMILY_ALIAS]);
-        text_style.set_typeface(Some(active));
-        if let Some(lh) = p.line_height.filter(|v| v.is_finite() && *v > 0.5 && *v < 4.0) {
-            text_style.set_height(lh);
-            text_style.set_height_override(true);
-        }
-        if let Some(ls) = p.letter_spacing.filter(|v| v.is_finite() && v.abs() > 0.0001 && v.abs() <= 2.0) {
-            text_style.set_letter_spacing(ls * font_size);
-        }
-        for (tag, &value) in &p.features {
-            if tag.len() == 4 {
-                text_style.add_font_feature(tag, value);
-            }
-        }
+        let letter_spacing_px = p
+            .letter_spacing
+            .filter(|v| v.is_finite() && v.abs() > 0.0001 && v.abs() <= 2.0)
+            .map(|ls| ls * font_size)
+            .unwrap_or(0.0);
 
         let text = if p.text.trim().is_empty() {
             "The quick brown fox jumps over the lazy dog 0123456789"
         } else {
             p.text.as_str()
         };
-        let pad_x = (font_size * 0.08).ceil();
-        let pad_y = (font_size * 0.18).ceil();
-        let build = |layout_w: f32| {
-            let mut builder = ParagraphBuilder::new(&para_style, font_collection.clone());
-            builder.push_style(&text_style);
-            builder.add_text(text);
-            let mut paragraph = builder.build();
-            paragraph.layout(layout_w.max(1.0));
-            paragraph
+
+        let shaper = ShaperFont::new(&active);
+        // Use light grayscale hinting at smaller sizes for crisp UI legibility, unhinted at display sizes.
+        let scaler = if font_size <= 48.0 {
+            let hint_opts = HintOptions::auto().with_target(RasterTarget::Light);
+            ScalerFont::hinted(active.clone(), font_size, hint_opts)
+        } else {
+            ScalerFont::unhinted(active.clone(), Some(font_size))
         };
-        let mut layout_w = (width as f32 - pad_x * 2.0).max(1.0);
-        let mut paragraph = build(layout_w);
-        let skew = if pick.synthetic_oblique { SYNTHETIC_OBLIQUE_SKEW } else { 0.0 };
-        if skew > 0.0 {
-            // Reserve the shear overhang so the slanted top-right never clips.
-            layout_w = (layout_w - skew * paragraph.height()).max(font_size);
-            paragraph = build(layout_w);
-        }
-        let para_h = paragraph.height();
+
+        let metrics = scaler.metrics();
+        let line_box = metrics.h_line();
+        let raw_asc = line_box
+            .map(|lb| lb.ascender)
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .unwrap_or(font_size * 0.82);
+        let raw_desc = line_box
+            .map(|lb| (-lb.descender).max(0.0))
+            .filter(|v| v.is_finite())
+            .unwrap_or(font_size * 0.22);
+        let natural_line_h = (raw_asc + raw_desc).max(font_size);
+        let line_step = p
+            .line_height
+            .filter(|v| v.is_finite() && *v > 0.5 && *v < 4.0)
+            .map(|lh| (lh * font_size).max(font_size * 0.6))
+            .unwrap_or(natural_line_h * 1.12);
+
+        let skew = if pick.synthetic_oblique {
+            SYNTHETIC_OBLIQUE_SKEW
+        } else {
+            0.0
+        };
+        let pad_x = (font_size * 0.1).ceil();
+        let pad_y = (font_size * 0.22).ceil();
+        let skew_margin = (skew * raw_asc).ceil();
+        let layout_w = (width as f32 - pad_x * 2.0 - skew_margin).max(font_size.min(width as f32));
+
+        let lines = wrap_and_shape_lines(
+            &shaper,
+            text,
+            &ot_features,
+            px_scale,
+            letter_spacing_px,
+            layout_w,
+        );
+
+        // Total visual ink height from top of first line's ascender to bottom of last line's descender.
+        let para_h = if lines.len() <= 1 {
+            raw_asc + raw_desc
+        } else {
+            raw_asc + (lines.len() - 1) as f32 * line_step + raw_desc
+        };
 
         let height = if p.auto_height {
             ((para_h + pad_y * 2.0).ceil() as i32).clamp(1, max_height)
@@ -481,39 +741,56 @@ impl Worker {
             max_height
         };
 
-        let mut surface = surfaces::raster_n32_premul((width, height))
-            .ok_or_else(|| format!("Failed to allocate {width}x{height} Skia raster surface"))?;
-        let canvas = surface.canvas();
-        canvas.clear(Color::TRANSPARENT);
-        let y = if p.auto_height {
+        let mut pixmap = Pixmap::new(width as u32, height as u32)
+            .ok_or_else(|| format!("Failed to allocate {width}x{height} tiny-skia pixmap"))?;
+
+        let mut paint = Paint::default();
+        paint.set_color(parse_color_hex(&p.color_hex));
+        paint.anti_alias = true;
+
+        let top_y = if p.auto_height {
             pad_y
         } else if para_h > 0.0 && para_h < height as f32 {
             ((height as f32 - para_h) * 0.5).floor().max(0.0)
         } else {
             0.0
         };
-        canvas.save();
-        if skew > 0.0 {
-            // x' = x - skew * (y - baseline_top): lean right, anchored at the paragraph bottom.
-            canvas.translate((pad_x + skew * (y + para_h), 0.0));
-            canvas.skew((-skew, 0.0));
-            paragraph.paint(canvas, (0.0, y));
-        } else {
-            paragraph.paint(canvas, (pad_x, y));
-        }
-        canvas.restore();
 
-        // Unpremultiplied RGBA8888 for direct HTML5 Canvas `ImageData` consumption.
-        let rgba_info = ImageInfo::new((width, height), ColorType::RGBA8888, AlphaType::Unpremul, None);
-        let row_bytes = (width as usize) * 4;
-        let mut pixels = vec![0u8; row_bytes * (height as usize)];
-        if !surface.read_pixels(&rgba_info, &mut pixels, row_bytes, (0, 0)) {
-            return Err("Skia read_pixels failed".to_string());
+        let mut pb = PathBuilder::new();
+        for (line_idx, line) in lines.iter().enumerate() {
+            let baseline_y = top_y + raw_asc + (line_idx as f32) * line_step;
+            if baseline_y - raw_asc > height as f32 + 4.0 {
+                break;
+            }
+            let start_x = match p.align.as_str() {
+                "center" => pad_x + ((layout_w - line.width) * 0.5).max(0.0),
+                "right" => pad_x + (layout_w - line.width).max(0.0),
+                _ => pad_x,
+            };
+            let mut pen_x = start_x;
+            for g in &line.glyphs {
+                if let Some(outline) = scaler.outline(g.glyph_id) {
+                    let mut sink = TinySkiaSink {
+                        pb: std::mem::take(&mut pb),
+                        origin_x: pen_x + g.x_offset,
+                        origin_y: baseline_y - g.y_offset,
+                        skew,
+                    };
+                    let _ = outline.draw(DrawMemory::Scratch, &mut sink);
+                    pb = sink.pb;
+                }
+                pen_x += g.x_advance;
+            }
         }
+
+        if let Some(path) = pb.finish() {
+            pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+        }
+
         Ok(RenderOutput {
             width,
             height,
-            pixels,
+            pixels: unpremultiply_rgba(pixmap.data()),
         })
     }
 }
@@ -550,7 +827,7 @@ fn encode_output(out: RenderOutput, with_header: bool) -> Vec<u8> {
 }
 
 fn run_render_loop(rx: mpsc::Receiver<RenderRequest>) {
-    let mut worker = Worker::new(TYPEFACE_CACHE_CAPACITY);
+    let mut worker = Worker::new(FONT_CACHE_CAPACITY);
     while let Ok(first) = rx.recv() {
         let mut batch = vec![first];
         while let Ok(more) = rx.try_recv() {
@@ -558,19 +835,18 @@ fn run_render_loop(rx: mpsc::Receiver<RenderRequest>) {
         }
         for req in coalesce_latest(batch) {
             let with_header = req.params.auto_height;
-            // A panic inside Skia must not kill the worker thread for the rest of the session.
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker.render(&req.params)))
-                .unwrap_or_else(|_| Err("Skia render panicked".to_string()))
+                .unwrap_or_else(|_| Err("Fontations render panicked".to_string()))
                 .map(|out| encode_output(out, with_header));
             let _ = req.reply.send(res);
         }
     }
 }
 
-/// Fixed-size Skia render returning raw RGBA8888 pixel bytes (`width * height * 4`, no header).
+/// Fixed-size Fontations render returning raw RGBA8888 pixel bytes (`width * height * 4`, no header).
 #[tauri::command]
 pub async fn render_font_preview(
-    state: State<'_, SkiaRendererState>,
+    state: State<'_, FontationsRendererState>,
     font_path: String,
     text: String,
     font_size: f32,
@@ -597,11 +873,12 @@ pub async fn render_font_preview(
 }
 
 /// Live Inspector specimen: picks the best face of a family for `weight` / `italic`,
+/// shapes with HarfRust (full OpenType GSUB/GPOS features), scales with Skrifa,
 /// auto-sizes height to the laid-out paragraph (capped at `max_height`), and coalesces
 /// rapid updates per `slot`. Returns `[u32 LE width][u32 LE height]` + RGBA8888 pixels.
 #[tauri::command]
 pub async fn render_font_specimen(
-    state: State<'_, SkiaRendererState>,
+    state: State<'_, FontationsRendererState>,
     slot: String,
     font_paths: Vec<String>,
     text: String,
@@ -659,11 +936,11 @@ mod tests {
     }
 
     #[test]
-    fn skia_worker_renders_variable_font_with_features_to_rgba8888() {
+    fn fontations_worker_renders_variable_font_with_features_to_rgba8888() {
         let mut worker = Worker::new(16);
         let mut features = HashMap::new();
         features.insert("liga".to_string(), 1);
-        features.insert("smcp".to_string(), 1);
+        features.insert("zero".to_string(), 1);
         let mut variations = HashMap::new();
         variations.insert("wght".to_string(), 700.0);
         let out = worker
@@ -678,9 +955,36 @@ mod tests {
                 variations,
                 ..Default::default()
             })
-            .expect("Skia render should succeed");
+            .expect("Fontations render should succeed");
         assert_eq!(out.pixels.len(), 512 * 72 * 4);
         assert!(alpha_count(&out.pixels) > 100);
+    }
+
+    #[test]
+    fn opentype_features_actually_change_shaped_glyphs_in_harfrust() {
+        let mut worker = Worker::new(8);
+        let base = RenderParams {
+            font_paths: vec![fixture("Inter-opsz-wght.ttf")],
+            text: "0123456789 -> fi fl".into(),
+            font_size: 44.0,
+            width: 520,
+            height: 160,
+            color_hex: "#000000".into(),
+            auto_height: true,
+            ..Default::default()
+        };
+        let default_px = worker.render(&base).unwrap().pixels;
+
+        let mut with_ot = base.clone();
+        with_ot.features.insert("zero".to_string(), 1);
+        with_ot.features.insert("tnum".to_string(), 1);
+        with_ot.features.insert("ss01".to_string(), 1);
+        with_ot.features.insert("calt".to_string(), 1);
+        let ot_px = worker.render(&with_ot).unwrap().pixels;
+        assert_ne!(
+            default_px, ot_px,
+            "HarfRust OpenType features (zero/tnum/ss01/calt) must alter rendered pixels"
+        );
     }
 
     #[test]
@@ -756,6 +1060,8 @@ mod tests {
             wght_max: w,
             has_ital_axis: false,
             has_slnt_axis: false,
+            slnt_min: 0.0,
+            slnt_max: 0.0,
         };
         let c = vec![
             ("r400".to_string(), Some(st(400.0, false))),
@@ -818,6 +1124,6 @@ mod tests {
         let tight = worker.render(&p).unwrap();
         p.letter_spacing = Some(0.18);
         let wide = worker.render(&p).unwrap();
-        assert_ne!(tight.pixels, wide.pixels, "letter_spacing must change rendered Skia output");
+        assert_ne!(tight.pixels, wide.pixels, "letter_spacing must change rendered Fontations output");
     }
 }

@@ -5,6 +5,7 @@
 //! cross-platform, zero-copy Fontations pipeline.
 
 use memmap2::Mmap;
+use rayon::prelude::*;
 use read_fonts::{types::NameId, FileRef, FontRef, TableProvider};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -461,7 +462,7 @@ pub async fn dwrite_engine_info() -> Result<EngineInfo, String> {
             .map(|r| r.len())
             .unwrap_or(0);
         Ok(EngineInfo {
-            engine: "Skia (FreeType + HarfBuzz) + Fontations".to_string(),
+            engine: "Fontations (read-fonts + skrifa + harfrust) + font://".to_string(),
             available: true,
             activation_mode: "session-temporary".to_string(),
             system_fonts_read_only: true,
@@ -504,35 +505,13 @@ pub fn scan_font_directory(dir_path: String) -> Result<Vec<FontMetadata>, String
         return Ok(Vec::new());
     }
 
-    let workers = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
-        .min(8)
-        .min(files.len());
-
-    let mut results: Vec<FontMetadata> = if workers <= 1 || files.len() < 8 {
+    let mut results: Vec<FontMetadata> = if files.len() < 8 {
         files.iter().flat_map(|p| scan_font_file(p)).collect()
     } else {
-        let chunk_size = files.len().div_ceil(workers);
-        std::thread::scope(|scope| {
-            let mut handles = Vec::with_capacity(workers);
-            for chunk in files.chunks(chunk_size) {
-                handles.push(scope.spawn(move || {
-                    let mut local = Vec::with_capacity(chunk.len());
-                    for path in chunk {
-                        local.extend(scan_font_file(path));
-                    }
-                    local
-                }));
-            }
-            let mut merged = Vec::with_capacity(files.len());
-            for handle in handles {
-                if let Ok(part) = handle.join() {
-                    merged.extend(part);
-                }
-            }
-            merged
-        })
+        files
+            .par_iter()
+            .flat_map_iter(|p| scan_font_file(p))
+            .collect()
     };
 
     results.sort_by(|a, b| {

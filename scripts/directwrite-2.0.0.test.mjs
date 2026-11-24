@@ -24,20 +24,24 @@ const loaderTs = read("src/lib/fonts/loader.ts");
 const desktopSettingsTsx = read("src/components/font-studio/desktop-settings.tsx");
 
 test("2.0.0 version metadata synced across Cargo, Tauri, npm, and version.ts", () => {
-  assert.equal(pkg.version, "2.1.0");
-  assert.equal(pkgLock.version, "2.1.0");
-  assert.equal(pkgLock.packages[""].version, "2.1.0");
-  assert.equal(tauriConf.version, "2.1.0");
-  assert.match(cargoToml, /version = "2\.1\.0"/);
-  assert.match(versionTs, /export const APP_VERSION = "2\.1\.0";/);
+  assert.equal(pkg.version, "2.2.0");
+  assert.equal(pkgLock.version, "2.2.0");
+  assert.equal(pkgLock.packages[""].version, "2.2.0");
+  assert.equal(tauriConf.version, "2.2.0");
+  assert.match(cargoToml, /version = "2\.2\.0"/);
+  assert.match(versionTs, /export const APP_VERSION = "2\.2\.0";/);
 });
 
-test("Skia + Fontations engine replaces legacy DirectWrite and ttf-parser with read-only system font guard", () => {
+test("Pure-Rust Fontations + HarfRust + font:// engine replaces legacy DirectWrite, ttf-parser, and skia-safe", () => {
   assert.doesNotMatch(cargoToml, /Win32_Graphics_DirectWrite/);
   assert.doesNotMatch(cargoToml, /ttf-parser/);
+  assert.doesNotMatch(cargoToml, /skia-safe/);
   assert.equal(existsSync(join(root, "src-tauri/src/dwrite.rs")), false, "legacy dwrite.rs must be removed");
-  assert.match(cargoToml, /skia-safe.*textlayout.*embed-freetype.*freetype-woff2/);
   assert.match(cargoToml, /read-fonts/);
+  assert.match(cargoToml, /skrifa/);
+  assert.match(cargoToml, /harfrust/);
+  assert.match(cargoToml, /tiny-skia/);
+  assert.match(cargoToml, /rayon/);
   assert.match(cargoToml, /memmap2/);
   assert.match(cargoToml, /Win32_Graphics_Gdi/);
   assert.match(cargoToml, /Win32_UI_WindowsAndMessaging/);
@@ -46,7 +50,8 @@ test("Skia + Fontations engine replaces legacy DirectWrite and ttf-parser with r
   assert.match(scannerRs, /pub fn is_system_windows_fonts_dir/);
   assert.match(scannerRs, /\\gdi-maps\\/);
   assert.match(scannerRs, /\\documents\\font manager\\/);
-  assert.match(rendererRs, /FontMgr::custom_empty\(\)\.unwrap_or_else\(FontMgr::new\)/);
+  assert.match(rendererRs, /harfrust::shape/);
+  assert.match(rendererRs, /ScalerFont/);
   assert.match(parseRs, /crate::scanner::is_system_windows_fonts_dir/);
   assert.match(parseRs, /fn layout_cache\(/);
   assert.match(parseRs, /fn index_cache\(/);

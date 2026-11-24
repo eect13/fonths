@@ -224,7 +224,7 @@ async function loadGoogleFromLocal(font: FontRecord, _mode: FontLoadMode = "prev
       }
       // Never treat catalog.variable alone as VF (42dot statics / Fontsource-other).
       const isVf = Boolean(axes?.length) || (font.variable && Boolean(font.axes?.length));
-      const url = convertFileSrc(path);
+      const url = convertFileSrc(path, "font");
       const faceStyle = isVf ? vfStyleDescriptor(font) : "normal";
       const face = new FontFace(font.family, `url(${JSON.stringify(url)})`, {
         display: "swap",
@@ -808,7 +808,7 @@ async function loadGooglePreviewFromLocal(font: FontRecord): Promise<boolean> {
     if (/unifont|cjk|emoji|noto-sans-jp|noto-serif-jp|noto-sans-kr|noto-serif-kr|noto-sans-sc|noto-serif-sc|noto-sans-tc|noto-serif-tc|chiron/i.test(path)) {
       return false;
     }
-    const url = convertFileSrc(path);
+    const url = convertFileSrc(path, "font");
     const isVf = Boolean(font.variable || font.catalogVariable);
     const face = new FontFace(font.family, `url(${JSON.stringify(url)})`, {
       display: "swap",
@@ -1059,7 +1059,7 @@ async function loadPathFont(font: FontRecord): Promise<void> {
   if (pending) return pending;
   const promise = (async () => {
     const { convertFileSrc } = await import("@tauri-apps/api/core");
-    const url = convertFileSrc(font.originPath!);
+    const url = convertFileSrc(font.originPath!, "font");
     const family = font.cssFamily || font.family;
     const isVf = font.variable;
     const face = new FontFace(family, `url(${JSON.stringify(url)})`, {

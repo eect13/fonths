@@ -1656,14 +1656,18 @@ function applyPayload(p: {
       })();
       return;
     }
-    notifyDownloadResult(p.done, p.failed, p.failed_names ?? [], p.failed_details ?? [], p.settled_names ?? []);
-    // Scope to this google job — do not wipe local install-queue pending (mixed Activate All).
-    // settled_names: Gidugu-class quiet settle (intact + known GDI-incapable) — clear pending, no toast.
-    void finalizeReadyAndClearPending([
-      ...readyCumulative,
-      ...(p.failed_names ?? []),
-      ...(p.settled_names ?? []),
-    ]);
+    // Scope to this google job — commit all ready/settled marks BEFORE showing the summary toast
+    // so Live / Settled / Disk counts reflect the finalized state rather than pre-flush stale counts.
+    const doneCount = p.done;
+    const failedCount = p.failed;
+    const failedNames = (p.failed_names ?? []).slice();
+    const failedDetails = (p.failed_details ?? []).slice();
+    const settledNames = (p.settled_names ?? []).slice();
+    const pendingToClear = [...readyCumulative, ...failedNames, ...settledNames];
+    void (async () => {
+      await finalizeReadyAndClearPending(pendingToClear);
+      notifyDownloadResult(doneCount, failedCount, failedNames, failedDetails, settledNames);
+    })();
   }
 }
 

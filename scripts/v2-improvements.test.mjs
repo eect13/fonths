@@ -418,9 +418,13 @@ test("13. Fonths 2.0.0 Skia + Fontations + Windows Activator replaces DirectWrit
   const inspectorTsx = readFileSync(join(process.cwd(), "src/components/font-studio/font-inspector.tsx"), "utf8");
   const appShellTsx = readFileSync(join(process.cwd(), "src/components/font-studio/app-shell.tsx"), "utf8");
 
-  assert.match(cargoToml, /version = "2\.1\.0"/);
-  assert.match(cargoToml, /skia-safe.*textlayout.*embed-freetype.*freetype-woff2/);
+  assert.match(cargoToml, /version = "2\.2\.0"/);
+  assert.doesNotMatch(cargoToml, /skia-safe/);
   assert.match(cargoToml, /read-fonts/);
+  assert.match(cargoToml, /skrifa/);
+  assert.match(cargoToml, /harfrust/);
+  assert.match(cargoToml, /tiny-skia/);
+  assert.match(cargoToml, /rayon/);
   assert.match(cargoToml, /lru/);
   assert.match(cargoToml, /memmap2/);
   assert.doesNotMatch(cargoToml, /ttf-parser/);
@@ -429,6 +433,8 @@ test("13. Fonths 2.0.0 Skia + Fontations + Windows Activator replaces DirectWrit
   assert.match(libRs, /pub mod scanner;/);
   assert.match(libRs, /pub mod renderer;/);
   assert.match(libRs, /pub mod activator;/);
+  assert.match(libRs, /pub mod font_protocol;/);
+  assert.match(libRs, /register_asynchronous_uri_scheme_protocol\("font"/);
   assert.match(libRs, /scanner::scan_font_directory/);
   assert.match(libRs, /renderer::render_font_preview/);
   assert.match(libRs, /activator::activate_font/);
@@ -436,15 +442,16 @@ test("13. Fonths 2.0.0 Skia + Fontations + Windows Activator replaces DirectWrit
   assert.match(libRs, /activator::cleanup_on_exit/);
 
   assert.match(scannerRs, /pub fn scan_font_directory/);
+  assert.match(scannerRs, /par_iter/);
   assert.match(scannerRs, /Mmap::map/);
   assert.match(scannerRs, /font\.gsub\(\)/);
   assert.match(scannerRs, /font\.gpos\(\)/);
 
-  assert.match(rendererRs, /FontMgr::custom_empty\(\)\.unwrap_or_else\(FontMgr::new\)/);
-  assert.match(rendererRs, /LruCache<String, Typeface>/);
-  assert.match(rendererRs, /VariationPosition/);
-  assert.match(rendererRs, /add_font_feature/);
-  assert.match(rendererRs, /surfaces::raster_n32_premul/);
+  assert.match(rendererRs, /harfrust::shape/);
+  assert.match(rendererRs, /LruCache<String, FontationsFont>/);
+  assert.match(rendererRs, /instance_builder\(\)\.variations/);
+  assert.match(rendererRs, /Feature::new/);
+  assert.match(rendererRs, /tiny_skia::\{/);
   assert.match(rendererRs, /tauri::ipc::Response/);
 
   assert.match(activatorRs, /AddFontResourceExW/);
@@ -507,7 +514,7 @@ test("14. Live Skia Inspector (italic/weight/auto-height/scroll), watched dedupe
   assert.match(settingsTsx, /data-testid="start-minimized-switch"/);
 });
 
-test("15. Fonths 2.1.0 headless daemon, state honesty, live sliders, and SuperSearch fixes", () => {
+test("15. Fonths 2.2.0 headless daemon, state honesty, live sliders, and SuperSearch fixes", () => {
   const daemonRs = readFileSync(join(process.cwd(), "src-tauri/src/daemon.rs"), "utf8");
   const libRs = readFileSync(join(process.cwd(), "src-tauri/src/lib.rs"), "utf8");
   const sliderTsx = readFileSync(join(process.cwd(), "src/components/ui/slider.tsx"), "utf8");
@@ -549,4 +556,30 @@ test("15. Fonths 2.1.0 headless daemon, state honesty, live sliders, and SuperSe
   assert.equal(fontMatchesSearch(iconFont, parseSearchQuery("category:icons"), {}), true);
 
   assert.match(chipsTsx, /filterLibrary\(pool, scope, "", favorites, liveIds, collections, customTags, facet, recentIds\)/);
+});
+
+test("16. Fonths 2.2.0 pure-Rust Fontations/HarfRust/font:// stack, NTFS hardlink staging, daemon adoption, and honest counts", () => {
+  const activateRs = readFileSync(join(process.cwd(), "src-tauri/src/activate.rs"), "utf8");
+  const sessionStageRs = readFileSync(join(process.cwd(), "src-tauri/src/session_stage.rs"), "utf8");
+  const fontProtoRs = readFileSync(join(process.cwd(), "src-tauri/src/font_protocol.rs"), "utf8");
+  const loaderTs = readFileSync(join(process.cwd(), "src/lib/fonts/loader.ts"), "utf8");
+  const osActivateTs = readFileSync(join(process.cwd(), "src/lib/fonts/os-activate.ts"), "utf8");
+  const tauriConf = readFileSync(join(process.cwd(), "src-tauri/tauri.conf.json"), "utf8");
+
+  // Zero-copy font:// protocol wired end-to-end
+  assert.match(fontProtoRs, /pub fn handle_request/);
+  assert.match(fontProtoRs, /Mmap::map/);
+  assert.match(tauriConf, /http:\/\/font\.localhost/);
+  assert.match(loaderTs, /convertFileSrc\(path, "font"\)/);
+
+  // Fast cached activation: NTFS hardlink staging, daemon session adoption, diff-based HKCU sync, O(1) progress sets
+  assert.match(activateRs, /fs::hard_link\(src, &dest\)/);
+  assert.match(activateRs, /pub fn adopt_daemon_live_session/);
+  assert.match(activateRs, /winfont::adopt_daemon_live_session/);
+  assert.match(sessionStageRs, /RegEnumValueW/);
+
+  // Honest summary toast counts: finalize ready/settled marks BEFORE reading store counts for toast
+  const finalizeIdx = osActivateTs.indexOf("await finalizeReadyAndClearPending(pendingToClear);");
+  const notifyIdx = osActivateTs.indexOf("notifyDownloadResult(doneCount, failedCount, failedNames, failedDetails, settledNames);");
+  assert.ok(finalizeIdx > 0 && notifyIdx > finalizeIdx, "finalizeReadyAndClearPending must complete before notifyDownloadResult");
 });

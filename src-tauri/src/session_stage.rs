@@ -419,7 +419,7 @@ pub mod hkcu_session {
                 0,
                 std::ptr::null_mut(),
                 0,
-                KEY_SET_VALUE,
+                KEY_SET_VALUE | KEY_QUERY_VALUE,
                 std::ptr::null_mut(),
                 &mut hkey,
                 std::ptr::null_mut(),
@@ -427,12 +427,63 @@ pub mod hkcu_session {
             {
                 return;
             }
+            // Diff against existing HKCU\...\Fonts entries in one pass so already-synced
+            // session entries skip redundant RegSetValueExW registry flush writes.
+            let mut existing: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            let mut idx: u32 = 0;
+            loop {
+                let mut name_buf = vec![0u16; 512];
+                let mut name_len = name_buf.len() as u32;
+                let mut val_type: u32 = 0;
+                let mut data_buf = vec![0u8; 1024];
+                let mut data_len = data_buf.len() as u32;
+                let rc = RegEnumValueW(
+                    hkey,
+                    idx,
+                    name_buf.as_mut_ptr(),
+                    &mut name_len,
+                    std::ptr::null_mut(),
+                    &mut val_type,
+                    data_buf.as_mut_ptr(),
+                    &mut data_len,
+                );
+                if rc == ERROR_NO_MORE_ITEMS {
+                    break;
+                }
+                if rc == 0 && val_type == REG_SZ {
+                    let name = String::from_utf16_lossy(&name_buf[..name_len as usize]);
+                    if super::is_fm_session_hkcu_value_name(&name) {
+                        let u16_len = (data_len as usize) / 2;
+                        let mut wide = Vec::with_capacity(u16_len);
+                        for chunk in data_buf[..u16_len * 2].chunks_exact(2) {
+                            let w = u16::from_le_bytes([chunk[0], chunk[1]]);
+                            if w == 0 {
+                                break;
+                            }
+                            wide.push(w);
+                        }
+                        existing.insert(name, String::from_utf16_lossy(&wide));
+                    }
+                }
+                idx = idx.saturating_add(1);
+                if idx > 65_536 {
+                    break;
+                }
+            }
             for gdi in paths {
                 let target = super::normalize_registry_font_path(gdi);
                 if target.is_empty() {
                     continue;
                 }
                 let val_name = super::session_hkcu_value_name(gdi);
+                if existing
+                    .get(&val_name)
+                    .map(|cur| cur.eq_ignore_ascii_case(&target))
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
                 let wname = wide_str(&val_name);
                 let wdata = wide_str(&target);
                 let _ = RegSetValueExW(

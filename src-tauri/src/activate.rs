@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
+use rayon::prelude::*;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -972,6 +973,14 @@ fn ensure_gdi_session_copy_to(src: &Path, maps_root: &Path) -> Option<PathBuf> {
     if dest_ok {
         return Some(dest);
     }
+    // Zero-copy NTFS hardlink fast path: creates a stage entry in microseconds with 0 bytes
+    // copied when `src` and `maps_root` share the same NTFS volume. Deleting the stage entry
+    // never deletes the user's original in Documents\Fonths.
+    if !dest.exists() || fs::remove_file(&dest).is_ok() {
+        if fs::hard_link(src, &dest).is_ok() && dest.is_file() {
+            return Some(dest);
+        }
+    }
     let tmp = dest.with_extension("part");
     let _ = fs::remove_file(&tmp);
     match copy_with_lock_retry(src, &tmp) {
@@ -1425,6 +1434,56 @@ mod winfont {
             return;
         }
         remember_map(&src, &gdi);
+    }
+
+    /// Adopt the live Windows session held by the running headless `--daemon` process so
+    /// reopening the UI window is instant (<20ms) without re-scanning or re-calling GDI.
+    /// ONLY call when `crate::daemon::is_daemon_running()` is verified true.
+    pub fn adopt_daemon_live_session(
+        disk_maps: &[crate::session_stage::FaceMap],
+        session_families: &[String],
+    ) -> Vec<String> {
+        let mut adopted_families: HashSet<String> = HashSet::new();
+        for m in disk_maps {
+            let src = PathBuf::from(&m.source);
+            let gdi = PathBuf::from(&m.stage);
+            if src.as_os_str().is_empty()
+                || gdi.as_os_str().is_empty()
+                || crate::session_stage::must_not_register_as_gdi_path(&gdi)
+                || !gdi.is_file()
+            {
+                continue;
+            }
+            remember_map(&src, &gdi);
+            if let Ok(mut g) = loaded().lock() {
+                g.insert(src.clone());
+            }
+            let fam = m.family.trim();
+            if !fam.is_empty() {
+                bind(fam, &src);
+                adopted_families.insert(fam.to_lowercase());
+            } else if let Some(parent_name) = src
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str())
+            {
+                let fam_name = super::dir_family_name(src.parent().unwrap_or(Path::new("")));
+                let chosen = if fam_name.is_empty() {
+                    parent_name.to_string()
+                } else {
+                    fam_name
+                };
+                if !chosen.is_empty() {
+                    bind(&chosen, &src);
+                    adopted_families.insert(chosen.to_lowercase());
+                }
+            }
+        }
+        session_families
+            .iter()
+            .filter(|f| adopted_families.contains(&f.trim().to_lowercase()))
+            .cloned()
+            .collect()
     }
 
     /// System + other per-user fonts we must never Add/Remove.
@@ -4238,9 +4297,24 @@ pub fn session_begin(app: &AppHandle) {
             })
             .unwrap_or(false);
         if daemon_active {
-            // Headless daemon already holds the live GDI session — do not unload or clear HKCU.
+            // Headless daemon already holds the live GDI session — adopt its active face maps
+            // immediately (<20ms) without re-scanning or re-calling AddFontResourceExW.
             if let (Ok(root), Some(maps_root)) = (documents_root(app), gdi_maps_root()) {
                 let _ = rebuild_session_maps_in(&root, &maps_root);
+                let disk_maps = crate::session_stage::load_session_maps_in(&root);
+                let session_fams = load_session_families(app);
+                if !disk_maps.is_empty() && !session_fams.is_empty() {
+                    let adopted = winfont::adopt_daemon_live_session(&disk_maps, &session_fams);
+                    if !adopted.is_empty() {
+                        seed_known_gdi_incapable_settled(app);
+                        session_boot_finish(&adopted);
+                        let handle = app.clone();
+                        thread::spawn(move || {
+                            let _ = index_disk(&handle, true);
+                        });
+                        return;
+                    }
+                }
             }
         } else if clean_exit {
             migrate_shared_family_folders_on_boot(app);
@@ -4351,7 +4425,7 @@ pub fn session_begin(app: &AppHandle) {
             emit_progress_force(app);
         }
         if !ready.is_empty() {
-            winfont::sync_hkcu_all_active_stages();
+            // HkcuBatchGuard already diff-synced HKCU when dropped above — avoid redundant double write.
             persist_activation_sidecars(app);
             notify_fonts_changed();
         }
@@ -8689,45 +8763,13 @@ fn filter_ready_families_parallel(app: &AppHandle, families: &[String]) -> Vec<S
             })
             .collect();
     }
-    let workers = session_register_workers(trimmed.len());
-    let queue = Arc::new(Mutex::new(VecDeque::from(trimmed.clone())));
-    let hits: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let mut joins = Vec::with_capacity(workers);
-    for _ in 0..workers {
-        let app = app.clone();
-        let queue = queue.clone();
-        let hits = hits.clone();
-        joins.push(thread::spawn(move || {
-            loop {
-                let next = queue.lock().ok().and_then(|mut q| q.pop_front());
-                let Some(family) = next else {
-                    break;
-                };
-                if family_skip_register_this_process(&app, &family).is_some()
-                    || family_is_ready(&app, &family)
-                {
-                    if let Ok(mut g) = hits.lock() {
-                        g.push(family);
-                    }
-                }
-            }
-        }));
-    }
-    for j in joins {
-        let _ = j.join();
-    }
-    let mut order_map: HashMap<String, usize> = HashMap::with_capacity(trimmed.len());
-    for (idx, name) in trimmed.iter().enumerate() {
-        order_map.entry(name.to_ascii_lowercase()).or_insert(idx);
-    }
-    let mut ready = hits.lock().map(|g| g.clone()).unwrap_or_default();
-    ready.sort_by_key(|a| {
-        order_map
-            .get(&a.to_ascii_lowercase())
-            .copied()
-            .unwrap_or(usize::MAX)
-    });
-    ready
+    trimmed
+        .into_par_iter()
+        .filter(|family| {
+            family_skip_register_this_process(app, family).is_some()
+                || family_is_ready(app, family)
+        })
+        .collect()
 }
 
 /// Bounded-parallel session register. `register` already skips paths in the
@@ -11562,6 +11604,7 @@ fn family_needs_variable_backfill(app: &AppHandle, family: &str) -> bool {
             .any(|dir| dir_needs_variable_backfill(dir, family))
 }
 
+#[allow(dead_code)]
 fn backfill_missing_variable_faces(app: &AppHandle, families: &[String]) {
     let need: Vec<String> = families
         .iter()
@@ -11653,52 +11696,32 @@ pub fn activate_families_on_disk_blocking(app: AppHandle, families: Vec<String>)
     Ok(Vec::new())
 }
 
-/// Worker: parallel classify (already-live / settled / ready-on-disk) in one pass,
-/// then ≤6 parallel intact register with progress ticks.
+/// Worker: lock-free `rayon` parallel classify (already-live / settled / ready-on-disk) in one pass,
+/// then parallel intact register with O(1) progress tracking.
 fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: bool) {
-    // Parallelize directory migration + this-process live check + ready check across
-    // workers instead of serially walking 2,000+ folders before spawning workers.
     let families = dedupe_family_names(&families);
-    let trimmed: Vec<(usize, String)> = families.iter().cloned().enumerate().collect();
-    let workers = session_register_workers(trimmed.len());
-    let queue = Arc::new(Mutex::new(VecDeque::from(trimmed)));
-    let classified: Arc<Mutex<Vec<(usize, u8, String)>>> = Arc::new(Mutex::new(Vec::new()));
-    let mut joins = Vec::with_capacity(workers);
-    for _ in 0..workers {
-        let app = app.clone();
-        let queue = queue.clone();
-        let classified = classified.clone();
-        joins.push(thread::spawn(move || loop {
+    let mut rows: Vec<(usize, u8, String)> = families
+        .par_iter()
+        .enumerate()
+        .filter_map(|(idx, t)| {
             if bulk().cancel.load(Ordering::SeqCst) {
-                break;
+                return None;
             }
-            let next = queue.lock().ok().and_then(|mut q| q.pop_front());
-            let Some((idx, t)) = next else {
-                break;
-            };
-            for dir in family_locations(&app, &t) {
+            for dir in family_locations(&app, t) {
                 migrate_download_source_stamp(&dir);
             }
-            let bucket = if family_skip_register_this_process(&app, &t).is_some() {
+            let bucket = if family_skip_register_this_process(&app, t).is_some() {
                 Some(0u8)
-            } else if family_early_skip_known_incapable(&app, &t) {
+            } else if family_early_skip_known_incapable(&app, t) {
                 Some(1u8)
-            } else if family_is_ready(&app, &t) {
+            } else if family_is_ready(&app, t) {
                 Some(2u8)
             } else {
                 None
             };
-            if let Some(b) = bucket {
-                if let Ok(mut g) = classified.lock() {
-                    g.push((idx, b, t));
-                }
-            }
-        }));
-    }
-    for j in joins {
-        let _ = j.join();
-    }
-    let mut rows = classified.lock().map(|g| g.clone()).unwrap_or_default();
+            bucket.map(|b| (idx, b, t.clone()))
+        })
+        .collect();
     rows.sort_by_key(|(idx, _, _)| *idx);
     let mut already: Vec<String> = Vec::new();
     let mut settled_skip: Vec<String> = Vec::new();
@@ -11773,16 +11796,26 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
             p.failed_details.clear();
             p.settled_names.clear();
         }
+        let mut seen_ready: HashSet<String> = p
+            .ready_names
+            .iter()
+            .map(|n| n.trim().to_ascii_lowercase())
+            .collect();
         for f in &already {
-            if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(f)) {
+            if seen_ready.insert(f.trim().to_ascii_lowercase()) {
                 p.ready_names.push(f.clone());
                 p.skipped = p.skipped.saturating_add(1);
             }
         }
+        let mut seen_settled: HashSet<String> = p
+            .settled_names
+            .iter()
+            .map(|n| n.trim().to_ascii_lowercase())
+            .collect();
         for f in &settled_skip {
             stamp_known_incapable_disk_settled(&app, f);
             note_session_gdi_refused(f);
-            if !p.settled_names.iter().any(|n| n.eq_ignore_ascii_case(f)) {
+            if seen_settled.insert(f.trim().to_ascii_lowercase()) {
                 p.settled_names.push(f.clone());
             }
         }
@@ -11813,15 +11846,8 @@ fn activate_on_disk_worker(app: AppHandle, families: Vec<String>, own_progress: 
     }
     emit_gdi_pressure_if_high(&app);
 
-    // Defer VF backfill off Activate critical path (idle after live marks).
-    // Repair / ensure remain the sync smoke path for missing catalog vars.
-    if !cancelled && !registered.is_empty() {
-        let app_bf = app.clone();
-        let fam_bf = registered.clone();
-        thread::spawn(move || {
-            backfill_missing_variable_faces(&app_bf, &fam_bf);
-        });
-    }
+    // Keep cached on-disk activation 100% local and instant — do not spawn background
+    // network VF backfill sweeps automatically after activating already-downloaded fonts.
 
     // Requested but not intact: clear pending via failed_names (poll finalize).
     // On cancel: running=false + emit; keep ready_names for completed Adds only —
@@ -11881,6 +11907,30 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String], done_ba
     let registered: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let processed = Arc::new(AtomicUsize::new(0));
     let last_emit = Arc::new(Mutex::new(Instant::now()));
+    // O(1) dedupe sets so registering 2,000+ families never does O(N^2) scans under the progress mutex.
+    let (init_ready, init_settled, init_failed) = bulk()
+        .progress
+        .lock()
+        .map(|p| {
+            (
+                p.ready_names
+                    .iter()
+                    .map(|n| n.trim().to_ascii_lowercase())
+                    .collect::<HashSet<String>>(),
+                p.settled_names
+                    .iter()
+                    .map(|n| n.trim().to_ascii_lowercase())
+                    .collect::<HashSet<String>>(),
+                p.failed_names
+                    .iter()
+                    .map(|n| n.trim().to_ascii_lowercase())
+                    .collect::<HashSet<String>>(),
+            )
+        })
+        .unwrap_or_default();
+    let seen_ready = Arc::new(Mutex::new(init_ready));
+    let seen_settled = Arc::new(Mutex::new(init_settled));
+    let seen_failed = Arc::new(Mutex::new(init_failed));
     let total = ready.len();
     let mut joins = Vec::with_capacity(workers);
 
@@ -11890,6 +11940,9 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String], done_ba
         let registered = registered.clone();
         let processed = processed.clone();
         let last_emit = last_emit.clone();
+        let seen_ready = seen_ready.clone();
+        let seen_settled = seen_settled.clone();
+        let seen_failed = seen_failed.clone();
         joins.push(thread::spawn(move || {
             loop {
                 let state = bulk();
@@ -11969,7 +12022,9 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String], done_ba
                 }
                 let restoring = session_boot().running.load(Ordering::SeqCst);
                 if let Ok(mut p) = bulk().progress.lock() {
-                    p.kind = "download".into();
+                    if p.kind.is_empty() {
+                        p.kind = "register".into();
+                    }
                     p.running = true;
                     let want_total = (done_base + total) as u32;
                     let step_done = (done_base + done_n).min(done_base + total) as u32;
@@ -11990,12 +12045,16 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String], done_ba
                     } else {
                         format!("Registering {family}")
                     };
+                    let fam_key = family.trim().to_ascii_lowercase();
                     if k > 0 {
                         // Honesty: this family did Add successfully — count it even
                         // if Cancel arrived mid-flight after Add returned.
-                        if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
+                        let is_new = seen_ready
+                            .lock()
+                            .map(|mut s| s.insert(fam_key.clone()))
+                            .unwrap_or(false);
+                        if is_new {
                             p.ready_names.push(family.clone());
-                            p.skipped = p.skipped.saturating_add(1);
                         }
                         session_boot_push_ready(&family);
                         if let Ok(mut g) = registered.lock() {
@@ -12003,7 +12062,11 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String], done_ba
                         }
                     } else if family_session_maps_live(&app, &family) {
                         // Already in loaded() from real Add this process.
-                        if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
+                        let is_new = seen_ready
+                            .lock()
+                            .map(|mut s| s.insert(fam_key.clone()))
+                            .unwrap_or(false);
+                        if is_new {
                             p.ready_names.push(family.clone());
                             p.skipped = p.skipped.saturating_add(1);
                         }
@@ -12018,13 +12081,21 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String], done_ba
                         // Hard Gidugu OR soft emoji after Add=0 — disk settled + quiet.
                         // Push settled while holding progress (avoid note_settled_quiet deadlock).
                         stamp_settle_after_add_zero(&app, &family);
-                        if !p.settled_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
+                        let is_new = seen_settled
+                            .lock()
+                            .map(|mut s| s.insert(fam_key.clone()))
+                            .unwrap_or(false);
+                        if is_new {
                             p.settled_names.push(family.clone());
                         }
                     } else {
                         let detail = note_register_zero(&app, &family, cause);
-                        p.failed = p.failed.saturating_add(1);
-                        if !p.failed_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
+                        let is_new = seen_failed
+                            .lock()
+                            .map(|mut s| s.insert(fam_key))
+                            .unwrap_or(false);
+                        if is_new {
+                            p.failed = p.failed.saturating_add(1);
                             p.failed_names.push(family.clone());
                             p.failed_details.push(detail);
                         }
@@ -13376,30 +13447,10 @@ pub fn scan_disk_families_blocking(app: AppHandle) -> Result<Vec<DiskFamily>, St
                     .map(|(d, st)| scan_miss(&d, st))
                     .collect()
             } else {
-                let workers = session_register_workers(misses.len());
-                let queue = Arc::new(Mutex::new(VecDeque::from(misses)));
-                let out: Arc<Mutex<Vec<(String, Option<(u64, u64, usize, u64)>, Option<DiskFamily>)>>> =
-                    Arc::new(Mutex::new(Vec::new()));
-                let mut joins = Vec::with_capacity(workers);
-                for _ in 0..workers {
-                    let queue = queue.clone();
-                    let out = out.clone();
-                    joins.push(thread::spawn(move || loop {
-                        let next = queue.lock().ok().and_then(|mut q| q.pop_front());
-                        let Some((dir, st)) = next else {
-                            break;
-                        };
-                        let row = scan_single_disk_family(&dir);
-                        let item = (dir.to_string_lossy().into_owned(), st, row);
-                        if let Ok(mut g) = out.lock() {
-                            g.push(item);
-                        }
-                    }));
-                }
-                for j in joins {
-                    let _ = j.join();
-                }
-                out.lock().map(|g| g.clone()).unwrap_or_default()
+                misses
+                    .into_par_iter()
+                    .map(|(d, st)| scan_miss(&d, st))
+                    .collect()
             };
         for (key, stamp, row) in computed {
             if let Some(ref df) = row {
