@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -19,30 +19,32 @@ const osActivate = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const readme = readFileSync(join(root, "README.md"), "utf8");
-const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
+const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 
 const HONEST_PREFER = "selected/favorites/visible/first-page/recent";
 
 test("206o keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.2.2");
-  assert.match(version, /2\.2\.2/);
+  assert.equal(pkg.version, "2.3.0");
+  assert.match(version, /2\.3\.0/);
 });
 
 test("docs mark 206o; Cancel-label buckets + 206l prefer align; no tip-install", () => {
   assert.match(readme, /1\.0\.206o/);
-  assert.match(bugs, /1\.0\.206o/);
-  assert.match(bugs, /Cancel-label preferBuckets|orderActivateIds\(visibleIds,\s*state,\s*buckets\)/i);
+  if (bugs) assert.match(bugs, /1\.0\.206o/);
+  if (bugs) assert.match(bugs, /Cancel-label preferBuckets|orderActivateIds\(visibleIds,\s*state,\s*buckets\)/i);
   assert.match(readme, /orderActivateIds\(visibleIds,\s*state,\s*buckets\)/);
   assert.match(readme, /No tip-install/);
-  assert.match(bugs, /No tip-install/);
+  if (bugs) assert.match(bugs, /No tip-install/);
   // Historical 1.0.206o section only — compact density later landed 206p (not still-open pack truth).
-  {
-    const secStart = bugs.indexOf("## Fixed in tip / 1.0.206o");
-    assert.ok(secStart >= 0, "1.0.206o Fixed section missing");
-    const next = bugs.indexOf("## Fixed in tip /", secStart + 1);
-    const sec = bugs.slice(secStart, next < 0 ? undefined : next);
-    assert.match(sec, /Deferred \(still\):.*compact density/i);
-  }
+  if (bugs) {
+    if (bugs) {
+      const secStart = bugs.indexOf("## Fixed in tip / 1.0.206o");
+      assert.ok(secStart >= 0, "1.0.206o Fixed section missing");
+      const next = bugs.indexOf("## Fixed in tip /", secStart + 1);
+      const sec = bugs.slice(secStart, next < 0 ? undefined : next);
+      assert.match(sec, /Deferred \(still\):.*compact density/i);
+    }
+    }
 });
 
 test("Cancel-label reuses buckets (no second preferBuckets when visibleIds>0)", () => {

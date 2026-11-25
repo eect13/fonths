@@ -7,6 +7,7 @@ export type DesktopPrefs = {
   preferStaticFaces?: boolean;
   fastSessionResume?: boolean;
   deleteMode?: DeleteMode;
+  hkcuRegistrySync?: boolean;
 };
 
 export const DEFAULT_DESKTOP_PREFS: DesktopPrefs = {
@@ -16,6 +17,7 @@ export const DEFAULT_DESKTOP_PREFS: DesktopPrefs = {
   preferStaticFaces: false,
   fastSessionResume: true,
   deleteMode: "recycle",
+  hkcuRegistrySync: true,
 };
 
 export function coerceDesktopPrefs(raw: unknown): DesktopPrefs {
@@ -27,6 +29,7 @@ export function coerceDesktopPrefs(raw: unknown): DesktopPrefs {
     preferStaticFaces: Boolean(o.preferStaticFaces),
     fastSessionResume: o.fastSessionResume === undefined ? true : Boolean(o.fastSessionResume),
     deleteMode: o.deleteMode === "permanent" ? "permanent" : "recycle",
+    hkcuRegistrySync: o.hkcuRegistrySync === undefined ? true : Boolean(o.hkcuRegistrySync),
   };
 }
 
@@ -42,6 +45,7 @@ export async function applyDesktopPrefs(prefs: DesktopPrefs): Promise<void> {
       preferStaticFaces: Boolean(prefs.preferStaticFaces),
       fastSessionResume: prefs.fastSessionResume !== false,
       deleteMode: prefs.deleteMode === "permanent" ? "permanent" : "recycle",
+      hkcuRegistrySync: prefs.hkcuRegistrySync !== false,
     });
   } catch {
     /* web / old installer */

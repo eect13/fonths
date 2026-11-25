@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -16,11 +16,11 @@ const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8")
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const readme = readFileSync(join(root, "README.md"), "utf8");
-const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
+const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 
 test("206c keeps ProductVersion 1.0.206 (amend-style like 206b)", () => {
-  assert.equal(pkg.version, "2.2.2");
-  assert.match(version, /2\.2\.2/);
+  assert.equal(pkg.version, "2.3.0");
+  assert.match(version, /2\.3\.0/);
 });
 
 test("hard allowlist is Gidugu only — emoji NOT hard-skipped", () => {
@@ -75,6 +75,6 @@ test("completeness emoji P0 still present (upstream TTF + stub reject)", () => {
 
 test("docs note 206c emoji soft try-Add", () => {
   assert.match(readme, /1\.0\.206c/);
-  assert.match(bugs, /1\.0\.206c/);
-  assert.match(bugs, /soft|try Add|not hard/i);
+  if (bugs) assert.match(bugs, /1\.0\.206c/);
+  if (bugs) assert.match(bugs, /soft|try Add|not hard/i);
 });

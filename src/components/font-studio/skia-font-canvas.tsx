@@ -30,6 +30,8 @@ export interface SkiaFontCanvasProps {
   lineHeight?: number;
   letterSpacing?: number;
   className?: string;
+  /** Invoked when Rust detects a color/emoji table (COLR/CBDT/SVG/sbix) so UI can switch to native DOM color. */
+  onColorFallback?: () => void;
 }
 
 /**
@@ -56,6 +58,7 @@ export const SkiaFontCanvas = memo(function SkiaFontCanvas({
   lineHeight = 1.3,
   letterSpacing = 0,
   className,
+  onColorFallback,
 }: SkiaFontCanvasProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -73,6 +76,8 @@ export const SkiaFontCanvas = memo(function SkiaFontCanvas({
   const pendingRef = useRef<RenderFontSpecimenOptions | null>(null);
   const mountedRef = useRef(true);
   const renderEpochRef = useRef(0);
+  const colorFallbackRef = useRef(onColorFallback);
+  colorFallbackRef.current = onColorFallback;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -182,6 +187,11 @@ export const SkiaFontCanvas = memo(function SkiaFontCanvas({
           if (!mountedRef.current || epoch !== renderEpochRef.current) return;
           const msg = err instanceof Error ? err.message : String(err);
           if (msg.includes(SKIA_SUPERSEDED)) return;
+          if (msg.includes("color-font-dom-fallback")) {
+            setError(null);
+            colorFallbackRef.current?.();
+            return;
+          }
           setError(msg);
         })
         .finally(() => {

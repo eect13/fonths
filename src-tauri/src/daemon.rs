@@ -15,6 +15,8 @@ use std::path::PathBuf;
 pub const DAEMON_ARG: &str = "--daemon";
 /// Secondary flag indicating the UI already registered active fonts and is handing off ownership.
 pub const HANDOFF_ARG: &str = "--handoff";
+/// CLI flag used by NSIS installer/uninstaller hooks to cleanly unload fonts and stop a running daemon.
+pub const QUIT_DAEMON_ARG: &str = "--quit-daemon";
 
 #[cfg(windows)]
 mod win_daemon {
@@ -22,10 +24,12 @@ mod win_daemon {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::process::CommandExt;
-    use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+    use std::time::{Duration, Instant};
 
     const DAEMON_MUTEX_NAME: &str = "Local\\FonthsHeadlessDaemonMutex";
     const DAEMON_STOP_EVENT_NAME: &str = "Local\\FonthsDaemonStopEvent";
+    const DAEMON_QUIT_UNLOAD_EVENT_NAME: &str = "Local\\FonthsDaemonQuitUnloadEvent";
 
     const ERROR_ALREADY_EXISTS: u32 = 183;
     const SYNCHRONIZE: u32 = 0x0010_0000;
@@ -35,6 +39,7 @@ mod win_daemon {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     const WM_DESTROY: u32 = 0x0002;
+    const WM_CLOSE: u32 = 0x0010;
     const WM_COMMAND: u32 = 0x0111;
     const WM_LBUTTONUP: u32 = 0x0202;
     const WM_LBUTTONDBLCLK: u32 = 0x0203;
@@ -42,6 +47,7 @@ mod win_daemon {
     const WM_APP: u32 = 0x8000;
     const WM_TRAYICON: u32 = WM_APP + 1;
     const WM_DAEMON_STOP: u32 = WM_APP + 2;
+    const WM_DAEMON_QUIT_UNLOAD: u32 = WM_APP + 3;
 
     const NIM_ADD: u32 = 0x0000_0000;
     const NIM_DELETE: u32 = 0x0000_0002;
@@ -60,7 +66,10 @@ mod win_daemon {
     const CMD_QUIT: usize = 1003;
 
     static DAEMON_HWND: AtomicIsize = AtomicIsize::new(0);
+    static TRAY_ICON_HANDLE: AtomicIsize = AtomicIsize::new(0);
+    static TASKBAR_CREATED_MSG: AtomicU32 = AtomicU32::new(0);
     static DAEMON_QUITTING: AtomicBool = AtomicBool::new(false);
+    static DAEMON_UNLOAD_ON_EXIT: AtomicBool = AtomicBool::new(false);
 
     #[repr(C)]
     struct POINT {
@@ -158,11 +167,20 @@ mod win_daemon {
         fn DestroyMenu(menu: isize) -> i32;
         fn GetCursorPos(pt: *mut POINT) -> i32;
         fn SetForegroundWindow(hwnd: isize) -> i32;
+        fn RegisterWindowMessageW(name: *const u16) -> u32;
+        fn DestroyIcon(icon: isize) -> i32;
     }
 
     #[link(name = "shell32")]
     extern "system" {
         fn Shell_NotifyIconW(message: u32, data: *const NOTIFYICONDATAW) -> i32;
+        fn ExtractIconExW(
+            lpsz_file: *const u16,
+            n_icon_index: i32,
+            phicon_large: *mut isize,
+            phicon_small: *mut isize,
+            n_icons: u32,
+        ) -> u32;
     }
 
     fn wide_z(s: &str) -> Vec<u16> {
@@ -215,6 +233,31 @@ mod win_daemon {
         }
     }
 
+    /// Signal any running headless daemon to unload session fonts and exit cleanly, waiting up to `timeout_ms`.
+    pub fn quit_daemon_and_wait(timeout_ms: u64) -> bool {
+        if !is_daemon_running() {
+            return true;
+        }
+        let name = wide_z(DAEMON_QUIT_UNLOAD_EVENT_NAME);
+        unsafe {
+            let ev = OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr());
+            if ev != 0 {
+                let _ = SetEvent(ev);
+                let _ = CloseHandle(ev);
+            } else {
+                signal_daemon_stop();
+            }
+        }
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(200));
+        while Instant::now() < deadline {
+            if !is_daemon_running() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(60));
+        }
+        !is_daemon_running()
+    }
+
     fn launch_ui_process() {
         let Ok(exe) = std::env::current_exe() else {
             return;
@@ -262,9 +305,9 @@ mod win_daemon {
         if DAEMON_QUITTING.swap(true, Ordering::SeqCst) {
             return;
         }
-        if unload_fonts {
-            crate::activate::session_end_headless();
-        }
+        DAEMON_UNLOAD_ON_EXIT.store(unload_fonts, Ordering::SeqCst);
+        // Remove the tray icon immediately so Quit feels instant with zero freeze;
+        // `session_end_headless()` runs right after the message loop exits cleanly.
         unsafe {
             let nid = make_nid(hwnd, 0, "");
             let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
@@ -273,6 +316,13 @@ mod win_daemon {
     }
 
     unsafe extern "system" fn wnd_proc(hwnd: isize, msg: u32, wp: usize, lp: isize) -> isize {
+        let tb_msg = TASKBAR_CREATED_MSG.load(Ordering::Relaxed);
+        if tb_msg != 0 && msg == tb_msg && !DAEMON_QUITTING.load(Ordering::SeqCst) {
+            let icon = TRAY_ICON_HANDLE.load(Ordering::Relaxed);
+            let nid = make_nid(hwnd, icon, "Fonths — running in background");
+            let _ = Shell_NotifyIconW(NIM_ADD, &nid);
+            return 0;
+        }
         match msg {
             WM_TRAYICON => {
                 let ev = (lp & 0xFFFF) as u32;
@@ -323,9 +373,18 @@ mod win_daemon {
                 }
                 0
             }
+            WM_CLOSE => {
+                trigger_quit(hwnd, true);
+                0
+            }
             WM_DAEMON_STOP => {
                 // Stopped externally by the UI quitting (UI runs session_end itself).
                 trigger_quit(hwnd, false);
+                0
+            }
+            WM_DAEMON_QUIT_UNLOAD => {
+                // Stopped externally by `--quit-daemon` (e.g., NSIS installer upgrade).
+                trigger_quit(hwnd, true);
                 0
             }
             WM_DESTROY => {
@@ -333,6 +392,25 @@ mod win_daemon {
                 0
             }
             _ => DefWindowProcW(hwnd, msg, wp, lp),
+        }
+    }
+
+    fn extract_small_exe_icon(h_instance: isize) -> (isize, bool) {
+        if let Ok(exe) = std::env::current_exe() {
+            let exe_w = wide_z(&exe.to_string_lossy());
+            let mut small: isize = 0;
+            let extracted = unsafe {
+                ExtractIconExW(exe_w.as_ptr(), 0, std::ptr::null_mut(), &mut small, 1)
+            };
+            if extracted > 0 && small != 0 {
+                return (small, true);
+            }
+        }
+        let app_icon = unsafe { LoadIconW(h_instance, 32512usize as *const u16) };
+        if app_icon != 0 {
+            (app_icon, false)
+        } else {
+            (unsafe { LoadIconW(0, 32512usize as *const u16) }, false)
         }
     }
 
@@ -357,6 +435,14 @@ mod win_daemon {
             }
         }
 
+        let quit_unload_w = wide_z(DAEMON_QUIT_UNLOAD_EVENT_NAME);
+        let quit_unload_ev = unsafe { CreateEventW(std::ptr::null(), 1, 0, quit_unload_w.as_ptr()) };
+        if quit_unload_ev != 0 {
+            unsafe {
+                let _ = ResetEvent(quit_unload_ev);
+            }
+        }
+
         // Immediate headless font activation on login (zero WebView2 delay).
         if !handoff {
             std::thread::spawn(|| {
@@ -367,13 +453,10 @@ mod win_daemon {
         unsafe {
             let h_instance = GetModuleHandleW(std::ptr::null());
             let class_name = wide_z("FonthsHeadlessDaemonWindow");
-            // Resource ID 32512 is the default Windows EXE application icon embedded by tauri-build.
-            let app_icon = LoadIconW(h_instance, 32512usize as *const u16);
-            let h_icon = if app_icon != 0 {
-                app_icon
-            } else {
-                LoadIconW(0, 32512usize as *const u16)
-            };
+            let tb_name = wide_z("TaskbarCreated");
+            TASKBAR_CREATED_MSG.store(RegisterWindowMessageW(tb_name.as_ptr()), Ordering::Relaxed);
+            let (h_icon, owns_icon) = extract_small_exe_icon(h_instance);
+            TRAY_ICON_HANDLE.store(h_icon, Ordering::Relaxed);
 
             let wc = WNDCLASSEXW {
                 cb_size: std::mem::size_of::<WNDCLASSEXW>() as u32,
@@ -420,6 +503,15 @@ mod win_daemon {
                         }
                     });
                 }
+                if quit_unload_ev != 0 {
+                    std::thread::spawn(move || {
+                        let _ = WaitForSingleObject(quit_unload_ev, INFINITE);
+                        let target = DAEMON_HWND.load(Ordering::SeqCst);
+                        if target != 0 {
+                            let _ = PostMessageW(target, WM_DAEMON_QUIT_UNLOAD, 0, 0);
+                        }
+                    });
+                }
 
                 let mut msg = MSG {
                     hwnd: 0,
@@ -434,6 +526,15 @@ mod win_daemon {
                     let _ = DispatchMessageW(&msg);
                 }
                 let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
+            }
+            if owns_icon && h_icon != 0 {
+                let _ = DestroyIcon(h_icon);
+            }
+            if DAEMON_UNLOAD_ON_EXIT.load(Ordering::SeqCst) {
+                crate::activate::session_end_headless();
+            }
+            if quit_unload_ev != 0 {
+                let _ = CloseHandle(quit_unload_ev);
             }
             if stop_ev != 0 {
                 let _ = CloseHandle(stop_ev);
@@ -452,6 +553,9 @@ mod win_daemon {
         Ok(())
     }
     pub fn signal_daemon_stop() {}
+    pub fn quit_daemon_and_wait(_timeout_ms: u64) -> bool {
+        true
+    }
     pub fn run_headless_daemon(_handoff: bool) {}
 }
 
@@ -465,6 +569,10 @@ pub fn spawn_daemon(handoff: bool) -> Result<(), String> {
 
 pub fn signal_daemon_stop() {
     win_daemon::signal_daemon_stop();
+}
+
+pub fn quit_daemon_and_wait(timeout_ms: u64) -> bool {
+    win_daemon::quit_daemon_and_wait(timeout_ms)
 }
 
 pub fn run_headless_daemon(handoff: bool) {
@@ -502,5 +610,6 @@ mod tests {
     fn daemon_cli_constants_stay_stable() {
         assert_eq!(DAEMON_ARG, "--daemon");
         assert_eq!(HANDOFF_ARG, "--handoff");
+        assert_eq!(QUIT_DAEMON_ARG, "--quit-daemon");
     }
 }

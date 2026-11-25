@@ -25,7 +25,7 @@ import {
 import { ActivateMenuItem, DeactivateMenuItem } from "./activate-toggle";
 import { HelpTip } from "./help-tip";
 import { runFontImport } from "./import-fonts";
-import { addWatchedFolder } from "@/lib/fonts/watch-folder";
+import { addWatchedFolder, clearWatchedFileMemory } from "@/lib/fonts/watch-folder";
 import { exportCollectionJson, exportCollectionZip, importCollectionJson } from "@/lib/fonts/export-collection";
 import { SidebarCount, SidebarOverflowMenu, sidebarMainClass } from "./sidebar-row";
 import type { Collection } from "@/lib/fonts/types";
@@ -118,6 +118,7 @@ function GroupTree({
   const onDelete = useCallback((folder: Collection) => {
     if (isFolder || folder.watchPath) {
       const name = folder.name;
+      if (folder.watchPath) clearWatchedFileMemory(folder.watchPath);
       const result = useFontStore.getState().deleteCollection(folder.id, {
         deleteFromDisk: false,
       });

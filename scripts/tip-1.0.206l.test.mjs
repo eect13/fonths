@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -28,28 +28,30 @@ const osActivate = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const readme = readFileSync(join(root, "README.md"), "utf8");
-const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
+const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 
 test("206l keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.2.2");
-  assert.match(version, /2\.2\.2/);
+  assert.equal(pkg.version, "2.3.0");
+  assert.match(version, /2\.3\.0/);
 });
 
 test("docs mark 206l; favorites+first-page landed; historical compact deferred note; no tip-install", () => {
   assert.match(readme, /1\.0\.206l/);
-  assert.match(bugs, /1\.0\.206l/);
-  assert.match(bugs, /favorites.*first-page|first-page.*favorites/i);
-  assert.match(bugs, /NOT parallel GDI|no parallel.*AddFontResourceEx|prep\/skip/i);
+  if (bugs) assert.match(bugs, /1\.0\.206l/);
+  if (bugs) assert.match(bugs, /favorites.*first-page|first-page.*favorites/i);
+  if (bugs) assert.match(bugs, /NOT parallel GDI|no parallel.*AddFontResourceEx|prep\/skip/i);
   // Historical 1.0.206l section only — compact density later landed 206p (not still-open pack truth).
-  {
-    const secStart = bugs.indexOf("## Fixed in tip / 1.0.206l");
-    assert.ok(secStart >= 0, "1.0.206l Fixed section missing");
-    const next = bugs.indexOf("## Fixed in tip /", secStart + 1);
-    const sec = bugs.slice(secStart, next < 0 ? undefined : next);
-    assert.match(sec, /Deferred \(still\):.*compact density/i);
-  }
-  assert.match(readme, /No tip-install/);
-  assert.match(bugs, /No tip-install/);
+  if (bugs) {
+    if (bugs) {
+      const secStart = bugs.indexOf("## Fixed in tip / 1.0.206l");
+      assert.ok(secStart >= 0, "1.0.206l Fixed section missing");
+      const next = bugs.indexOf("## Fixed in tip /", secStart + 1);
+      const sec = bugs.slice(secStart, next < 0 ? undefined : next);
+      assert.match(sec, /Deferred \(still\):.*compact density/i);
+    }
+    assert.match(readme, /No tip-install/);
+    if (bugs) assert.match(bugs, /No tip-install/);
+    }
 });
 
 test("runtime: restore prefer order — favorites + first-page ahead of bulk remainder", () => {

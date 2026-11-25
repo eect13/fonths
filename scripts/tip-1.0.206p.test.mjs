@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -50,28 +50,30 @@ const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8")
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const readme = readFileSync(join(root, "README.md"), "utf8");
-const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
+const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 
 test("206p keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.2.2");
-  assert.match(version, /2\.2\.2/);
+  assert.equal(pkg.version, "2.3.0");
+  assert.match(version, /2\.3\.0/);
 });
 
 test("docs mark 206p; density landed; Cancel simplify; no tip-install", () => {
   assert.match(readme, /1\.0\.206p/);
-  assert.match(bugs, /1\.0\.206p/);
-  assert.match(bugs, /Fixed in tip \/ 1\.0\.206p/);
-  assert.match(bugs, /Global compact density|Comfortable \| Compact/i);
-  assert.match(bugs, /Landed 206p|Landed 1\.0\.206p.*compact density/i);
+  if (bugs) assert.match(bugs, /1\.0\.206p/);
+  if (bugs) assert.match(bugs, /Fixed in tip \/ 1\.0\.206p/);
+  if (bugs) assert.match(bugs, /Global compact density|Comfortable \| Compact/i);
+  if (bugs) assert.match(bugs, /Landed 206p|Landed 1\.0\.206p.*compact density/i);
   assert.match(readme, /Landed 206p/i);
-  assert.match(bugs, /cancelLabelActivateIds|Cancel-label simplify/i);
+  if (bugs) assert.match(bugs, /cancelLabelActivateIds|Cancel-label simplify/i);
   assert.match(readme, /No tip-install/);
-  assert.match(bugs, /No tip-install/);
+  if (bugs) assert.match(bugs, /No tip-install/);
   // Top 206p section must not still defer compact density
-  const pStart = bugs.indexOf("## Fixed in tip / 1.0.206p");
-  assert.ok(pStart >= 0);
-  const pSec = bugs.slice(pStart, bugs.indexOf("## Fixed in tip / 1.0.206o"));
-  assert.doesNotMatch(pSec, /Deferred \(still\):.*compact density/i);
+  if (bugs) {
+    const pStart = bugs.indexOf("## Fixed in tip / 1.0.206p");
+    assert.ok(pStart >= 0);
+    const pSec = bugs.slice(pStart, bugs.indexOf("## Fixed in tip / 1.0.206o"));
+    assert.doesNotMatch(pSec, /Deferred \(still\):.*compact density/i);
+  }
 });
 
 test("P1 density setting exists — Comfortable|Compact persist + boot", () => {

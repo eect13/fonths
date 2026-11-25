@@ -7700,6 +7700,16 @@ pub fn set_fast_session_resume(on: bool) {
     gfsource::set_fast_session_resume(fm_local_root().as_deref(), on);
 }
 
+pub fn sync_hkcu_registry_now() {
+    #[cfg(windows)]
+    winfont::sync_hkcu_all_active_stages();
+}
+
+pub fn clear_hkcu_registry_now() {
+    #[cfg(windows)]
+    winfont::clear_all_hkcu_session_entries();
+}
+
 /// Item 2: a folder whose statics came from a full source blocks VF-primary
 /// only when the user opts into Static-first (or per-dir `.prefer-statics`).
 fn dir_static_first_blocks_vf(dir: &Path) -> bool {

@@ -11,11 +11,11 @@
 //! - **Responsiveness:** latest-wins per-slot coalescing, face matching across a family's files,
 //!   variable `wght`/`ital`/`slnt` support, synthetic oblique fallback, and auto-sized height.
 
-use harfrust::{Buffer, Feature, ShapeOptions, ShaperFont};
+use harfrust::{Buffer, Direction, Feature, ShapeOptions, ShaperFont};
 use lru::LruCache;
 use memmap2::Mmap;
 use read_fonts::{
-    model::{glyph::outline::PathSink, Font as FontationsFont},
+    model::{glyph::outline::PathSink, Blob, Font as FontationsFont, Source},
     types::{GlyphId, Tag},
     FileRef, TableProvider,
 };
@@ -23,7 +23,8 @@ use skrifa::{DrawMemory, HintOptions, RasterTarget, ScalerFont};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::num::NonZeroUsize;
-use std::sync::{mpsc, Mutex};
+use std::path::PathBuf;
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use tauri::State;
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Transform};
@@ -36,6 +37,8 @@ const MAX_CANVAS_DIM: i32 = 4096;
 const SYNTHETIC_OBLIQUE_SKEW: f32 = 0.2;
 /// Error string returned to callers whose request was replaced by a newer one for the same slot.
 pub const SUPERSEDED: &str = "superseded";
+/// Sentinel error telling the UI to switch seamlessly to native DOM color rendering for color/emoji fonts.
+pub const COLOR_FONT_DOM_FALLBACK: &str = "color-font-dom-fallback";
 
 /// Cheap per-file style facts read once with `read-fonts`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -49,6 +52,7 @@ struct FaceStyle {
     has_slnt_axis: bool,
     slnt_min: f32,
     slnt_max: f32,
+    has_color: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -163,6 +167,31 @@ fn tag_from_str(tag: &str) -> Option<Tag> {
     Some(Tag::new(&[bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
+fn bytes_have_color_tables(font: &read_fonts::FontRef<'_>) -> bool {
+    font.table_data(Tag::new(b"COLR")).is_some()
+        || font.table_data(Tag::new(b"CBDT")).is_some()
+        || font.table_data(Tag::new(b"SVG ")).is_some()
+        || font.table_data(Tag::new(b"sbix")).is_some()
+}
+
+fn font_has_color_tables(font: &FontationsFont) -> bool {
+    let bytes: &[u8] = match font.source() {
+        Source::Blob(b) => b.as_ref(),
+        _ => return false,
+    };
+    let Ok(file_ref) = FileRef::new(bytes) else {
+        return false;
+    };
+    let f = match file_ref {
+        FileRef::Font(f) => f,
+        FileRef::Collection(c) => match c.get(0) {
+            Ok(f) => f,
+            Err(_) => return false,
+        },
+    };
+    bytes_have_color_tables(&f)
+}
+
 fn face_style_from_bytes(bytes: &[u8]) -> Option<FaceStyle> {
     let owned;
     let data = if bytes.starts_with(b"wOF2") {
@@ -197,6 +226,7 @@ fn face_style_from_bytes(bytes: &[u8]) -> Option<FaceStyle> {
         has_slnt_axis: false,
         slnt_min: 0.0,
         slnt_max: 0.0,
+        has_color: bytes_have_color_tables(&font),
     };
     if let Ok(axes) = font.fvar().and_then(|f| f.axes()) {
         for axis in axes.iter() {
@@ -371,6 +401,8 @@ impl PathSink for TinySkiaSink {
 
 #[derive(Clone, Copy)]
 struct ShapedGlyph {
+    /// `None` = primary specimen font, `Some(i)` = `Worker::fallbacks[i]`.
+    font_idx: Option<usize>,
     glyph_id: GlyphId,
     x_advance: f32,
     x_offset: f32,
@@ -382,11 +414,141 @@ struct ShapedLine {
     width: f32,
 }
 
-fn shape_segment(
-    shaper: &ShaperFont<'_, '_>,
+/// Detect whether the first strong directional character in `text` belongs to an RTL script
+/// (Hebrew, Arabic, Syriac, Thaana, or Arabic Presentation Forms).
+fn first_strong_is_rtl(text: &str) -> bool {
+    for ch in text.chars() {
+        let cp = ch as u32;
+        let is_rtl = matches!(
+            cp,
+            0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF
+        );
+        if is_rtl {
+            return true;
+        }
+        if ch.is_alphabetic() {
+            return false;
+        }
+    }
+    false
+}
+
+fn load_system_fallback_fonts() -> Vec<FontationsFont> {
+    let mut out = Vec::new();
+    #[cfg(windows)]
+    {
+        let fonts_dir = crate::scanner::windows_system_fonts_dir();
+        // Ordered broad-coverage read-only OS system fonts covering Latin/Cyrillic/Greek,
+        // Arabic/Hebrew/Syriac, Indic (Nirmala), Thai (Leelawadee), Japanese, Chinese, Korean, Symbols.
+        let candidates = [
+            "segoeui.ttf",
+            "arial.ttf",
+            "tahoma.ttf",
+            "seguisym.ttf",
+            "LeelawUI.ttf",
+            "Nirmala.ttc",
+            "YuGothR.ttc",
+            "msyh.ttc",
+            "malgun.ttf",
+        ];
+        for name in candidates {
+            let p: PathBuf = fonts_dir.join(name);
+            let Ok(file) = File::open(&p) else {
+                continue;
+            };
+            let Ok(meta) = file.metadata() else {
+                continue;
+            };
+            if meta.len() < 12 {
+                continue;
+            }
+            // SAFETY: `%SYSTEMROOT%\Fonts` files are immutable OS system fonts; read-only mmap avoids heap duplication.
+            let Ok(mmap) = (unsafe { Mmap::map(&file) }) else {
+                continue;
+            };
+            let arc: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new(mmap);
+            if let Some(f) = FontationsFont::new(Blob::from(arc), 0) {
+                out.push(f);
+            }
+        }
+    }
+    out
+}
+
+fn pick_char_font(primary: &FontationsFont, fallbacks: &[FontationsFont], ch: char) -> Option<usize> {
+    if ch.is_whitespace() || ch.is_control() || primary.charmap().map_unicode(ch).is_some() {
+        return None;
+    }
+    for (idx, fb) in fallbacks.iter().enumerate() {
+        if fb.charmap().map_unicode(ch).is_some() {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+fn shape_run(
+    font: &FontationsFont,
+    font_idx: Option<usize>,
     text: &str,
     features: &[Feature],
-    px_scale: f32,
+    font_size: f32,
+    letter_spacing_px: f32,
+    out_glyphs: &mut Vec<ShapedGlyph>,
+) -> f32 {
+    if text.is_empty() {
+        return 0.0;
+    }
+    let shaper = ShaperFont::new(font);
+    let mut buffer = Buffer::new();
+    buffer.push_str(text);
+    if first_strong_is_rtl(text) {
+        buffer.set_direction(Direction::RightToLeft);
+    }
+    buffer.guess_segment_properties();
+    if harfrust::shape(
+        &shaper,
+        &mut buffer,
+        ShapeOptions::new().features(features),
+    )
+    .is_err()
+    {
+        return 0.0;
+    }
+    let upem = font.units_per_em().max(1) as f32;
+    let px_scale = font_size / upem;
+    let infos = buffer.glyph_infos();
+    let positions = buffer.glyph_positions();
+    let len = infos.len().min(positions.len());
+    let mut width = 0.0f32;
+    for i in 0..len {
+        let adv = positions[i].x_advance as f32 * px_scale;
+        let extra = if i + 1 < len { letter_spacing_px } else { 0.0 };
+        let total_adv = adv + extra;
+        out_glyphs.push(ShapedGlyph {
+            font_idx,
+            glyph_id: GlyphId::new(infos[i].glyph_id),
+            x_advance: total_adv,
+            x_offset: positions[i].x_offset as f32 * px_scale,
+            y_offset: positions[i].y_offset as f32 * px_scale,
+        });
+        width += total_adv;
+    }
+    width
+}
+
+fn segment_needs_fallback(primary: &FontationsFont, text: &str) -> bool {
+    let charmap = primary.charmap();
+    text.chars()
+        .any(|ch| !ch.is_whitespace() && !ch.is_control() && charmap.map_unicode(ch).is_none())
+}
+
+fn shape_segment_with_fallbacks(
+    primary: &FontationsFont,
+    fallbacks: &[FontationsFont],
+    text: &str,
+    features: &[Feature],
+    font_size: f32,
     letter_spacing_px: f32,
 ) -> ShapedLine {
     if text.is_empty() {
@@ -395,52 +557,79 @@ fn shape_segment(
             width: 0.0,
         };
     }
-    let mut buffer = Buffer::new();
-    buffer.push_str(text);
-    buffer.guess_segment_properties();
-    if harfrust::shape(
-        shaper,
-        &mut buffer,
-        ShapeOptions::new().features(features),
-    )
-    .is_err()
-    {
+    if fallbacks.is_empty() || !segment_needs_fallback(primary, text) {
+        let mut glyphs = Vec::new();
+        let width = shape_run(
+            primary,
+            None,
+            text,
+            features,
+            font_size,
+            letter_spacing_px,
+            &mut glyphs,
+        );
         return ShapedLine {
-            glyphs: Vec::new(),
-            width: 0.0,
+            glyphs,
+            width: width.max(0.0),
         };
     }
 
-    let infos = buffer.glyph_infos();
-    let positions = buffer.glyph_positions();
-    let len = infos.len().min(positions.len());
-    let mut glyphs = Vec::with_capacity(len);
-    let mut width = 0.0f32;
-    for i in 0..len {
-        let adv = positions[i].x_advance as f32 * px_scale;
-        let extra = if i + 1 < len { letter_spacing_px } else { 0.0 };
-        let total_adv = adv + extra;
-        glyphs.push(ShapedGlyph {
-            glyph_id: GlyphId::new(infos[i].glyph_id),
-            x_advance: total_adv,
-            x_offset: positions[i].x_offset as f32 * px_scale,
-            y_offset: positions[i].y_offset as f32 * px_scale,
-        });
-        width += total_adv;
+    // Partition into contiguous runs by font index (primary vs. matched OS fallback).
+    let mut runs: Vec<(Option<usize>, String)> = Vec::new();
+    let mut cur_idx: Option<usize> = None;
+    let mut cur_buf = String::new();
+    for ch in text.chars() {
+        let target_idx = if ch.is_whitespace() || ch.is_control() {
+            cur_idx
+        } else {
+            pick_char_font(primary, fallbacks, ch)
+        };
+        if !cur_buf.is_empty() && target_idx != cur_idx {
+            runs.push((cur_idx, std::mem::take(&mut cur_buf)));
+        }
+        cur_idx = target_idx;
+        cur_buf.push(ch);
+    }
+    if !cur_buf.is_empty() {
+        runs.push((cur_idx, cur_buf));
+    }
+
+    let mut glyphs = Vec::new();
+    let mut total_w = 0.0f32;
+    let run_count = runs.len();
+    for (i, (idx_opt, seg)) in runs.into_iter().enumerate() {
+        let font = idx_opt.and_then(|i| fallbacks.get(i)).unwrap_or(primary);
+        let w = shape_run(
+            font,
+            idx_opt,
+            &seg,
+            features,
+            font_size,
+            letter_spacing_px,
+            &mut glyphs,
+        );
+        total_w += w;
+        if i + 1 < run_count {
+            total_w += letter_spacing_px;
+            if let Some(last) = glyphs.last_mut() {
+                last.x_advance += letter_spacing_px;
+            }
+        }
     }
     ShapedLine {
         glyphs,
-        width: width.max(0.0),
+        width: total_w.max(0.0),
     }
 }
 
 /// Split `text` into word-wrapped lines using `harfrust` shaping widths so every final line
 /// is shaped intact (preserving ligatures, kerning, contextual alternates, and complex scripts).
 fn wrap_and_shape_lines(
-    shaper: &ShaperFont<'_, '_>,
+    primary: &FontationsFont,
+    fallbacks: &[FontationsFont],
     text: &str,
     features: &[Feature],
-    px_scale: f32,
+    font_size: f32,
     letter_spacing_px: f32,
     max_width: f32,
 ) -> Vec<ShapedLine> {
@@ -454,7 +643,14 @@ fn wrap_and_shape_lines(
             });
             continue;
         }
-        let whole = shape_segment(shaper, trimmed_para, features, px_scale, letter_spacing_px);
+        let whole = shape_segment_with_fallbacks(
+            primary,
+            fallbacks,
+            trimmed_para,
+            features,
+            font_size,
+            letter_spacing_px,
+        );
         if whole.width <= max_width {
             lines.push(whole);
             continue;
@@ -470,24 +666,37 @@ fn wrap_and_shape_lines(
                 format!("{current}{token}")
             };
             let cand_trimmed = candidate.trim_end_matches(char::is_whitespace);
-            let measured = shape_segment(shaper, cand_trimmed, features, px_scale, letter_spacing_px);
+            let measured = shape_segment_with_fallbacks(
+                primary,
+                fallbacks,
+                cand_trimmed,
+                features,
+                font_size,
+                letter_spacing_px,
+            );
             if measured.width <= max_width {
                 current = candidate;
                 continue;
             }
             if !current.trim_end().is_empty() {
-                lines.push(shape_segment(
-                    shaper,
+                lines.push(shape_segment_with_fallbacks(
+                    primary,
+                    fallbacks,
                     current.trim_end(),
                     features,
-                    px_scale,
+                    font_size,
                     letter_spacing_px,
                 ));
                 current.clear();
             }
-            // If a single token still exceeds max_width, wrap by character cluster so long unbroken
-            // strings (URLs / CJK / German compounds) never clip horizontally.
-            let single = shape_segment(shaper, word, features, px_scale, letter_spacing_px);
+            let single = shape_segment_with_fallbacks(
+                primary,
+                fallbacks,
+                word,
+                features,
+                font_size,
+                letter_spacing_px,
+            );
             if single.width <= max_width {
                 current = token.to_string();
             } else {
@@ -495,13 +704,21 @@ fn wrap_and_shape_lines(
                 for ch in word.chars() {
                     let mut next_piece = piece.clone();
                     next_piece.push(ch);
-                    let m = shape_segment(shaper, &next_piece, features, px_scale, letter_spacing_px);
+                    let m = shape_segment_with_fallbacks(
+                        primary,
+                        fallbacks,
+                        &next_piece,
+                        features,
+                        font_size,
+                        letter_spacing_px,
+                    );
                     if !piece.is_empty() && m.width > max_width {
-                        lines.push(shape_segment(
-                            shaper,
+                        lines.push(shape_segment_with_fallbacks(
+                            primary,
+                            fallbacks,
                             &piece,
                             features,
-                            px_scale,
+                            font_size,
                             letter_spacing_px,
                         ));
                         piece.clear();
@@ -518,11 +735,12 @@ fn wrap_and_shape_lines(
             }
         }
         if !current.trim_end().is_empty() {
-            lines.push(shape_segment(
-                shaper,
+            lines.push(shape_segment_with_fallbacks(
+                primary,
+                fallbacks,
                 current.trim_end(),
                 features,
-                px_scale,
+                font_size,
                 letter_spacing_px,
             ));
         }
@@ -559,6 +777,7 @@ fn unpremultiply_rgba(premul: &[u8]) -> Vec<u8> {
 struct Worker {
     fonts: LruCache<String, FontationsFont>,
     styles: LruCache<String, Option<FaceStyle>>,
+    fallbacks: Option<Vec<FontationsFont>>,
 }
 
 impl Worker {
@@ -566,7 +785,15 @@ impl Worker {
         Self {
             fonts: LruCache::new(NonZeroUsize::new(font_capacity.max(1)).unwrap()),
             styles: LruCache::new(NonZeroUsize::new(STYLE_CACHE_CAPACITY).unwrap()),
+            fallbacks: None,
         }
+    }
+
+    fn ensure_fallbacks(&mut self) -> &[FontationsFont] {
+        if self.fallbacks.is_none() {
+            self.fallbacks = Some(load_system_fallback_fonts());
+        }
+        self.fallbacks.as_deref().unwrap_or(&[])
     }
 
     fn style_of(&mut self, path: &str) -> Option<FaceStyle> {
@@ -617,6 +844,9 @@ impl Worker {
         };
 
         let base = self.font(&pick.path)?;
+        if pick.style.map(|s| s.has_color).unwrap_or(false) || font_has_color_tables(&base) {
+            return Err(COLOR_FONT_DOM_FALLBACK.to_string());
+        }
 
         // Variable font coordinates: combine explicit variations with requested weight/italic axes.
         let mut variations = p.variations.clone();
@@ -683,14 +913,23 @@ impl Worker {
             p.text.as_str()
         };
 
-        let shaper = ShaperFont::new(&active);
-        // Use light grayscale hinting at smaller sizes for crisp UI legibility, unhinted at display sizes.
-        let scaler = if font_size <= 48.0 {
-            let hint_opts = HintOptions::auto().with_target(RasterTarget::Light);
-            ScalerFont::hinted(active.clone(), font_size, hint_opts)
+        // Only load OS fallback fonts if the primary font actually lacks glyphs for `text`.
+        let fallbacks: Vec<FontationsFont> = if segment_needs_fallback(&active, text) {
+            self.ensure_fallbacks().to_vec()
         } else {
-            ScalerFont::unhinted(active.clone(), Some(font_size))
+            Vec::new()
         };
+
+        // Use light grayscale hinting at smaller sizes for crisp UI legibility, unhinted at display sizes.
+        let make_scaler = |font: FontationsFont| {
+            if font_size <= 48.0 {
+                let hint_opts = HintOptions::auto().with_target(RasterTarget::Light);
+                ScalerFont::hinted(font, font_size, hint_opts)
+            } else {
+                ScalerFont::unhinted(font, Some(font_size))
+            }
+        };
+        let scaler = make_scaler(active.clone());
 
         let metrics = scaler.metrics();
         let line_box = metrics.h_line();
@@ -720,13 +959,16 @@ impl Worker {
         let layout_w = (width as f32 - pad_x * 2.0 - skew_margin).max(font_size.min(width as f32));
 
         let lines = wrap_and_shape_lines(
-            &shaper,
+            &active,
+            &fallbacks,
             text,
             &ot_features,
-            px_scale,
+            font_size,
             letter_spacing_px,
             layout_w,
         );
+
+        let _ = (active.units_per_em(), px_scale);
 
         // Total visual ink height from top of first line's ascender to bottom of last line's descender.
         let para_h = if lines.len() <= 1 {
@@ -756,20 +998,40 @@ impl Worker {
             0.0
         };
 
+        let effective_align = if p.align.trim().is_empty() && first_strong_is_rtl(text) {
+            "right"
+        } else {
+            p.align.as_str()
+        };
+
+        let mut fallback_scalers: Vec<Option<ScalerFont>> =
+            (0..fallbacks.len()).map(|_| None).collect();
+
         let mut pb = PathBuilder::new();
         for (line_idx, line) in lines.iter().enumerate() {
             let baseline_y = top_y + raw_asc + (line_idx as f32) * line_step;
             if baseline_y - raw_asc > height as f32 + 4.0 {
                 break;
             }
-            let start_x = match p.align.as_str() {
+            let start_x = match effective_align {
                 "center" => pad_x + ((layout_w - line.width) * 0.5).max(0.0),
                 "right" => pad_x + (layout_w - line.width).max(0.0),
                 _ => pad_x,
             };
             let mut pen_x = start_x;
             for g in &line.glyphs {
-                if let Some(outline) = scaler.outline(g.glyph_id) {
+                let outline_opt = match g.font_idx {
+                    None => scaler.outline(g.glyph_id),
+                    Some(idx) => {
+                        if let Some(slot) = fallback_scalers.get_mut(idx) {
+                            let fb_scaler = slot.get_or_insert_with(|| make_scaler(fallbacks[idx].clone()));
+                            fb_scaler.outline(g.glyph_id)
+                        } else {
+                            None
+                        }
+                    }
+                };
+                if let Some(outline) = outline_opt {
                     let mut sink = TinySkiaSink {
                         pb: std::mem::take(&mut pb),
                         origin_x: pen_x + g.x_offset,
@@ -1062,6 +1324,7 @@ mod tests {
             has_slnt_axis: false,
             slnt_min: 0.0,
             slnt_max: 0.0,
+            has_color: false,
         };
         let c = vec![
             ("r400".to_string(), Some(st(400.0, false))),
@@ -1125,5 +1388,82 @@ mod tests {
         p.letter_spacing = Some(0.18);
         let wide = worker.render(&p).unwrap();
         assert_ne!(tight.pixels, wide.pixels, "letter_spacing must change rendered Fontations output");
+    }
+
+    #[test]
+    fn rtl_arabic_text_shapes_and_renders_pixels() {
+        assert!(first_strong_is_rtl("مرحبا بكم"));
+        assert!(!first_strong_is_rtl("Hello مرحبا"));
+        let mut worker = Worker::new(4);
+        let out = worker
+            .render(&RenderParams {
+                font_paths: vec![fixture("Inter-opsz-wght.ttf")],
+                text: "مرحبا بالعالم".into(),
+                font_size: 40.0,
+                width: 480,
+                height: 160,
+                color_hex: "#000000".into(),
+                auto_height: true,
+                ..Default::default()
+            })
+            .expect("RTL Arabic specimen should shape via primary or OS fallback");
+        #[cfg(windows)]
+        assert!(alpha_count(&out.pixels) > 80, "RTL Arabic must render inked pixels via Windows fallback");
+        let _ = out;
+    }
+
+    #[test]
+    fn missing_glyphs_fall_back_to_windows_system_fonts() {
+        let mut worker = Worker::new(4);
+        let ascii = worker
+            .render(&RenderParams {
+                font_paths: vec![fixture("Inter-opsz-wght.ttf")],
+                text: "Hello ".into(),
+                font_size: 40.0,
+                width: 600,
+                height: 160,
+                color_hex: "#000000".into(),
+                auto_height: true,
+                ..Default::default()
+            })
+            .unwrap();
+        let mixed = worker
+            .render(&RenderParams {
+                font_paths: vec![fixture("Inter-opsz-wght.ttf")],
+                text: "Hello 日本語 한글 العربية".into(),
+                font_size: 40.0,
+                width: 600,
+                height: 160,
+                color_hex: "#000000".into(),
+                auto_height: true,
+                ..Default::default()
+            })
+            .unwrap();
+        #[cfg(windows)]
+        assert!(
+            alpha_count(&mixed.pixels) > alpha_count(&ascii.pixels),
+            "mixed CJK/Hangul/Arabic fallback must ink more pixels than ASCII alone"
+        );
+        let _ = (ascii, mixed);
+    }
+
+    #[test]
+    fn color_emoji_font_signals_dom_color_fallback() {
+        let emj = crate::scanner::windows_system_fonts_dir().join("seguiemj.ttf");
+        if !emj.is_file() {
+            return;
+        }
+        let mut worker = Worker::new(4);
+        let res = worker.render(&RenderParams {
+            font_paths: vec![emj.to_string_lossy().into_owned()],
+            text: "🎨🚀✨".into(),
+            font_size: 40.0,
+            width: 320,
+            height: 120,
+            color_hex: "#000000".into(),
+            auto_height: true,
+            ..Default::default()
+        });
+        assert_eq!(res.unwrap_err(), COLOR_FONT_DOM_FALLBACK);
     }
 }

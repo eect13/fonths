@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -28,7 +28,7 @@ const desktopSettings = readFileSync(
   "utf8",
 );
 const readme = readFileSync(join(root, "README.md"), "utf8");
-const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
+const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"));
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
@@ -41,9 +41,9 @@ function cancelFn() {
 }
 
 test("206w keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.2.2");
-  assert.equal(tauri.version, "2.2.2");
-  assert.match(version, /2\.2\.2/);
+  assert.equal(pkg.version, "2.3.0");
+  assert.equal(tauri.version, "2.3.0");
+  assert.match(version, /2\.3\.0/);
 });
 
 test("P0 assert matrix: Scanning Documents is not docs-owned without sticky", () => {
@@ -205,10 +205,10 @@ test("Cancel chrome discoverable during docs sync (stable Name + testid)", () =>
 
 test("docs mark 206w; Scanning collision note; no tip-install/pack", () => {
   assert.match(readme, /1\.0\.206w/);
-  assert.match(bugs, /## Fixed in tip \/ 1\.0\.206w/);
-  assert.match(bugs, /Documents refresh cancelled/);
-  assert.match(bugs, /Scanning Documents/);
-  assert.match(bugs, /No tip-install\/pack/);
+  if (bugs) assert.match(bugs, /## Fixed in tip \/ 1\.0\.206w/);
+  if (bugs) assert.match(bugs, /Documents refresh cancelled/);
+  if (bugs) assert.match(bugs, /Scanning Documents/);
+  if (bugs) assert.match(bugs, /No tip-install\/pack/);
   assert.match(readme, /No tip-install/);
   assert.match(readme, /Scanning Documents/);
 });

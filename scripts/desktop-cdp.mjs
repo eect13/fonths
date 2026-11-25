@@ -206,6 +206,10 @@ try {
   await p1.waitForSelector('[data-testid="gdi-restore-card"]', { timeout: 5_000 });
   await p1.waitForSelector('[data-testid="purge-non-google-btn"]', { timeout: 5_000 });
   await p1.waitForSelector('[data-testid="prefer-static-faces-switch"]', { timeout: 5_000 });
+  await p1.waitForSelector('[data-testid="hkcu-registry-sync-switch"]', { timeout: 5_000 });
+  await p1.waitForSelector('[data-testid="backup-restore-card"]', { timeout: 5_000 });
+  await p1.waitForSelector('[data-testid="export-backup-btn"]', { timeout: 5_000 });
+  await p1.waitForSelector('[data-testid="import-backup-btn"]', { timeout: 5_000 });
   await p1.waitForSelector('[data-testid="dwrite-engine-card"]', { timeout: 5_000 });
   const engineCardText = await p1.locator('[data-testid="dwrite-engine-card"]').innerText();
   assert.ok(
@@ -348,6 +352,80 @@ try {
   const uploadsRoot = join(tmpRoot, "Documents", "Fonths", "Uploads");
   const uploadDirs = existsSync(uploadsRoot) ? readdirSync(uploadsRoot) : [];
   assert.ok(uploadDirs.includes("Figtree") && uploadDirs.includes("Inter"));
+
+  // Live Fontations renderer RPC: Windows Color Emoji DOM fallback + RTL Arabic & CJK glyph fallback
+  const winFontsDir = join(process.env.SYSTEMROOT || "C:\\Windows", "Fonts");
+  const emojiFont = join(winFontsDir, "seguiemj.ttf");
+  if (existsSync(emojiFont)) {
+    const emojiRes = await p1.evaluate(async (fontPath) => {
+      try {
+        await window.__TAURI_INTERNALS__.invoke("render_font_specimen", {
+          slot: "cdp-emoji-test",
+          fontPaths: [fontPath],
+          text: "🎨👍✨",
+          fontSize: 36,
+          width: 320,
+          maxHeight: 160,
+          colorHex: "#111111",
+          features: {},
+          variations: {},
+          weight: null,
+          italic: false,
+          align: "",
+          lineHeight: null,
+          letterSpacing: null,
+        });
+        return { ok: true, err: "" };
+      } catch (err) {
+        return { ok: false, err: String(err) };
+      }
+    }, emojiFont);
+    assert.equal(emojiRes.ok, false, "Color emoji font should signal color-font-dom-fallback");
+    assert.ok(
+      emojiRes.err.includes("color-font-dom-fallback"),
+      `Expected color-font-dom-fallback error, got: ${emojiRes.err}`,
+    );
+  }
+  const segoeFont = join(winFontsDir, "segoeui.ttf");
+  if (existsSync(segoeFont)) {
+    for (const [label, sample] of [
+      ["rtl-arabic", "مرحبا بالعالم"],
+      ["cjk-fallback", "Hello 日本語"],
+    ]) {
+      const frame = await p1.evaluate(
+        async ({ fontPath, text, slot }) => {
+          const buf = await window.__TAURI_INTERNALS__.invoke("render_font_specimen", {
+            slot,
+            fontPaths: [fontPath],
+            text,
+            fontSize: 32,
+            width: 360,
+            maxHeight: 140,
+            colorHex: "#111111",
+            features: {},
+            variations: {},
+            weight: null,
+            italic: false,
+            align: "",
+            lineHeight: null,
+            letterSpacing: null,
+          });
+          if (!(buf instanceof ArrayBuffer) || buf.byteLength < 8) return null;
+          const v = new DataView(buf);
+          const width = v.getUint32(0, true);
+          const height = v.getUint32(4, true);
+          const px = new Uint8Array(buf, 8);
+          let opaque = 0;
+          for (let i = 3; i < px.length; i += 4) if (px[i] > 0) opaque += 1;
+          return { width, height, byteLength: buf.byteLength, opaque };
+        },
+        { fontPath: segoeFont, text: sample, slot: `cdp-${label}` },
+      );
+      assert.ok(frame && frame.width > 0 && frame.height > 0, `Expected non-empty RGBA frame for ${label}`);
+      assert.equal(frame.byteLength, 8 + frame.width * frame.height * 4, `Valid RGBA buffer size for ${label}`);
+      assert.ok(frame.opaque > 0, `Expected rendered non-transparent glyphs for ${label}`);
+    }
+  }
 
   await p1.evaluate(() =>
     window.__TAURI_INTERNALS__.invoke("set_desktop_prefs", {

@@ -24,12 +24,12 @@ const loaderTs = read("src/lib/fonts/loader.ts");
 const desktopSettingsTsx = read("src/components/font-studio/desktop-settings.tsx");
 
 test("2.0.0 version metadata synced across Cargo, Tauri, npm, and version.ts", () => {
-  assert.equal(pkg.version, "2.2.2");
-  assert.equal(pkgLock.version, "2.2.2");
-  assert.equal(pkgLock.packages[""].version, "2.2.2");
-  assert.equal(tauriConf.version, "2.2.2");
-  assert.match(cargoToml, /version = "2\.2\.2"/);
-  assert.match(versionTs, /export const APP_VERSION = "2\.2\.2";/);
+  assert.equal(pkg.version, "2.3.0");
+  assert.equal(pkgLock.version, "2.3.0");
+  assert.equal(pkgLock.packages[""].version, "2.3.0");
+  assert.equal(tauriConf.version, "2.3.0");
+  assert.match(cargoToml, /version = "2\.3\.0"/);
+  assert.match(versionTs, /export const APP_VERSION = "2\.3\.0";/);
 });
 
 test("Pure-Rust Fontations + HarfRust + font:// engine replaces legacy DirectWrite, ttf-parser, and skia-safe", () => {

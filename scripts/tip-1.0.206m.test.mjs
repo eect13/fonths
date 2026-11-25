@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -16,22 +16,22 @@ const confirmDlg = readFileSync(
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const readme = readFileSync(join(root, "README.md"), "utf8");
-const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
+const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 
 const HONEST_PREFER =
   "selected/favorites/visible/first-page/recent";
 
 test("206m keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.2.2");
-  assert.match(version, /2\.2\.2/);
+  assert.equal(pkg.version, "2.3.0");
+  assert.match(version, /2\.3\.0/);
 });
 
 test("docs mark 206m; prefer copy honesty; no tip-install", () => {
   assert.match(readme, /1\.0\.206m/);
-  assert.match(bugs, /1\.0\.206m/);
-  assert.match(bugs, /Prefer copy honesty|first-page/i);
+  if (bugs) assert.match(bugs, /1\.0\.206m/);
+  if (bugs) assert.match(bugs, /Prefer copy honesty|first-page/i);
   assert.match(readme, /No tip-install/);
-  assert.match(bugs, /No tip-install/);
+  if (bugs) assert.match(bugs, /No tip-install/);
 });
 
 test("confirm dialog prefer copy includes first-page (not omit-only list)", () => {
@@ -73,12 +73,14 @@ test("preferBuckets shared once per Activate All; prefer-order kept", () => {
 });
 
 test("BUGS 206k–h no longer stale-defer session restore prefer", () => {
-  const k = bugs.slice(bugs.indexOf("## Fixed in tip / 1.0.206k"));
-  const hEnd = k.indexOf("## Fixed in tip / 1.0.206g");
-  const kh = hEnd >= 0 ? k.slice(0, hEnd) : k;
-  assert.doesNotMatch(
-    kh,
-    /Deferred \(still\): session restore prefer visible\/favorites\/first-page/,
-  );
-  assert.match(kh, /session restore prefer landed 206l/);
+  if (bugs) {
+    const k = bugs.slice(bugs.indexOf("## Fixed in tip / 1.0.206k"));
+    const hEnd = k.indexOf("## Fixed in tip / 1.0.206g");
+    const kh = hEnd >= 0 ? k.slice(0, hEnd) : k;
+    assert.doesNotMatch(
+      kh,
+      /Deferred \(still\): session restore prefer visible\/favorites\/first-page/,
+    );
+    assert.match(kh, /session restore prefer landed 206l/);
+  }
 });

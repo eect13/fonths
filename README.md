@@ -1,18 +1,18 @@
-# Fonths 2.2.2
+# Fonths 2.3.0
 
 A high-performance, cross-platform-ready Windows desktop font manager built with **Tauri v2 (Rust)**, **100% pure-Rust Google Fontations (`read-fonts` + `skrifa`) + `harfrust` + `tiny-skia`**, **`rayon`**, a **zero-copy `font://` custom URI protocol**, a **~6 MB pure-Rust headless tray daemon (`--daemon`)**, and **React 19**. Scan, inspect, preview with 100% OpenType fidelity, organize, and temporarily activate Google Fonts and local typefaces in **Adobe Photoshop / Illustrator / InDesign, Microsoft Word, Affinity, and Figma**—**without permanently installing them into `C:\Windows\Fonts`**.
 
-Active fonts use **temporary system-wide Win32 Session Table activation** (`AddFontResourceExW` with `FONT_RESOURCE_CHARACTERISTICS(0)` + coalesced `SendNotifyMessageW(HWND_BROADCAST, WM_FONTCHANGE)`) backed by **zero-copy NTFS hardlink staging** under `%LOCALAPPDATA%\Fonths\gdi-maps`, with diff-based HKCU session sync and automatic teardown on Quit so `C:\Windows\Fonts` stays completely untouched.
+Active fonts use **temporary system-wide Win32 Session Table activation** (`AddFontResourceExW` with `FONT_RESOURCE_CHARACTERISTICS(0)` + coalesced `SendNotifyMessageW(HWND_BROADCAST, WM_FONTCHANGE)`) backed by **zero-copy NTFS hardlink staging** under `%LOCALAPPDATA%\Fonths\gdi-maps`, with toggleable diff-based HKCU session sync and automatic teardown on Quit so `C:\Windows\Fonts` stays completely untouched.
 
 ---
 
-## Core Architecture (v2.2.2)
+## Core Architecture (v2.3.0)
 
 - **Zero-Copy OpenType Scanner (`src-tauri/src/scanner.rs` & `parse.rs`):** Uses **Google Fontations (`read-fonts 0.47`) + `memmap2` + `rayon`** (plus pure-Rust `wuff` for `.woff2`) across all CPU cores to scan `.ttf`, `.otf`, `.ttc`, and `.woff2` files and read-only OS system fonts (`C:\Windows\Fonts`) without OS installation—extracting names, `fvar` axes + `STAT` overlays, full `cmap` glyphs, `OS/2` metrics, and deduplicated GSUB/GPOS OpenType features (`liga`, `dlig`, `ss01–ss20`, `smcp`, `onum`, `tnum`, `zero`, `kern`, etc.).
-- **Pure-Rust Fontations + HarfRust Specimen Renderer (`src-tauri/src/renderer.rs`):** Zero C++ dependencies (no `skia-safe`, no GDI rendering, no DirectWrite). Uses `read_fonts::model::Font`, `harfrust 0.16` (pure-Rust HarfBuzz shaping for all OpenType features & scripts), `skrifa 0.50` (hinted/unhinted variable outline scaling), and `tiny-skia 0.12` (anti-aliased RGBA8888 output), returning raw pixel buffers over `tauri::ipc::Response` with latest-wins per-slot coalescing directly into the **Font Inspector** `<canvas>`.
-- **Zero-Copy `font://` Custom URI Protocol (`src-tauri/src/font_protocol.rs`):** Asynchronous Tauri URI scheme backed by an LRU `memmap2` cache + `rayon` I/O pool streaming local font bytes straight into WebView2 `@font-face` / `FontFace` with automatic mmap eviction before file deletion.
-- **Two-Process Headless Rust Tray Daemon (`src-tauri/src/daemon.rs`):** Default-ON background mode (`fonths.exe --daemon`, toggleable in Settings) boots before WebView2 (~6–10 MB RAM), restores saved session fonts at Windows login when Start Minimized is enabled, keeps active fonts live when the UI window closes (exiting WebView2 for zero idle browser RAM), and hands active sessions back to the UI in **< 20 ms** on reopen.
-- **Fast Win32 Session Table Activation (`src-tauri/src/activate.rs` & `session_stage.rs`):** NTFS hardlink staging (0 bytes copied on same volume), diff-based HKCU registry batch sync, Variable-TTF-first policy with 1-click **Optimize Library** and opt-in **Prefer static fonts (compatibility mode)** toggle in Settings, and strict honest live progress counts.
+- **Pure-Rust Fontations + HarfRust Specimen Renderer (`src-tauri/src/renderer.rs`):** Zero C++ dependencies (no `skia-safe`, no GDI rendering, no DirectWrite). Uses `read_fonts::model::Font`, `harfrust 0.16` (pure-Rust HarfBuzz shaping for all OpenType features, RTL Arabic/Hebrew direction detection, and complex scripts), lazy zero-copy `memmap2` `C:\Windows\Fonts` glyph fallback for mixed-script/emoji runs, automatic DOM fallback for `COLR`/`CBDT`/`SVG `/`sbix` color & emoji fonts, `skrifa 0.50` outline scaling, and `tiny-skia 0.12` anti-aliased RGBA8888 output over `tauri::ipc::Response` with latest-wins per-slot coalescing.
+- **Zero-Copy `font://` Custom URI Protocol (`src-tauri/src/font_protocol.rs`):** Asynchronous Tauri URI scheme backed by an LRU `memmap2` cache + `rayon` I/O pool streaming local font bytes straight into WebView2 `@font-face` / `FontFace` with `ParentDir` (`..`) path-traversal rejection and automatic mmap eviction before file deletion.
+- **Hardened Headless Rust Tray Daemon (`src-tauri/src/daemon.rs`):** Default-ON background mode (`fonths.exe --daemon`, toggleable in Settings) boots before WebView2 (~6–10 MB RAM), restores saved session fonts at Windows login when Start Minimized is enabled, recovers automatically across Explorer restarts (`TaskbarCreated`), extracts crisp embedded EXE tray icons (`ExtractIconExW`), supports clean `--quit-daemon` installer handoff, keeps active fonts live when closing the UI window, and hands active sessions back to the UI in **< 20 ms** on reopen.
+- **Fast Win32 Session Table Activation (`src-tauri/src/activate.rs` & `session_stage.rs`):** NTFS hardlink staging (0 bytes copied on same volume), toggleable **Adobe / Office HKCU registry sync**, Variable-TTF-first policy with 1-click **Optimize Library** and opt-in **Prefer static fonts (compatibility mode)**, and strict honest live progress counts.
 
 ---
 
@@ -44,13 +44,13 @@ Active fonts use **temporary system-wide Win32 Session Table activation** (`AddF
   - **SuperSearch:** Supports quoted phrases, `-negation`, `weight:>=700`, `axis:slnt`, `ot:smcp` / `has:liga`, `category:icons`, `license:open`, `xh:`, `contrast:`, live intersected chip counts, and clickable `axis:` / `ot:` chips inside the Inspector.
   - **Live Playground:** Lockable `Suggest pair`, Split/Single viewports, variable axes, Ink/Paper pickers, zoom, and OpenType feature pills.
   - **Font Inspector & Glyphs:** Fontations + HarfRust live `<canvas>` specimen, instant OS/2 + GSUB/GPOS inspection, variable/weight/italic/tracking/leading sliders, character map, and license details.
-  - **Duplicates Finder & Smart Deletion:** `O(N)` duplicate detection with **Auto-hide & deactivate duplicates**, configurable **Recycle Bin** vs. **Permanent Delete**, and automatic `font://` mmap eviction before unlink.
+  - **Duplicates Finder, Smart Deletion & 1-Click Backup (`src/lib/fonts/backup.ts`):** `O(N)` duplicate detection with **Auto-hide & deactivate duplicates**, configurable **Recycle Bin** vs. **Permanent Delete**, automatic `font://` mmap eviction before unlink, and 1-click JSON export/restore of Favorites, Collections, Custom Tags, OpenType preferences, and Settings.
 
 ---
 
 ## Font Engine Comparison: FontBase vs. MainType vs. NexusFont vs. Fonths
 
-| Architecture Dimension | FontBase | MainType (High-Logic) | NexusFont | **Fonths 2.2.2** |
+| Architecture Dimension | FontBase | MainType (High-Logic) | NexusFont | **Fonths 2.3.0** |
 | --- | --- | --- | --- | --- |
 | **Runtime & UI** | Electron (Chromium + Node.js) | Native C++ / Win32 + `FmsService` | Native Delphi / Win32 | **Tauri v2 (Rust) + Pure-Rust Fontations/HarfRust + ~6 MB Headless Daemon + React 19** |
 | **Watched / Local Folders** | Copies or links into `~/FontBase`; `Providers/Google` | SQLite vault + synced disk folders | In-place folder references | **Strictly in-place Watched Folders + `Providers\Google` + 1-click VF Optimize** |
@@ -83,8 +83,8 @@ npm run test:desktop
 npx tauri build
 ```
 Installers are written to:
-- `src-tauri/target/release/bundle/nsis/Fonths_2.2.2_x64-setup.exe`
-- `src-tauri/target/release/bundle/msi/Fonths_2.2.2_x64_en-US.msi`
+- `src-tauri/target/release/bundle/nsis/Fonths_2.3.0_x64-setup.exe`
+- `src-tauri/target/release/bundle/msi/Fonths_2.3.0_x64_en-US.msi`
 
 See [docs/ARCHITECTURE-2.0.0.md](docs/ARCHITECTURE-2.0.0.md) for historical architecture notes.
 

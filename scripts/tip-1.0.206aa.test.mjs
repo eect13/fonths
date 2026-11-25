@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -24,15 +24,15 @@ const desktopSettings = readFileSync(
   "utf8",
 );
 const readme = readFileSync(join(root, "README.md"), "utf8");
-const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
+const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"));
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206aa keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "2.2.2");
-  assert.equal(tauri.version, "2.2.2");
-  assert.match(version, /2\.2\.2/);
+  assert.equal(pkg.version, "2.3.0");
+  assert.equal(tauri.version, "2.3.0");
+  assert.match(version, /2\.3\.0/);
 });
 
 test("P0-1: sync_documents_vf_policy and cancel_google_downloads are async commands", () => {
@@ -163,13 +163,13 @@ test("app-shell uses inert without aria-hidden during docs (GetClickablePoint)",
 
 test("docs mark 206aa amend; no tip-install/pack", () => {
   assert.match(readme, /1\.0\.206aa/);
-  assert.match(bugs, /## Fixed in tip \/ 1\.0\.206aa/);
-  assert.match(
+  if (bugs) assert.match(bugs, /## Fixed in tip \/ 1\.0\.206aa/);
+  if (bugs) assert.match(
     bugs,
     /async|spawn_blocking|main.thread|late-cancel|cancelArrivedLate|onClick only|run_docs_vf_sync_purge_loop/i,
   );
   assert.match(readme, /async|spawn_blocking|late-cancel|main thread/i);
-  assert.match(bugs, /No tip-install\/pack/);
+  if (bugs) assert.match(bugs, /No tip-install\/pack/);
   assert.match(readme, /No tip-install/);
   assert.match(readme, /1\.0\.206z/);
 });

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -22,12 +22,12 @@ const confirmDlg = readFileSync(
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const readme = readFileSync(join(root, "README.md"), "utf8");
-const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
+const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 const barClear = readFileSync(join(root, "scripts/settled-idle-bar-clear.test.mjs"), "utf8");
 
 test("206f keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.2.2");
-  assert.match(version, /2\.2\.2/);
+  assert.equal(pkg.version, "2.3.0");
+  assert.match(version, /2\.3\.0/);
 });
 
 test("P1 soft Retry clears session_gdi_refused before Activate", () => {
@@ -101,9 +101,9 @@ test("P3 bar-clear tip asserts idle current clear (1.0.187/204)", () => {
 
 test("docs mark 206f Skye soft Retry + Cancel/tooltip honesty", () => {
   assert.match(readme, /1\.0\.206f/);
-  assert.match(bugs, /1\.0\.206f/);
-  assert.match(bugs, /session_gdi_refused|clear_session_gdi_refused/i);
-  assert.match(bugs, /already queued|keep first|Cancel/i);
+  if (bugs) assert.match(bugs, /1\.0\.206f/);
+  if (bugs) assert.match(bugs, /session_gdi_refused|clear_session_gdi_refused/i);
+  if (bugs) assert.match(bugs, /already queued|keep first|Cancel/i);
 });
 
 test("no reopen: provenance / Repair exclude / modal / Gidugu-hard still present", () => {

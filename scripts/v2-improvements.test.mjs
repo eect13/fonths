@@ -16,6 +16,8 @@ import { findImportGoogleCollisions } from "../src/lib/fonts/import-collision.ts
 import { dedupeWatchedBatch } from "../src/lib/fonts/import-options.ts";
 import { fontMatchesSearch, metricsFromTables, parseSearchQuery, tokenizeSearchQuery, toggleSearchToken } from "../src/lib/fonts/metrics.ts";
 import { fontFormatForFile, formatInspectorCss, formatLocalFontFace, tailwindFontVarKey } from "../src/lib/fonts/css-format.ts";
+import { FONTHS_BACKUP_VERSION, buildLibraryBackup, mergeLibraryBackupState, parseLibraryBackup } from "../src/lib/fonts/backup-schema.ts";
+import { coerceDesktopPrefs, DEFAULT_DESKTOP_PREFS } from "../src/lib/desktop/prefs.ts";
 
 function makeFont(overrides = {}) {
   return {
@@ -418,7 +420,7 @@ test("13. Fonths 2.0.0 Skia + Fontations + Windows Activator replaces DirectWrit
   const inspectorTsx = readFileSync(join(process.cwd(), "src/components/font-studio/font-inspector.tsx"), "utf8");
   const appShellTsx = readFileSync(join(process.cwd(), "src/components/font-studio/app-shell.tsx"), "utf8");
 
-  assert.match(cargoToml, /version = "2\.2\.2"/);
+  assert.match(cargoToml, /version = "2\.3\.0"/);
   assert.doesNotMatch(cargoToml, /skia-safe/);
   assert.match(cargoToml, /read-fonts/);
   assert.match(cargoToml, /skrifa/);
@@ -616,4 +618,99 @@ test("17. Fonths 2.2.2 watched-folder duplicate toast fix, mmap eviction on dele
   assert.match(chipsTsx, /text-primary-foreground\/85/);
   assert.match(chipsTsx, /effectiveQuery/);
   assert.match(inspectorTsx, /token: `ot:\$\{tag\}`/);
+});
+
+test("18. Fonths 2.3.0 daemon hardening, RTL/fallback/color Fontations renderer, HKCU sync toggle, JSON backup/restore, watch cleanup, and path safety", () => {
+  // 1. Default HKCU registry sync preference + coercion
+  assert.equal(DEFAULT_DESKTOP_PREFS.hkcuRegistrySync, true);
+  assert.equal(coerceDesktopPrefs({}).hkcuRegistrySync, true);
+  assert.equal(coerceDesktopPrefs({ hkcuRegistrySync: false }).hkcuRegistrySync, false);
+
+  // 2. JSON Backup & Restore roundtrip, validation, and non-activation guarantee
+  const snapshot = buildLibraryBackup({
+    favorites: ["g:Inter", "g:Inter"],
+    collections: [{ id: "c-1", name: "Brand", fontIds: ["g:Inter"], createdAt: 1700000000000, parentId: null }],
+    fontSets: [{ id: "fs-1", name: "Web", families: ["Inter"], updatedAt: 1700000000000 }],
+    customTags: { "g:Inter": ["hero", "ui"] },
+    featurePrefs: { "g:Inter": { liga: true, smcp: false } },
+    previewAxes: { "g:Inter": { wght: 650 } },
+    autoHideDuplicates: true,
+    desktopPrefs: { ...DEFAULT_DESKTOP_PREFS, hkcuRegistrySync: false, deleteMode: "permanent" },
+  });
+  assert.equal(snapshot.version, FONTHS_BACKUP_VERSION);
+  assert.equal(snapshot.app, "Fonths");
+  assert.deepEqual(snapshot.favorites, ["g:Inter"]);
+
+  const restored = parseLibraryBackup(JSON.stringify(snapshot));
+  assert.equal(restored.desktopPrefs.hkcuRegistrySync, false);
+  assert.equal(restored.desktopPrefs.deleteMode, "permanent");
+  assert.equal(restored.autoHideDuplicates, true);
+  assert.throws(() => parseLibraryBackup("not-json"), /not valid JSON/i);
+  assert.throws(() => parseLibraryBackup(JSON.stringify({ app: "Other", version: 1 })), /Not a Fonths/);
+  assert.throws(() => parseLibraryBackup(JSON.stringify({ app: "Fonths", version: 99, favorites: [], collections: [] })), /Unsupported backup version/);
+
+  const merged = mergeLibraryBackupState(
+    {
+      favorites: ["g:Roboto"],
+      collections: [{ id: "c-watch", name: "Dropbox", fontIds: ["l-1"], createdAt: 1, parentId: null, watchPath: "D:\\Dropbox" }],
+      fontSets: [],
+      customTags: { "g:Roboto": ["body"] },
+      featurePrefs: {},
+      previewAxes: {},
+      autoHideDuplicates: false,
+      desktopPrefs: DEFAULT_DESKTOP_PREFS,
+    },
+    restored,
+  );
+  assert.deepEqual(merged.favorites, ["g:Roboto", "g:Inter"]);
+  assert.equal(merged.collections.length, 2);
+  assert.equal(merged.collections[0].watchPath, "D:\\Dropbox");
+  assert.equal(merged.desktopPrefs.hkcuRegistrySync, false);
+  assert.equal("activated" in merged, false, "Backup restore must never auto-activate fonts unexpectedly");
+
+  // 3. Daemon + NSIS hook hardening
+  const daemonRs = readFileSync(join(process.cwd(), "src-tauri/src/daemon.rs"), "utf8");
+  const hooksNsh = readFileSync(join(process.cwd(), "src-tauri/windows/hooks.nsh"), "utf8");
+  assert.match(daemonRs, /QUIT_DAEMON_ARG.*--quit-daemon/);
+  assert.match(daemonRs, /TaskbarCreated/);
+  assert.match(daemonRs, /ExtractIconExW/);
+  assert.match(daemonRs, /DestroyIcon/);
+  assert.match(daemonRs, /session_end_headless/);
+  assert.match(hooksNsh, /FM_STOP_DAEMON/);
+  assert.match(hooksNsh, /--quit-daemon/);
+  assert.match(hooksNsh, /MainWindowHandle -eq 0/);
+
+  // 4. Fontations RTL, lazy system fallback, and color/emoji DOM fallback
+  const rendererRs = readFileSync(join(process.cwd(), "src-tauri/src/renderer.rs"), "utf8");
+  const canvasTsx = readFileSync(join(process.cwd(), "src/components/font-studio/skia-font-canvas.tsx"), "utf8");
+  const inspectorTsx = readFileSync(join(process.cwd(), "src/components/font-studio/font-inspector.tsx"), "utf8");
+  assert.match(rendererRs, /COLOR_FONT_DOM_FALLBACK/);
+  assert.match(rendererRs, /first_strong_is_rtl/);
+  assert.match(rendererRs, /Direction::RightToLeft/);
+  assert.match(rendererRs, /shape_segment_with_fallbacks/);
+  assert.match(canvasTsx, /onColorFallback/);
+  assert.match(canvasTsx, /color-font-dom-fallback/);
+  assert.match(inspectorTsx, /canvasColorFallback/);
+
+  // 5. HKCU sync toggle, backup UI, watched folder UX, unwatch cleanup, font:// traversal guard, clean copy
+  const sessionStageRs = readFileSync(join(process.cwd(), "src-tauri/src/session_stage.rs"), "utf8");
+  const libRs = readFileSync(join(process.cwd(), "src-tauri/src/lib.rs"), "utf8");
+  const fontProtoRs = readFileSync(join(process.cwd(), "src-tauri/src/font_protocol.rs"), "utf8");
+  const settingsTsx = readFileSync(join(process.cwd(), "src/components/font-studio/desktop-settings.tsx"), "utf8");
+  const folderTreeTsx = readFileSync(join(process.cwd(), "src/components/font-studio/folder-tree.tsx"), "utf8");
+  const watchTs = readFileSync(join(process.cwd(), "src/lib/fonts/watch-folder.ts"), "utf8");
+  const exportColTs = readFileSync(join(process.cwd(), "src/lib/fonts/export-collection.ts"), "utf8");
+
+  assert.match(sessionStageRs, /HKCU_SYNC_ENABLED/);
+  assert.match(sessionStageRs, /pub fn set_hkcu_sync_enabled/);
+  assert.match(libRs, /hkcu_registry_sync/);
+  assert.match(fontProtoRs, /Component::ParentDir/);
+  assert.match(settingsTsx, /hkcu-registry-sync-switch/);
+  assert.match(settingsTsx, /export-backup-btn/);
+  assert.match(settingsTsx, /import-backup-btn/);
+  assert.match(folderTreeTsx, /clearWatchedFileMemory/);
+  assert.match(watchTs, /watch-folder-op/);
+  assert.doesNotMatch(watchTs, /deploy\.bat/);
+  assert.match(exportColTs, /Fonths collection/);
+  assert.doesNotMatch(exportColTs, /# Font Manager collection export/);
 });

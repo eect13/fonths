@@ -110,6 +110,7 @@ fn set_desktop_prefs(
     prefer_static_faces: Option<bool>,
     fast_session_resume: Option<bool>,
     delete_mode: Option<String>,
+    hkcu_registry_sync: Option<bool>,
 ) {
     CLOSE_TO_TRAY.store(close_to_tray, Ordering::SeqCst);
     let minimized = start_minimized.unwrap_or(false);
@@ -117,6 +118,18 @@ fn set_desktop_prefs(
     let _ = apply_start_with_windows(start_with_windows, minimized);
     activate::set_prefer_static_faces(prefer_static_faces.unwrap_or(false));
     activate::set_fast_session_resume(fast_session_resume.unwrap_or(true));
+    let hkcu = hkcu_registry_sync.unwrap_or(true);
+    let prev_hkcu = session_stage::hkcu_sync_enabled();
+    session_stage::set_hkcu_sync_enabled(hkcu);
+    if prev_hkcu != hkcu {
+        std::thread::spawn(move || {
+            if hkcu {
+                activate::sync_hkcu_registry_now();
+            } else {
+                activate::clear_hkcu_registry_now();
+            }
+        });
+    }
     delete_ops::set_permanent_delete(
         delete_mode
             .as_deref()
@@ -386,7 +399,11 @@ pub fn run() {
         println!("Fonths {} (commit {BUILD_SHA})", env!("CARGO_PKG_VERSION"));
         return;
     }
-    // Pure-Rust headless tray daemon: exits before Tauri/WebView2 ever initializes (~6–10 MB RAM).
+    // Pure-Rust headless tray daemon & clean installer quit command (exits before WebView2 initializes).
+    if std::env::args().any(|a| a == daemon::QUIT_DAEMON_ARG) {
+        let _ = daemon::quit_daemon_and_wait(6_000);
+        return;
+    }
     if std::env::args().any(|a| a == daemon::DAEMON_ARG) {
         let handoff = std::env::args().any(|a| a == daemon::HANDOFF_ARG);
         daemon::run_headless_daemon(handoff);

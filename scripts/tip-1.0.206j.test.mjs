@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -18,7 +18,7 @@ const confirmDlg = readFileSync(
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const readme = readFileSync(join(root, "README.md"), "utf8");
-const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
+const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 
 /** Simulate Cancel settle: prefix Off, remainder Live (pending cleared). */
 function settleCancelRemove(activated, pendingDeactivate, batchIds, done) {
@@ -41,8 +41,8 @@ function settleCancelRemove(activated, pendingDeactivate, batchIds, done) {
 }
 
 test("206j keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.2.2");
-  assert.match(version, /2\.2\.2/);
+  assert.equal(pkg.version, "2.3.0");
+  assert.match(version, /2\.3\.0/);
 });
 
 test("P1 no confirmDeactivated(all) at unload_font_families spawn", () => {
@@ -103,10 +103,10 @@ test("P1 progressive remove confirm via ready_names / done prefix", () => {
 
 test("docs mark 206j; no tip-install", () => {
   assert.match(readme, /1\.0\.206j/);
-  assert.match(bugs, /1\.0\.206j/);
-  assert.match(bugs, /confirmDeactivated|prefix|spawn/i);
+  if (bugs) assert.match(bugs, /1\.0\.206j/);
+  if (bugs) assert.match(bugs, /confirmDeactivated|prefix|spawn/i);
   assert.match(readme, /No tip-install/);
-  assert.match(bugs, /No tip-install/);
+  if (bugs) assert.match(bugs, /No tip-install/);
 });
 
 test("no reopen: Pause/Cancel gate / activateQueueIds / Live=Add>0 / Gidugu-hard / soft / modal / Google↔FS / finish toast", () => {

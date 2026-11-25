@@ -1,10 +1,16 @@
 ; Fonths NSIS hooks (perMachine elevated installer).
-; Ask any running Fonths or legacy Font Manager instance to close cleanly (WM_CLOSE)
-; and wait for GDI session unload to finish. Never force-kill Tip builds (\Tip\).
-; Documents\Font Manager and cache data are always preserved.
+; Cleanly stop any running headless `--daemon` first via `--quit-daemon`, then ask any UI
+; instance to close cleanly (WM_CLOSE) and wait for session unload. Never touch Tip builds (\Tip\).
+; Documents\Fonths and cache data are always preserved.
+
+!macro FM_STOP_DAEMON
+  IfFileExists "$INSTDIR\fonths.exe" 0 +3
+    nsExec::ExecToLog '"$INSTDIR\fonths.exe" --quit-daemon'
+    Pop $R9
+!macroend
 
 !macro FM_ASK_CLOSE exeName
-  nsExec::ExecToLog 'powershell -NoProfile -WindowStyle Hidden -Command "$procs = Get-Process -Name ''${exeName}'' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ($_.Path -notmatch ''\\[Tt]ip\\'') }; foreach ($p in $procs) { $p.CloseMainWindow() | Out-Null }; for ($i=0; $i -lt 20; $i++) { $alive = Get-Process -Name ''${exeName}'' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ($_.Path -notmatch ''\\[Tt]ip\\'') }; if (-not $alive) { break }; Start-Sleep -Milliseconds 250 }"'
+  nsExec::ExecToLog 'powershell -NoProfile -WindowStyle Hidden -Command "$procs = Get-Process -Name ''${exeName}'' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ($_.Path -notmatch ''\\[Tt]ip\\'') }; foreach ($p in $procs) { $p.CloseMainWindow() | Out-Null }; for ($i=0; $i -lt 20; $i++) { $alive = Get-Process -Name ''${exeName}'' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ($_.Path -notmatch ''\\[Tt]ip\\'') }; if (-not $alive) { break }; Start-Sleep -Milliseconds 250 }; $rem = Get-Process -Name ''${exeName}'' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ($_.Path -notmatch ''\\[Tt]ip\\'') -and ($_.MainWindowHandle -eq 0) }; foreach ($p in $rem) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }"'
   Pop $R9
 !macroend
 
@@ -16,6 +22,7 @@
 !macroend
 
 !macro NSIS_HOOK_PREINSTALL
+  !insertmacro FM_STOP_DAEMON
   !insertmacro FM_ASK_CLOSE "fonths"
   !insertmacro FM_ASK_CLOSE "font-manager"
   !insertmacro FM_ASK_CLOSE "${MAINBINARYNAME}"
@@ -23,6 +30,7 @@
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
+  !insertmacro FM_STOP_DAEMON
   !insertmacro FM_ASK_CLOSE "fonths"
   !insertmacro FM_ASK_CLOSE "font-manager"
   !insertmacro FM_ASK_CLOSE "${MAINBINARYNAME}"

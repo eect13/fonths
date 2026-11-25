@@ -273,6 +273,17 @@ pub fn session_hkcu_value_name(gdi: &Path) -> String {
     format!("Fonths [FM-Session-{tag}] ({fmt})")
 }
 
+static HKCU_SYNC_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+pub fn hkcu_sync_enabled() -> bool {
+    HKCU_SYNC_ENABLED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+pub fn set_hkcu_sync_enabled(enabled: bool) {
+    HKCU_SYNC_ENABLED.store(enabled, std::sync::atomic::Ordering::SeqCst);
+}
+
 pub fn is_fm_session_hkcu_value_name(name: &str) -> bool {
     name.contains("[FM-Session-")
 }
@@ -343,7 +354,7 @@ pub mod hkcu_session {
     }
 
     pub fn sync_entry(gdi: &Path, sandbox: bool) {
-        if sandbox {
+        if sandbox || !super::hkcu_sync_enabled() {
             return;
         }
         let val_name = super::session_hkcu_value_name(gdi);
@@ -407,7 +418,7 @@ pub mod hkcu_session {
     }
 
     pub fn sync_entries_batch(paths: &[std::path::PathBuf], sandbox: bool) {
-        if sandbox || paths.is_empty() {
+        if sandbox || paths.is_empty() || !super::hkcu_sync_enabled() {
             return;
         }
         let subkey = fonts_subkey();
@@ -813,5 +824,14 @@ mod tests {
             normalize_registry_font_path(Path::new(r"\\?\UNC\server\share\font.otf")),
             r"\\server\share\font.otf"
         );
+    }
+
+    #[test]
+    fn hkcu_sync_toggle_roundtrip() {
+        assert!(hkcu_sync_enabled());
+        set_hkcu_sync_enabled(false);
+        assert!(!hkcu_sync_enabled());
+        set_hkcu_sync_enabled(true);
+        assert!(hkcu_sync_enabled());
     }
 }

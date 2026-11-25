@@ -1,4 +1,4 @@
-import { Cpu, Eraser, FolderOpen, RefreshCw, Settings, ShieldCheck, Trash2, Zap } from "lucide-react";
+import { Cpu, Download, Eraser, FolderOpen, RefreshCw, Settings, ShieldCheck, Trash2, Upload, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,6 +31,7 @@ import {
   type GdiSessionState,
 } from "@/lib/fonts/os-activate";
 import { docsCancelToastAction } from "@/lib/fonts/docs-cancel-toast-action";
+import { exportLibraryBackup, importLibraryBackup } from "@/lib/fonts/backup";
 import { useFontStore } from "@/lib/fonts/store";
 import { toast } from "sonner";
 import { useUiDensity, type UiDensity } from "@/lib/ui-density";
@@ -58,6 +59,7 @@ export function DesktopSettings() {
     preferStaticFaces,
     fastSessionResume,
     deleteMode = "recycle",
+    hkcuRegistrySync = true,
   } = prefs;
 
   useEffect(() => {
@@ -68,8 +70,9 @@ export function DesktopSettings() {
       preferStaticFaces,
       fastSessionResume,
       deleteMode,
+      hkcuRegistrySync,
     });
-  }, [closeToTray, startWithWindows, startMinimized, preferStaticFaces, fastSessionResume, deleteMode]);
+  }, [closeToTray, startWithWindows, startMinimized, preferStaticFaces, fastSessionResume, deleteMode, hkcuRegistrySync]);
 
   useEffect(() => {
     if (!open) return;
@@ -301,6 +304,19 @@ export function DesktopSettings() {
               onCheckedChange={(on) => setDesktopPrefs({ preferStaticFaces: on })}
             />
           </label>
+          <label className="fm-settings-row flex items-center justify-between gap-3 rounded-md bg-secondary text-sm">
+            <div>
+              <p className="font-medium">Adobe / Office HKCU registry sync</p>
+              <p className="text-xs text-muted-foreground">
+                Mirror temporary session fonts under HKCU\...\Fonts so Photoshop, Illustrator, and Office detect them instantly. Turn OFF for maximum activation speed if your apps already read Win32 session tables.
+              </p>
+            </div>
+            <Switch
+              data-testid="hkcu-registry-sync-switch"
+              checked={prefs.hkcuRegistrySync !== false}
+              onCheckedChange={(on) => setDesktopPrefs({ hkcuRegistrySync: on })}
+            />
+          </label>
         </div>
 
         {/* Group 3: Smart Deletion & Temporary Fonts */}
@@ -514,6 +530,38 @@ export function DesktopSettings() {
             >
               <Zap className="size-3.5 mr-1" />
               Optimize Library
+            </Button>
+          </div>
+        </div>
+
+        {/* Group 5: Backup & Restore */}
+        <div className="fm-settings-stack fm-settings-row rounded-md bg-secondary" data-testid="backup-restore-card">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">Backup & Restore</p>
+            <p className="text-xs text-muted-foreground">
+              Export or restore your Favorites, Collections, Custom Tags, OpenType feature choices, duplicate hiding, and desktop settings as a JSON file.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              data-testid="export-backup-btn"
+              onClick={() => void exportLibraryBackup()}
+            >
+              <Download className="size-3.5 mr-1" />
+              Export backup
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              data-testid="import-backup-btn"
+              onClick={() => void importLibraryBackup()}
+            >
+              <Upload className="size-3.5 mr-1" />
+              Import backup
             </Button>
           </div>
         </div>

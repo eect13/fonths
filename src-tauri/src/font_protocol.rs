@@ -68,6 +68,12 @@ pub fn decode_font_uri_path(uri_path: &str) -> Option<PathBuf> {
         format!("/{decoded}")
     };
     let path = PathBuf::from(normalized);
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return None;
+    }
     if !is_allowed_font_extension(&path) {
         return None;
     }
@@ -209,6 +215,13 @@ mod tests {
         }
         assert!(decode_font_uri_path("/C%3A%5CWindows%5CSystem32%5Ccmd.exe").is_none());
         assert!(decode_font_uri_path("/secret.txt").is_none());
+    }
+
+    #[test]
+    fn rejects_parent_traversal_in_font_uri() {
+        assert!(decode_font_uri_path("/C%3A%5CUsers%5C..%5CWindows%5CFonts%5Carial.ttf").is_none());
+        assert!(decode_font_uri_path("/C:/Users/%2e%2e/Fonts/arial.ttf").is_none());
+        assert!(decode_font_uri_path("/../etc/passwd.ttf").is_none());
     }
 
     #[test]

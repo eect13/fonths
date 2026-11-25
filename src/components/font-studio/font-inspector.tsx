@@ -88,6 +88,7 @@ export function FontInspector() {
   const [parsedTags, setParsedTags] = useState<string[] | undefined>();
   const [otParsed, setOtParsed] = useState(false);
   const [skiaPaths, setSkiaPaths] = useState<string[]>([]);
+  const [canvasColorFallback, setCanvasColorFallback] = useState(false);
   const fontRef = useRef(font);
   fontRef.current = font;
   const previewItalicRef = useRef(Boolean(preview.italic));
@@ -108,6 +109,7 @@ export function FontInspector() {
     setParsedTags(cur.otFeatures);
     setOtParsed(cur.otFeatures !== undefined);
     setSkiaPaths([]);
+    setCanvasColorFallback(false);
 
     const id = cur.id;
     const family = cur.family;
@@ -368,7 +370,7 @@ export function FontInspector() {
         viewportClassName="[&>div]:!block [&>div]:min-w-0 [&>div]:max-w-full"
       >
           <div className="fm-inspector-body min-w-0 max-w-full space-y-6 overflow-x-hidden pb-12">
-            {skiaPaths.length > 0 && !specimenLines && colorKindOf(font) === "none" ? (
+            {skiaPaths.length > 0 && !specimenLines && colorKindOf(font) === "none" && !canvasColorFallback ? (
               <div
                 className={cn(
                   "fm-spec min-w-0 max-w-full overflow-hidden rounded-lg px-4 py-4",
@@ -391,6 +393,7 @@ export function FontInspector() {
                   align={preview.align}
                   lineHeight={preview.lineHeight}
                   letterSpacing={preview.letterSpacing}
+                  onColorFallback={() => setCanvasColorFallback(true)}
                 />
               </div>
             ) : (
@@ -672,7 +675,7 @@ export function FontInspector() {
                     ? "Parsed by Fontations — this file defines no optional GSUB/GPOS feature tables. Common toggles still apply via HarfRust."
                     : "Reading GSUB/GPOS via Fontations… common toggles available below."}
               </p>
-              {skiaPaths.length > 0 && colorKindOf(font) === "none" ? (
+              {skiaPaths.length > 0 && colorKindOf(font) === "none" && !canvasColorFallback ? (
                 <div
                   className={cn(
                     "fm-spec min-w-0 max-w-full overflow-hidden rounded-lg px-3 py-2",
@@ -694,6 +697,7 @@ export function FontInspector() {
                     italic={effectiveItalicOn}
                     align="left"
                     lineHeight={1.25}
+                    onColorFallback={() => setCanvasColorFallback(true)}
                   />
                 </div>
               ) : (

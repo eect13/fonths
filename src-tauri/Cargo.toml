@@ -1,6 +1,6 @@
 [package]
 name = "fonths"
-version = "2.2.2"
+version = "2.3.0"
 description = "Fonths — high-performance Tauri v2 + Google Fontations (read-fonts + skrifa + harfrust) typeface manager"
 edition = "2021"
 rust-version = "1.87"

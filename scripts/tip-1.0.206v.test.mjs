@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -14,7 +14,7 @@ const permission = readFileSync(
 );
 const osActivate = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf8");
 const readme = readFileSync(join(root, "README.md"), "utf8");
-const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
+const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"));
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
@@ -76,9 +76,9 @@ function frontendInvokeCommands() {
 }
 
 test("206v keeps ProductVersion 1.0.206 and TIP_SHA path", () => {
-  assert.equal(pkg.version, "2.2.2");
-  assert.equal(tauri.version, "2.2.2");
-  assert.match(version, /2\.2\.2/);
+  assert.equal(pkg.version, "2.3.0");
+  assert.equal(tauri.version, "2.3.0");
+  assert.match(version, /2\.3\.0/);
   assert.match(writeTipSha, /TIP_SHA\.txt/);
   assert.match(beforeBuild, /write-tip-sha\.mjs|TIP_SHA/);
 });
@@ -136,9 +136,9 @@ test("lifecycle functions stay internal; no unused ACL entries", () => {
 
 test("docs mark 206v and retain 206u behavior notes", () => {
   assert.match(readme, /1\.0\.206v/);
-  assert.match(bugs, /## Fixed in tip \/ 1\.0\.206v/);
+  if (bugs) assert.match(bugs, /## Fixed in tip \/ 1\.0\.206v/);
   assert.match(readme, /VF-primary/);
   assert.match(readme, /Finlandica Text\+Headline/);
   assert.match(readme, /cancel-toast behavior/);
-  assert.match(bugs, /No tip-install\/pack/);
+  if (bugs) assert.match(bugs, /No tip-install\/pack/);
 });

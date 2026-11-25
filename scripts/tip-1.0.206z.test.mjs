@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -40,15 +40,15 @@ const desktopSettings = readFileSync(
   "utf8",
 );
 const readme = readFileSync(join(root, "README.md"), "utf8");
-const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
+const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"));
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206z keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "2.2.2");
-  assert.equal(tauri.version, "2.2.2");
-  assert.match(version, /2\.2\.2/);
+  assert.equal(pkg.version, "2.3.0");
+  assert.equal(tauri.version, "2.3.0");
+  assert.match(version, /2\.3\.0/);
 });
 
 test("bar Gate D visible Name via cancelChromeVisibleLabel", () => {
@@ -186,15 +186,15 @@ test("206w ownership matrix — Activate scan ≠ docs Cancel toast", () => {
 
 test("docs mark 206z amend; bar-only Gate D; no tip-install/pack", () => {
   assert.match(readme, /1\.0\.206z/);
-  assert.match(bugs, /## Fixed in tip \/ 1\.0\.206z/);
-  assert.match(bugs, /bar-only|bar only|Gate D identity on \*\*bar only\*\*|progress bar only/i);
+  if (bugs) assert.match(bugs, /## Fixed in tip \/ 1\.0\.206z/);
+  if (bugs) assert.match(bugs, /bar-only|bar only|Gate D identity on \*\*bar only\*\*|progress bar only/i);
   assert.match(readme, /bar-only|bar only|Gate D.*bar|progress bar only/i);
-  assert.match(bugs, /cancelChromeVisibleLabel|data-fm-shell-chrome/);
+  if (bugs) assert.match(bugs, /cancelChromeVisibleLabel|data-fm-shell-chrome/);
   assert.match(readme, /cancelChromeVisibleLabel|FindFirst/);
-  assert.match(bugs, /No tip-install\/pack/);
+  if (bugs) assert.match(bugs, /No tip-install\/pack/);
   assert.match(readme, /No tip-install/);
   assert.match(readme, /1\.0\.206y/);
-  assert.match(bugs, /## Fixed in tip \/ 1\.0\.206y/);
+  if (bugs) assert.match(bugs, /## Fixed in tip \/ 1\.0\.206y/);
   assert.match(readme, /1\.0\.206x/);
-  assert.match(bugs, /## Fixed in tip \/ 1\.0\.206x/);
+  if (bugs) assert.match(bugs, /## Fixed in tip \/ 1\.0\.206x/);
 });

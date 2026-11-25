@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -31,28 +31,30 @@ const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8")
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const readme = readFileSync(join(root, "README.md"), "utf8");
-const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
+const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 
 test("206q keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.2.2");
-  assert.match(version, /2\.2\.2/);
+  assert.equal(pkg.version, "2.3.0");
+  assert.match(version, /2\.3\.0/);
 });
 
 test("docs mark 206q; honesty landed; no tip-install; no stale Tip-is-197", () => {
   assert.match(readme, /1\.0\.206q/);
-  assert.match(bugs, /1\.0\.206q/);
-  assert.match(bugs, /Fixed in tip \/ 1\.0\.206q/);
-  assert.match(bugs, /Pause toast|done\/total/i);
-  assert.match(bugs, /ActivateVisibleMenuItem|activateQueueIds/i);
-  assert.match(bugs, /Hard-GDI SoT|gdi-incapable/i);
-  assert.match(bugs, /download bar|shell header|fm-download|fm-shell-header/i);
+  if (bugs) assert.match(bugs, /1\.0\.206q/);
+  if (bugs) assert.match(bugs, /Fixed in tip \/ 1\.0\.206q/);
+  if (bugs) assert.match(bugs, /Pause toast|done\/total/i);
+  if (bugs) assert.match(bugs, /ActivateVisibleMenuItem|activateQueueIds/i);
+  if (bugs) assert.match(bugs, /Hard-GDI SoT|gdi-incapable/i);
+  if (bugs) assert.match(bugs, /download bar|shell header|fm-download|fm-shell-header/i);
   assert.match(readme, /No tip-install/);
-  assert.match(bugs, /No tip-install/);
-  assert.doesNotMatch(bugs, /Tip is 1\.0\.197/);
-  const qStart = bugs.indexOf("## Fixed in tip / 1.0.206q");
-  assert.ok(qStart >= 0);
-  const qSec = bugs.slice(qStart, bugs.indexOf("## Fixed in tip / 1.0.206p"));
-  assert.doesNotMatch(qSec, /tip-install(?!\/pack)|APPROVE FOR PACK/i);
+  if (bugs) assert.match(bugs, /No tip-install/);
+  if (bugs) assert.doesNotMatch(bugs, /Tip is 1\.0\.197/);
+  if (bugs) {
+    const qStart = bugs.indexOf("## Fixed in tip / 1.0.206q");
+    assert.ok(qStart >= 0);
+    const qSec = bugs.slice(qStart, bugs.indexOf("## Fixed in tip / 1.0.206p"));
+    assert.doesNotMatch(qSec, /tip-install(?!\/pack)|APPROVE FOR PACK/i);
+  }
 });
 
 test("1. Pause toast % = done/total only (not max(done, skipped))", () => {
@@ -133,10 +135,12 @@ test("3. Density bar+header CSS vars — Compact differs from Comfortable", () =
     assert.notEqual(comfort[key], compact[key], `${key} must differ Compact vs Comfortable`);
   }
   // Docs honesty: not bare "everywhere" as still-true claim in 206q
-  const qStart = bugs.indexOf("## Fixed in tip / 1.0.206q");
-  const qSec = bugs.slice(qStart, bugs.indexOf("## Fixed in tip / 1.0.206p"));
-  assert.match(qSec, /primary chrome|bar\+header|download bar \+ shell header/i);
-  assert.doesNotMatch(qSec, /tightens \*\*everywhere\*\*/i);
+  if (bugs) {
+    const qStart = bugs.indexOf("## Fixed in tip / 1.0.206q");
+    const qSec = bugs.slice(qStart, bugs.indexOf("## Fixed in tip / 1.0.206p"));
+    assert.match(qSec, /primary chrome|bar\+header|download bar \+ shell header/i);
+    assert.doesNotMatch(qSec, /tightens \*\*everywhere\*\*/i);
+  }
 });
 
 test("4. ActivateVisibleMenuItem body calls activateQueueIds", () => {

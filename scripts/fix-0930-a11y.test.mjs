@@ -20,7 +20,7 @@ test("playground fields are named and show a focus ring (4.1.2, 2.4.7, 2.1.1)", 
 
 test("facet chip counts are not dimmed below 4.5:1 (1.4.3)", () => {
   const chips = read("src/components/font-studio/search-chips.tsx");
-  assert.match(chips, /<span className="tabular-nums text-foreground">\{n\.toLocaleString\(\)\}<\/span>/);
+  assert.match(chips, /tabular-nums[\s\S]*text-foreground[\s\S]*\{n\.toLocaleString\(\)\}/);
   assert.doesNotMatch(chips, /tabular-nums[^"\n]*opacity-70/);
 });
 

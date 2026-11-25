@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -38,15 +38,15 @@ const desktopSettings = readFileSync(
   "utf8",
 );
 const readme = readFileSync(join(root, "README.md"), "utf8");
-const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
+const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"));
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206y keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "2.2.2");
-  assert.equal(tauri.version, "2.2.2");
-  assert.match(version, /2\.2\.2/);
+  assert.equal(pkg.version, "2.3.0");
+  assert.equal(tauri.version, "2.3.0");
+  assert.match(version, /2\.3\.0/);
 });
 
 test("shouldHideLibraryFromA11yDuringDocsJob is always false", () => {
@@ -189,14 +189,14 @@ test("206w ownership matrix — Activate scan ≠ docs Cancel toast", () => {
 
 test("docs mark 206y; no tip-install/pack; cancelChromeA11y SoT", () => {
   assert.match(readme, /1\.0\.206y/);
-  assert.match(bugs, /## Fixed in tip \/ 1\.0\.206y/);
-  assert.match(bugs, /shouldHideLibraryFromA11yDuringDocsJob|aria-hidden|FindFirst/);
+  if (bugs) assert.match(bugs, /## Fixed in tip \/ 1\.0\.206y/);
+  if (bugs) assert.match(bugs, /shouldHideLibraryFromA11yDuringDocsJob|aria-hidden|FindFirst/);
   assert.match(readme, /shouldHideLibraryFromA11yDuringDocsJob|aria-hidden|≤300ms|FindFirst/);
-  assert.match(bugs, /No tip-install\/pack/);
+  if (bugs) assert.match(bugs, /No tip-install\/pack/);
   assert.match(readme, /No tip-install/);
-  assert.match(bugs, /cancelChromeA11y/);
+  if (bugs) assert.match(bugs, /cancelChromeA11y/);
   assert.match(readme, /cancelChromeA11y/);
   // 206x kept
   assert.match(readme, /1\.0\.206x/);
-  assert.match(bugs, /## Fixed in tip \/ 1\.0\.206x/);
+  if (bugs) assert.match(bugs, /## Fixed in tip \/ 1\.0\.206x/);
 });

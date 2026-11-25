@@ -127,7 +127,7 @@ export async function exportCollectionZip(collectionId: string): Promise<void> {
       entries.push({ name, data: file.data });
     }
   }
-  const list = `# ${folder.name}\n# Font Manager collection export\n${[...ids]
+  const list = `# ${folder.name}\n# Fonths collection export\n${[...ids]
     .map((id) => findFont(id, localFonts, googleFonts)?.family)
     .filter(Boolean)
     .join("\n")}\n`;
@@ -313,7 +313,7 @@ export async function exportCollectionJson(collectionId?: string): Promise<void>
     return;
   }
   const folder = collectionId ? useFontStore.getState().collections.find((c) => c.id === collectionId) : undefined;
-  const fileName = `${(folder?.name || "Font-Manager-collections").replace(/[<>:"/\\|?*]+/g, " ").trim()}.json`;
+  const fileName = `${(folder?.name || "Fonths-collections").replace(/[<>:"/\\|?*]+/g, " ").trim()}.json`;
   await writeJsonFile(fileName, `${JSON.stringify(sync, null, 2)}\n`);
 }
 
@@ -356,7 +356,7 @@ export async function importCollectionJson(): Promise<void> {
   }
   const sync = parseCollectionSync(parsed);
   if (!sync) {
-    toast.error("Not a Font Manager collection file");
+    toast.error("Not a Fonths collection file");
     return;
   }
   const result = applyCollectionSync(sync);

@@ -153,7 +153,9 @@ export async function pickFontFolder(): Promise<{ files: File[]; name: string } 
   return { files, name: rootName };
 }
 
-export async function pickWatchFolder(): Promise<
+export async function pickWatchFolder(
+  onScanStart?: (dir: string, name: string) => void,
+): Promise<
   | { path: string; name: string; files: File[]; originPaths: string[]; originSizes?: number[]; blocked?: string }
   | "web"
   | null
@@ -171,6 +173,7 @@ export async function pickWatchFolder(): Promise<
   if (blocked) {
     return { path: dir, name: baseName(dir), files: [], originPaths: [], originSizes: [], blocked };
   }
+  onScanStart?.(dir, baseName(dir));
   const listed = await listWatchFolder(dir);
   return { path: dir, name: baseName(dir), files: [], originPaths: listed.paths, originSizes: listed.sizes };
 }

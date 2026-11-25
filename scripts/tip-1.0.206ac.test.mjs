@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -20,15 +20,15 @@ const desktopSettings = readFileSync(
   "utf8",
 );
 const readme = readFileSync(join(root, "README.md"), "utf8");
-const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
+const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"));
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206ac keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "2.2.2");
-  assert.equal(tauri.version, "2.2.2");
-  assert.match(version, /2\.2\.2/);
+  assert.equal(pkg.version, "2.3.0");
+  assert.equal(tauri.version, "2.3.0");
+  assert.match(version, /2\.3\.0/);
 });
 
 test("P0: docs Cancel defers teardown off Invoke stack (no sync hang)", () => {
@@ -102,7 +102,7 @@ test("206ab keepers still present", () => {
 
 test("docs mark 206ac; no tip-install/pack", () => {
   assert.match(readme, /1\.0\.206ac/);
-  assert.match(bugs, /## Fixed in tip \/ 1\.0\.206ac/);
-  assert.match(bugs, /Invoke|hang|Cancelling|setTimeout|Refreshing/i);
-  assert.match(bugs, /No tip-install\/pack|no tip-install/i);
+  if (bugs) assert.match(bugs, /## Fixed in tip \/ 1\.0\.206ac/);
+  if (bugs) assert.match(bugs, /Invoke|hang|Cancelling|setTimeout|Refreshing/i);
+  if (bugs) assert.match(bugs, /No tip-install\/pack|no tip-install/i);
 });

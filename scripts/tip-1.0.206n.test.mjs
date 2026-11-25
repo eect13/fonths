@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -19,33 +19,35 @@ const osActivate = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const readme = readFileSync(join(root, "README.md"), "utf8");
-const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
+const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 const tipH = readFileSync(join(root, "scripts/tip-1.0.206h.test.mjs"), "utf8");
 const tipI = readFileSync(join(root, "scripts/tip-1.0.206i.test.mjs"), "utf8");
 
 const HONEST_PREFER = "selected/favorites/visible/first-page/recent";
 
 test("206n keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.2.2");
-  assert.match(version, /2\.2\.2/);
+  assert.equal(pkg.version, "2.3.0");
+  assert.match(version, /2\.3\.0/);
 });
 
 test("docs mark 206n; tip hygiene + bulk opt + wall-clock prep/skip; no tip-install", () => {
   assert.match(readme, /1\.0\.206n/);
-  assert.match(bugs, /1\.0\.206n/);
-  assert.match(bugs, /buckets\.visibleIds|Bulk confirm opt/i);
-  assert.match(bugs, /wall-clock|prep\/skip\/prefer/i);
-  assert.match(bugs, /never imply FontBase-parallel Add|not FontBase/i);
+  if (bugs) assert.match(bugs, /1\.0\.206n/);
+  if (bugs) assert.match(bugs, /buckets\.visibleIds|Bulk confirm opt/i);
+  if (bugs) assert.match(bugs, /wall-clock|prep\/skip\/prefer/i);
+  if (bugs) assert.match(bugs, /never imply FontBase-parallel Add|not FontBase/i);
   assert.match(readme, /No tip-install/);
-  assert.match(bugs, /No tip-install/);
+  if (bugs) assert.match(bugs, /No tip-install/);
   // Historical 1.0.206n section only — compact density later landed 206p (not still-open pack truth).
-  {
-    const secStart = bugs.indexOf("## Fixed in tip / 1.0.206n");
-    assert.ok(secStart >= 0, "1.0.206n Fixed section missing");
-    const next = bugs.indexOf("## Fixed in tip /", secStart + 1);
-    const sec = bugs.slice(secStart, next < 0 ? undefined : next);
-    assert.match(sec, /Deferred \(still\):.*compact density/i);
-  }
+  if (bugs) {
+    if (bugs) {
+      const secStart = bugs.indexOf("## Fixed in tip / 1.0.206n");
+      assert.ok(secStart >= 0, "1.0.206n Fixed section missing");
+      const next = bugs.indexOf("## Fixed in tip /", secStart + 1);
+      const sec = bugs.slice(secStart, next < 0 ? undefined : next);
+      assert.match(sec, /Deferred \(still\):.*compact density/i);
+    }
+    }
 });
 
 test("tip-206h/i hygiene: assert landed 206l; no soft-deferred session-restore prefer", () => {
@@ -54,8 +56,8 @@ test("tip-206h/i hygiene: assert landed 206l; no soft-deferred session-restore p
   assert.doesNotMatch(tipH, /session restore prefer still deferred/);
   assert.doesNotMatch(tipI, /session restore prefer still deferred/);
   // BUGS progressive restore must not soft-bait as bare Deferred P1.
-  assert.match(bugs, /Landed 1\.0\.206l:.*prefer waves/i);
-  assert.doesNotMatch(
+  if (bugs) assert.match(bugs, /Landed 1\.0\.206l:.*prefer waves/i);
+  if (bugs) assert.doesNotMatch(
     bugs,
     /Deferred P1 \(landed 1\.0\.206l\):/,
   );

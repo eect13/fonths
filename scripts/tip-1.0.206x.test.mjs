@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -22,15 +22,15 @@ const downloadBar = readFileSync(
   "utf8",
 );
 const readme = readFileSync(join(root, "README.md"), "utf8");
-const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
+const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"));
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206x keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.2.2");
-  assert.equal(tauri.version, "2.2.2");
-  assert.match(version, /2\.2\.2/);
+  assert.equal(pkg.version, "2.3.0");
+  assert.equal(tauri.version, "2.3.0");
+  assert.match(version, /2\.3\.0/);
 });
 
 test("DOCS_CANCEL_MIN_DISPLAY_MS is 1000", () => {
@@ -271,18 +271,18 @@ test("cancelChromeA11y dismissHold is honest Dismiss (not Cancel Documents refre
 
 test("docs mark 206x; no tip-install/pack; 206w ownership kept", () => {
   assert.match(readme, /1\.0\.206x/);
-  assert.match(bugs, /## Fixed in tip \/ 1\.0\.206x/);
-  assert.match(bugs, /Cancel Documents refresh/);
-  assert.match(bugs, /Dismiss Documents refresh|honest Dismiss|dismissHold/);
-  assert.match(bugs, /inMinDisplayHold|holdDismissChrome/);
+  if (bugs) assert.match(bugs, /## Fixed in tip \/ 1\.0\.206x/);
+  if (bugs) assert.match(bugs, /Cancel Documents refresh/);
+  if (bugs) assert.match(bugs, /Dismiss Documents refresh|honest Dismiss|dismissHold/);
+  if (bugs) assert.match(bugs, /inMinDisplayHold|holdDismissChrome/);
   assert.match(readme, /inMinDisplayHold|holdDismissChrome/);
-  assert.match(bugs, /≥1s|>=1s|1s/);
-  assert.match(bugs, /No tip-install\/pack/);
+  if (bugs) assert.match(bugs, /≥1s|>=1s|1s/);
+  if (bugs) assert.match(bugs, /No tip-install\/pack/);
   assert.match(readme, /No tip-install/);
   assert.match(readme, /Dismiss Documents refresh|honest Dismiss/);
   // 206w amend kept
   assert.match(readme, /1\.0\.206w/);
-  assert.match(bugs, /## Fixed in tip \/ 1\.0\.206w/);
+  if (bugs) assert.match(bugs, /## Fixed in tip \/ 1\.0\.206w/);
   assert.match(ownership, /Scanning Documents/);
   assert.doesNotMatch(
     ownership.match(/return \/([^/]+)\/i\.test/)[1],

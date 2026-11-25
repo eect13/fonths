@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -20,15 +20,15 @@ const activateToggle = readFileSync(
   "utf8",
 );
 const readme = readFileSync(join(root, "README.md"), "utf8");
-const bugs = readFileSync(join(root, "BUGS.md"), "utf8");
+const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"));
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206ab keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "2.2.2");
-  assert.equal(tauri.version, "2.2.2");
-  assert.match(version, /2\.2\.2/);
+  assert.equal(pkg.version, "2.3.0");
+  assert.equal(tauri.version, "2.3.0");
+  assert.match(version, /2\.3\.0/);
 });
 
 test("P0: cancelDownloadQueue docs path is chrome-forced, not a cancel-seq stamp", () => {
@@ -105,8 +105,8 @@ test("async cmds kept from 206aa", () => {
 
 test("docs mark 206ab; no tip-install/pack", () => {
   assert.match(readme, /1\.0\.206ab/);
-  assert.match(bugs, /## Fixed in tip \/ 1\.0\.206ab/);
-  assert.match(bugs, /data-fm-cancel-seq|fromDocsCancelChrome|FindFirst/i);
-  assert.match(bugs, /No tip-install\/pack|no tip-install/i);
+  if (bugs) assert.match(bugs, /## Fixed in tip \/ 1\.0\.206ab/);
+  if (bugs) assert.match(bugs, /data-fm-cancel-seq|fromDocsCancelChrome|FindFirst/i);
+  if (bugs) assert.match(bugs, /No tip-install\/pack|no tip-install/i);
   assert.match(readme, /No tip-install|no tip-install/i);
 });

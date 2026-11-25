@@ -79,134 +79,167 @@ function signature(paths: string[], sizes: number[], mtimes: number[]) {
 }
 
 export async function addWatchedFolder(): Promise<void> {
-  const picked = await pickWatchFolder();
-  if (picked === "web") {
-    toast.message("Watch folders need the desktop app", {
-      description: "Build with deploy.bat. In the browser, use Folder to import a copy instead.",
-    });
-    return;
-  }
-  if (!picked) return;
-  if (picked.blocked) {
-    toast.message("That folder cannot be watched", { description: picked.blocked });
-    return;
-  }
-  const blocked = forbiddenWatchReason(picked.path);
-  if (blocked) {
-    toast.message("That folder cannot be watched", { description: blocked });
-    return;
-  }
-  const store = useFontStore.getState();
-  const existing = store.collections.find((c) => c.watchPath && norm(c.watchPath) === norm(picked.path));
-  const initialPaths = picked.originPaths.slice();
-  const initialSizes = (picked.originSizes ?? []).slice();
-  let originPaths = initialPaths.slice();
-  let originSizes = initialSizes.slice();
-  let autoActivate = existing?.autoActivate ?? true;
-  let importFilter: SavedImportRule | undefined = existing?.importFilter;
-  let skippedByRule = 0;
-
-  if (originPaths.length) {
-    // 1. Within-folder smart duplicate detection (identical filename + size across nested subfolders).
-    const preLikes = originPathsToFileLikes(originPaths, picked.path, originSizes);
-    const deduped = dedupeWatchedBatch(preLikes);
-    if (deduped.duplicateCount > 0) {
-      originPaths = deduped.keptIndices.map((idx) => originPaths[idx]!);
-      originSizes = deduped.keptIndices.map((idx) => originSizes[idx] ?? 0);
-      skippedByRule += deduped.duplicateCount;
-    }
-
-    const likes = originPathsToFileLikes(originPaths, picked.path, originSizes);
-    const analysis = analyzeImportBatch(likes, store.localFonts);
-    if (shouldPromptImportOptions(analysis)) {
-      const selection = await requestImportOptions(analysis, {
-        mode: "watch",
-        folderLabel: picked.name,
+  let settledToast = false;
+  try {
+    const picked = await pickWatchFolder((_dir, name) => {
+      toast.loading(`Scanning ${name}…`, {
+        id: "watch-folder-op",
+        description: "Counting supported font files on disk…",
       });
-      if (!selection) return;
-      const filtered = filterImportFiles(likes, analysis, selection);
-      const keptIdx = filtered.files.map((item) => likes.indexOf(item)).filter((i) => i >= 0);
-      const keptSet = new Set(keptIdx);
-      originPaths = originPaths.filter((_, i) => keptSet.has(i));
-      originSizes = originSizes.filter((_, i) => keptSet.has(i));
-      skippedByRule += filtered.skippedCount;
-      autoActivate = selection.autoActivate;
-      importFilter = toSavedImportRule(selection);
+    });
+    if (picked === "web") {
+      toast.dismiss("watch-folder-op");
+      toast.message("Watch folders need the desktop app", {
+        description: "In the desktop app, watched folders link directly on disk. In the browser preview, use Import folder instead.",
+      });
+      return;
     }
+    if (!picked) {
+      toast.dismiss("watch-folder-op");
+      return;
+    }
+    if (picked.blocked) {
+      toast.dismiss("watch-folder-op");
+      toast.message("That folder cannot be watched", { description: picked.blocked });
+      return;
+    }
+    const blocked = forbiddenWatchReason(picked.path);
+    if (blocked) {
+      toast.dismiss("watch-folder-op");
+      toast.message("That folder cannot be watched", { description: blocked });
+      return;
+    }
+    const store = useFontStore.getState();
+    const existing = store.collections.find((c) => c.watchPath && norm(c.watchPath) === norm(picked.path));
+    const initialPaths = picked.originPaths.slice();
+    const initialSizes = (picked.originSizes ?? []).slice();
+    let originPaths = initialPaths.slice();
+    let originSizes = initialSizes.slice();
+    let autoActivate = existing?.autoActivate ?? true;
+    let importFilter: SavedImportRule | undefined = existing?.importFilter;
+    let skippedByRule = 0;
+
     if (originPaths.length) {
-      const remainingLikes = originPathsToFileLikes(originPaths, picked.path, originSizes);
-      const latest = useFontStore.getState();
-      const { collisions, collidingFileIndices } = findImportGoogleCollisions(
-        remainingLikes,
-        latest.googleFonts,
-        latest.activatedSet,
-        latest.diskFamilySet,
-        latest.localFonts,
-        latest.systemFonts,
-      );
-      if (collisions.length > 0) {
-        const choice = await requestImportCollisionChoice(collisions, remainingLikes.length);
-        if (choice === "cancel") return;
-        if (choice === "skip-colliding") {
-          originPaths = originPaths.filter((_, idx) => !collidingFileIndices.has(idx));
-          originSizes = originSizes.filter((_, idx) => !collidingFileIndices.has(idx));
-          skippedByRule += collidingFileIndices.size;
-          const excludedKeys = collisions.map((c) => c.familyKey);
-          const baseRule = importFilter ?? toSavedImportRule(defaultImportSelection(analysis));
-          importFilter = {
-            ...baseRule,
-            excludeFamilies: Array.from(new Set([...(baseRule.excludeFamilies ?? []), ...excludedKeys])),
-          };
-          if (!originPaths.length) {
-            toast.message("All colliding fonts skipped", {
-              description: "Skipped watched-folder fonts that matched existing Google, library, or system families.",
-            });
-            return;
-          }
-        } else if (choice === "prefer-local") {
-          const activeCollidingIds = collisions
-            .filter((c) => c.isGoogleActive)
-            .map((c) => c.googleFont.id);
-          if (activeCollidingIds.length > 0) {
-            useFontStore.getState().setActivatedMany(activeCollidingIds, false);
+      // 1. Within-folder smart duplicate detection (identical filename + size across nested subfolders).
+      const preLikes = originPathsToFileLikes(originPaths, picked.path, originSizes);
+      const deduped = dedupeWatchedBatch(preLikes);
+      if (deduped.duplicateCount > 0) {
+        originPaths = deduped.keptIndices.map((idx) => originPaths[idx]!);
+        originSizes = deduped.keptIndices.map((idx) => originSizes[idx] ?? 0);
+        skippedByRule += deduped.duplicateCount;
+      }
+
+      const likes = originPathsToFileLikes(originPaths, picked.path, originSizes);
+      const analysis = analyzeImportBatch(likes, store.localFonts);
+      if (shouldPromptImportOptions(analysis)) {
+        toast.dismiss("watch-folder-op");
+        const selection = await requestImportOptions(analysis, {
+          mode: "watch",
+          folderLabel: picked.name,
+        });
+        if (!selection) return;
+        const filtered = filterImportFiles(likes, analysis, selection);
+        const keptIdx = filtered.files.map((item) => likes.indexOf(item)).filter((i) => i >= 0);
+        const keptSet = new Set(keptIdx);
+        originPaths = originPaths.filter((_, i) => keptSet.has(i));
+        originSizes = originSizes.filter((_, i) => keptSet.has(i));
+        skippedByRule += filtered.skippedCount;
+        autoActivate = selection.autoActivate;
+        importFilter = toSavedImportRule(selection);
+      }
+      if (originPaths.length) {
+        const remainingLikes = originPathsToFileLikes(originPaths, picked.path, originSizes);
+        const latest = useFontStore.getState();
+        const { collisions, collidingFileIndices } = findImportGoogleCollisions(
+          remainingLikes,
+          latest.googleFonts,
+          latest.activatedSet,
+          latest.diskFamilySet,
+          latest.localFonts,
+          latest.systemFonts,
+        );
+        if (collisions.length > 0) {
+          toast.dismiss("watch-folder-op");
+          const choice = await requestImportCollisionChoice(collisions, remainingLikes.length);
+          if (choice === "cancel") return;
+          if (choice === "skip-colliding") {
+            originPaths = originPaths.filter((_, idx) => !collidingFileIndices.has(idx));
+            originSizes = originSizes.filter((_, idx) => !collidingFileIndices.has(idx));
+            skippedByRule += collidingFileIndices.size;
+            const excludedKeys = collisions.map((c) => c.familyKey);
+            const baseRule = importFilter ?? toSavedImportRule(defaultImportSelection(analysis));
+            importFilter = {
+              ...baseRule,
+              excludeFamilies: Array.from(new Set([...(baseRule.excludeFamilies ?? []), ...excludedKeys])),
+            };
+            if (!originPaths.length) {
+              settledToast = true;
+              toast.message("All colliding fonts skipped", {
+                id: "watch-folder-op",
+                description: "Skipped watched-folder fonts that matched existing Google, library, or system families.",
+              });
+              return;
+            }
+          } else if (choice === "prefer-local") {
+            const activeCollidingIds = collisions
+              .filter((c) => c.isGoogleActive)
+              .map((c) => c.googleFont.id);
+            if (activeCollidingIds.length > 0) {
+              useFontStore.getState().setActivatedMany(activeCollidingIds, false);
+            }
           }
         }
       }
     }
-  }
 
-  const id = existing?.id ?? store.addCollection(picked.name);
-  store.setCollectionWatch(id, picked.path, autoActivate);
-  if (importFilter) {
-    store.setCollectionImportFilter(id, importFilter);
+    const id = existing?.id ?? store.addCollection(picked.name);
+    store.setCollectionWatch(id, picked.path, autoActivate);
+    if (importFilter) {
+      store.setCollectionImportFilter(id, importFilter);
+    }
+    store.setScope(`collection:${id}`);
+    if (originPaths.length) {
+      toast.loading(
+        `Linking ${originPaths.length.toLocaleString()} font${originPaths.length === 1 ? "" : "s"} in ${picked.name}…`,
+        {
+          id: "watch-folder-op",
+          description: "Indexing metadata in place…",
+        },
+      );
+      const result = await store.importOriginPaths(originPaths, {
+        collectionId: id,
+        collectionName: picked.name,
+      });
+      const totalSkipped = skippedByRule + result.duplicates;
+      const skippedNote =
+        totalSkipped > 0
+          ? ` (${totalSkipped.toLocaleString()} duplicate/filtered skipped)`
+          : "";
+      settledToast = true;
+      toast.success(`Watching ${picked.name}`, {
+        id: "watch-folder-op",
+        description: `${result.added.toLocaleString()} typeface${result.added === 1 ? "" : "s"} linked in place${skippedNote}. Files stay in that folder; auto-activate is ${autoActivate ? "on" : "off"}.`,
+      });
+    } else {
+      settledToast = true;
+      toast.message(`Watching ${picked.name}`, {
+        id: "watch-folder-op",
+        description: "No matching font files yet. New fonts dropped into that folder will appear automatically.",
+      });
+    }
+    // Record every file seen during initial watch setup (including skipped duplicates/filtered files)
+    // BEFORE refreshWatchedFolders runs so unchanged skipped files never re-trigger duplicate toasts.
+    for (let i = 0; i < initialPaths.length; i += 1) {
+      handledWatchedSigs.set(norm(initialPaths[i]!), fileSig(initialSizes[i]));
+    }
+    lastSig = "";
+    void bindNativeWatch();
+    void refreshWatchedFolders();
+  } finally {
+    if (!settledToast) {
+      toast.dismiss("watch-folder-op");
+    }
   }
-  store.setScope(`collection:${id}`);
-  if (originPaths.length) {
-    const result = await store.importOriginPaths(originPaths, {
-      collectionId: id,
-      collectionName: picked.name,
-    });
-    const totalSkipped = skippedByRule + result.duplicates;
-    const skippedNote =
-      totalSkipped > 0
-        ? ` (${totalSkipped.toLocaleString()} duplicate/filtered skipped)`
-        : "";
-    toast.success(`Watching ${picked.name}`, {
-      description: `${result.added.toLocaleString()} typeface${result.added === 1 ? "" : "s"} linked in place${skippedNote}. Files stay in that folder; auto-activate is ${autoActivate ? "on" : "off"}.`,
-    });
-  } else {
-    toast.message(`Watching ${picked.name}`, {
-      description: "No matching font files yet. New fonts dropped into that folder will appear automatically.",
-    });
-  }
-  // Record every file seen during initial watch setup (including skipped duplicates/filtered files)
-  // BEFORE refreshWatchedFolders runs so unchanged skipped files never re-trigger duplicate toasts.
-  for (let i = 0; i < initialPaths.length; i += 1) {
-    handledWatchedSigs.set(norm(initialPaths[i]!), fileSig(initialSizes[i]));
-  }
-  lastSig = "";
-  void bindNativeWatch();
-  void refreshWatchedFolders();
 }
 
 export async function refreshWatchedFolders(): Promise<void> {
