@@ -28,13 +28,12 @@ fn percent_decode(input: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+        if bytes[i] == b'%' && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
                 out.push((hi << 4) | lo);
                 i += 3;
                 continue;
             }
-        }
         out.push(bytes[i]);
         i += 1;
     }
@@ -145,14 +144,13 @@ pub fn evict_dir(dir: &Path) {
 }
 
 fn read_cached_font_bytes(path: &Path) -> Result<Vec<u8>, String> {
-    if let Ok(mut cache) = mmap_cache().lock() {
-        if let Some(mapped) = cache.get(path) {
+    if let Ok(mut cache) = mmap_cache().lock()
+        && let Some(mapped) = cache.get(path) {
             return Ok(mapped.as_ref().to_vec());
         }
-    }
     let file = File::open(path).map_err(|e| format!("open failed: {e}"))?;
     let len = file.metadata().map_err(|e| e.to_string())?.len();
-    if len < 12 || len > 128 * 1024 * 1024 {
+    if !(12..=128 * 1024 * 1024).contains(&len) {
         return Err("font file size out of bounds".into());
     }
     // SAFETY: read-only mapping of an immutable font file; cache is bounded and evictable.

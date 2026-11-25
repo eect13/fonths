@@ -52,6 +52,7 @@ commands.allow = [
   "parse_font_cmap",
   "hash_bytes",
   "hash_font_path",
+  "hash_font_paths",
   "index_font_paths",
   "diff_font_bytes",
   "list_system_fonts",
@@ -67,5 +68,6 @@ commands.allow = [
   "sync_google_cdn_updates",
   "dwrite_engine_info",
   "dwrite_inspect_font",
+  "index_downloaded_metadata",
   "read_family_preview_info"
 ]

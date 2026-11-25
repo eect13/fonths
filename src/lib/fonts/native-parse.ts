@@ -104,6 +104,18 @@ export async function nativeHashPath(path: string): Promise<string | null> {
   return invoke<string>("hash_font_path", { path });
 }
 
+export async function nativeHashFontPaths(paths: string[]): Promise<Record<string, string> | null> {
+  const clean = Array.from(new Set(paths.map((p) => p.trim()).filter(Boolean)));
+  if (!clean.length) return {};
+  const pairs = await invoke<[string, string][]>("hash_font_paths", { paths: clean });
+  if (!Array.isArray(pairs)) return null;
+  const out: Record<string, string> = {};
+  for (const [path, digest] of pairs) {
+    if (path && digest) out[path] = digest;
+  }
+  return out;
+}
+
 export type NativeIndexFace = {
   path: string;
   fileName: string;
@@ -295,4 +307,26 @@ export async function purgeNonGoogleFonts(
   dryRun = false,
 ): Promise<PurgeNonGoogleResult | null> {
   return invoke<PurgeNonGoogleResult>("purge_non_google_fonts", { keep, dryRun });
+}
+
+export type IndexedFamilyMeta = {
+  family: string;
+  xHeightRatio?: number;
+  contrastRatio?: number;
+  widthClass: number;
+  isFixedPitch?: boolean;
+  glyphCount: number;
+  otFeatures: string[];
+  axes: NativeAxis[];
+  variable: boolean;
+  metrics?: NativeMetrics;
+};
+
+export async function indexDownloadedMetadata(): Promise<IndexedFamilyMeta[] | null> {
+  const rows = await invoke<IndexedFamilyMeta[]>("index_downloaded_metadata");
+  if (!Array.isArray(rows)) return null;
+  return rows.map((row) => ({
+    ...row,
+    axes: row.axes?.length ? snapAxes(row.axes) : row.axes,
+  }));
 }

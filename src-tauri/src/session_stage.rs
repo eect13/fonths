@@ -9,9 +9,31 @@ use std::path::{Path, PathBuf};
 pub const SESSION_MAPS_FILE: &str = ".session-maps.json";
 /// Marker written only on a clean session_end so next boot skips heavy recovery scans.
 pub const SESSION_CLEAN_EXIT_FILE: &str = ".session-clean-exit";
+/// Marker written when the user exits in Zero-RAM Instant mode keeping HKCU per-user fonts active.
+pub const SESSION_PERSISTENT_ACTIVE_FILE: &str = ".persistent-active";
 
 pub fn clean_exit_marker_in(root: &Path) -> PathBuf {
     root.join(SESSION_CLEAN_EXIT_FILE)
+}
+
+pub fn persistent_active_marker_in(root: &Path) -> PathBuf {
+    root.join(SESSION_PERSISTENT_ACTIVE_FILE)
+}
+
+pub fn write_persistent_active_marker_in(root: &Path) {
+    let marker = persistent_active_marker_in(root);
+    if let Some(dir) = marker.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(marker, b"1\n");
+}
+
+pub fn has_persistent_active_marker_in(root: &Path) -> bool {
+    persistent_active_marker_in(root).is_file()
+}
+
+pub fn clear_persistent_active_marker_in(root: &Path) {
+    let _ = std::fs::remove_file(persistent_active_marker_in(root));
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -26,6 +48,43 @@ pub fn write_clean_exit_marker_in(root: &Path) {
 #[allow(dead_code)]
 pub fn has_clean_exit_marker_in(root: &Path) -> bool {
     clean_exit_marker_in(root).is_file()
+}
+
+/// Pure diff calculator for `HKCU\...\Fonts` session entries.
+/// Returns `(to_upsert, to_delete)` where `to_upsert` contains `(value_name, normalized_path)`
+/// pairs that are missing or differ from `existing`, and `to_delete` contains existing
+/// `Fonths Session ` keys no longer present in `paths`.
+pub fn compute_hkcu_diff(
+    existing: &std::collections::HashMap<String, String>,
+    paths: &[PathBuf],
+) -> (Vec<(String, String)>, Vec<String>) {
+    let mut desired: std::collections::HashMap<String, String> =
+        std::collections::HashMap::with_capacity(paths.len());
+    for gdi in paths {
+        let target = normalize_registry_font_path(gdi);
+        if target.is_empty() {
+            continue;
+        }
+        desired.insert(session_hkcu_value_name(gdi), target);
+    }
+    let mut to_upsert = Vec::new();
+    for (val_name, target) in &desired {
+        let same = existing
+            .get(val_name)
+            .map(|cur| cur.eq_ignore_ascii_case(target))
+            .unwrap_or(false);
+        if !same {
+            to_upsert.push((val_name.clone(), target.clone()));
+        }
+    }
+    let mut to_delete: Vec<String> = existing
+        .keys()
+        .filter(|name| is_fm_session_hkcu_value_name(name) && !desired.contains_key(*name))
+        .cloned()
+        .collect();
+    to_upsert.sort_by(|a, b| a.0.cmp(&b.0));
+    to_delete.sort();
+    (to_upsert, to_delete)
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -417,6 +476,132 @@ pub mod hkcu_session {
         }
     }
 
+    unsafe fn enum_fm_entries_open(hkey: isize) -> std::collections::HashMap<String, String> {
+        let mut existing: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let mut idx: u32 = 0;
+        loop {
+            let mut name_buf = vec![0u16; 512];
+            let mut name_len = name_buf.len() as u32;
+            let mut val_type: u32 = 0;
+            let mut data_buf = vec![0u8; 1024];
+            let mut data_len = data_buf.len() as u32;
+            let rc = unsafe {
+                RegEnumValueW(
+                    hkey,
+                    idx,
+                    name_buf.as_mut_ptr(),
+                    &mut name_len,
+                    std::ptr::null_mut(),
+                    &mut val_type,
+                    data_buf.as_mut_ptr(),
+                    &mut data_len,
+                )
+            };
+            if rc == ERROR_NO_MORE_ITEMS {
+                break;
+            }
+            if rc == 0 && val_type == REG_SZ {
+                let name = String::from_utf16_lossy(&name_buf[..name_len as usize]);
+                if super::is_fm_session_hkcu_value_name(&name) {
+                    let u16_len = (data_len as usize) / 2;
+                    let mut wide = Vec::with_capacity(u16_len);
+                    for chunk in data_buf[..u16_len * 2].as_chunks::<2>().0 {
+                        let w = u16::from_le_bytes([chunk[0], chunk[1]]);
+                        if w == 0 {
+                            break;
+                        }
+                        wide.push(w);
+                    }
+                    existing.insert(name, String::from_utf16_lossy(&wide));
+                }
+            }
+            idx = idx.saturating_add(1);
+            if idx > 65_536 {
+                break;
+            }
+        }
+        existing
+    }
+
+    pub fn list_fm_entries(sandbox: bool) -> std::collections::HashMap<String, String> {
+        if sandbox {
+            return std::collections::HashMap::new();
+        }
+        let subkey = fonts_subkey();
+        let mut hkey: isize = 0;
+        unsafe {
+            if RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                subkey.as_ptr(),
+                0,
+                KEY_QUERY_VALUE,
+                &mut hkey,
+            ) != 0
+            {
+                return std::collections::HashMap::new();
+            }
+            let out = enum_fm_entries_open(hkey);
+            RegCloseKey(hkey);
+            out
+        }
+    }
+
+    /// Reconcile `HKCU\...\Fonts` `Fonths Session ` entries against `paths` via diff only:
+    /// deletes stale keys not present in `paths`, inserts/updates only missing or changed keys,
+    /// and never wipes unchanged entries. Returns `(upserted, deleted)`.
+    pub fn diff_reconcile_entries(paths: &[std::path::PathBuf], sandbox: bool) -> (usize, usize) {
+        if sandbox || !super::hkcu_sync_enabled() {
+            return (0, 0);
+        }
+        let subkey = fonts_subkey();
+        let mut hkey: isize = 0;
+        unsafe {
+            if RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                subkey.as_ptr(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                KEY_SET_VALUE | KEY_QUERY_VALUE,
+                std::ptr::null_mut(),
+                &mut hkey,
+                std::ptr::null_mut(),
+            ) != 0
+            {
+                return (0, 0);
+            }
+            let existing = enum_fm_entries_open(hkey);
+            let (to_upsert, to_delete) = super::compute_hkcu_diff(&existing, paths);
+            let mut deleted = 0usize;
+            for name in &to_delete {
+                let wname = wide_str(name);
+                if RegDeleteValueW(hkey, wname.as_ptr()) == 0 {
+                    deleted += 1;
+                }
+            }
+            let mut upserted = 0usize;
+            for (val_name, target) in &to_upsert {
+                let wname = wide_str(val_name);
+                let wdata = wide_str(target);
+                if RegSetValueExW(
+                    hkey,
+                    wname.as_ptr(),
+                    0,
+                    REG_SZ,
+                    wdata.as_ptr() as *const u8,
+                    (wdata.len() * 2) as u32,
+                ) == 0
+                {
+                    upserted += 1;
+                }
+            }
+            RegCloseKey(hkey);
+            (upserted, deleted)
+        }
+    }
+
+    #[allow(dead_code)]
     pub fn sync_entries_batch(paths: &[std::path::PathBuf], sandbox: bool) {
         if sandbox || paths.is_empty() || !super::hkcu_sync_enabled() {
             return;
@@ -438,50 +623,7 @@ pub mod hkcu_session {
             {
                 return;
             }
-            // Diff against existing HKCU\...\Fonts entries in one pass so already-synced
-            // session entries skip redundant RegSetValueExW registry flush writes.
-            let mut existing: std::collections::HashMap<String, String> =
-                std::collections::HashMap::new();
-            let mut idx: u32 = 0;
-            loop {
-                let mut name_buf = vec![0u16; 512];
-                let mut name_len = name_buf.len() as u32;
-                let mut val_type: u32 = 0;
-                let mut data_buf = vec![0u8; 1024];
-                let mut data_len = data_buf.len() as u32;
-                let rc = RegEnumValueW(
-                    hkey,
-                    idx,
-                    name_buf.as_mut_ptr(),
-                    &mut name_len,
-                    std::ptr::null_mut(),
-                    &mut val_type,
-                    data_buf.as_mut_ptr(),
-                    &mut data_len,
-                );
-                if rc == ERROR_NO_MORE_ITEMS {
-                    break;
-                }
-                if rc == 0 && val_type == REG_SZ {
-                    let name = String::from_utf16_lossy(&name_buf[..name_len as usize]);
-                    if super::is_fm_session_hkcu_value_name(&name) {
-                        let u16_len = (data_len as usize) / 2;
-                        let mut wide = Vec::with_capacity(u16_len);
-                        for chunk in data_buf[..u16_len * 2].chunks_exact(2) {
-                            let w = u16::from_le_bytes([chunk[0], chunk[1]]);
-                            if w == 0 {
-                                break;
-                            }
-                            wide.push(w);
-                        }
-                        existing.insert(name, String::from_utf16_lossy(&wide));
-                    }
-                }
-                idx = idx.saturating_add(1);
-                if idx > 65_536 {
-                    break;
-                }
-            }
+            let existing = enum_fm_entries_open(hkey);
             for gdi in paths {
                 let target = super::normalize_registry_font_path(gdi);
                 if target.is_empty() {
@@ -595,9 +737,16 @@ pub mod hkcu_session {
     use std::path::{Path, PathBuf};
     pub fn sync_entry(_gdi: &Path, _sandbox: bool) {}
     pub fn remove_entry(_gdi: &Path, _sandbox: bool) {}
+    #[allow(dead_code)]
     pub fn sync_entries_batch(_paths: &[PathBuf], _sandbox: bool) {}
     #[allow(dead_code)]
     pub fn remove_entries_batch(_paths: &[PathBuf], _sandbox: bool) {}
+    pub fn list_fm_entries(_sandbox: bool) -> std::collections::HashMap<String, String> {
+        std::collections::HashMap::new()
+    }
+    pub fn diff_reconcile_entries(_paths: &[PathBuf], _sandbox: bool) -> (usize, usize) {
+        (0, 0)
+    }
     pub fn clear_all(_sandbox: bool) {}
 }
 
@@ -812,6 +961,46 @@ mod tests {
         assert!(is_fm_session_hkcu_value_name(&a));
         assert!(is_fm_session_hkcu_value_name(&b));
         assert!(otc.ends_with("(OpenType)"));
+    }
+
+    #[test]
+    fn persistent_active_marker_roundtrip_and_clear() {
+        let root = temp_root("persistent-active");
+        assert!(!has_persistent_active_marker_in(&root));
+        write_persistent_active_marker_in(&root);
+        assert!(has_persistent_active_marker_in(&root));
+        clear_persistent_active_marker_in(&root);
+        assert!(!has_persistent_active_marker_in(&root));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn compute_hkcu_diff_keeps_unchanged_deletes_stale_and_upserts_missing() {
+        let keep_p = PathBuf::from(r"C:\Stage\aaaa1111_keep.ttf");
+        let update_p = PathBuf::from(r"C:\Stage\bbbb2222_upd.ttf");
+        let add_p = PathBuf::from(r"C:\Stage\cccc3333_add.ttf");
+        let stale_p = PathBuf::from(r"C:\Stage\deadbeef.ttf");
+        let stale_key = session_hkcu_value_name(&stale_p);
+        let mut existing = std::collections::HashMap::new();
+        existing.insert(
+            session_hkcu_value_name(&keep_p),
+            normalize_registry_font_path(&keep_p),
+        );
+        existing.insert(
+            session_hkcu_value_name(&update_p),
+            r"C:\Stage\old_path.ttf".to_string(),
+        );
+        existing.insert(
+            stale_key.clone(),
+            r"C:\Stage\deadbeef.ttf".to_string(),
+        );
+        existing.insert("Segoe UI (TrueType)".to_string(), "segoeui.ttf".to_string());
+
+        let (to_upsert, to_delete) = compute_hkcu_diff(&existing, &[keep_p, update_p.clone(), add_p.clone()]);
+        assert_eq!(to_upsert.len(), 2);
+        assert!(to_upsert.iter().any(|(k, _)| k == &session_hkcu_value_name(&update_p)));
+        assert!(to_upsert.iter().any(|(k, _)| k == &session_hkcu_value_name(&add_p)));
+        assert_eq!(to_delete, vec![stale_key]);
     }
 
     #[test]

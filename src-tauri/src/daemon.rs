@@ -9,7 +9,7 @@
 //! - Owns a native Win32 `Shell_NotifyIconW` system tray icon to re-launch the on-demand UI,
 //!   open `Documents\Fonths`, or quit & unload every temporary session font cleanly.
 
-use std::path::PathBuf;
+use std::path::Path;
 
 /// CLI flag starting the pure-Rust headless tray daemon (no WebView2 initialized).
 pub const DAEMON_ARG: &str = "--daemon";
@@ -72,12 +72,14 @@ mod win_daemon {
     static DAEMON_UNLOAD_ON_EXIT: AtomicBool = AtomicBool::new(false);
 
     #[repr(C)]
+    #[allow(clippy::upper_case_acronyms)]
     struct POINT {
         x: i32,
         y: i32,
     }
 
     #[repr(C)]
+    #[allow(clippy::upper_case_acronyms)]
     struct MSG {
         hwnd: isize,
         message: u32,
@@ -88,6 +90,7 @@ mod win_daemon {
     }
 
     #[repr(C)]
+    #[allow(clippy::upper_case_acronyms)]
     struct WNDCLASSEXW {
         cb_size: u32,
         style: u32,
@@ -104,6 +107,7 @@ mod win_daemon {
     }
 
     #[repr(C)]
+    #[allow(clippy::upper_case_acronyms)]
     struct NOTIFYICONDATAW {
         cb_size: u32,
         hwnd: isize,
@@ -591,7 +595,7 @@ pub fn run_headless_daemon(handoff: bool) {
 }
 
 /// Format startup launch command for Windows login (uses `--daemon` when Start Minimized is on).
-pub fn startup_launch_args(exe_path: &PathBuf, start_minimized: bool) -> String {
+pub fn startup_launch_args(exe_path: &Path, start_minimized: bool) -> String {
     let exe_str = exe_path.display().to_string();
     if start_minimized {
         format!("\"{exe_str}\" {DAEMON_ARG}")
@@ -603,6 +607,7 @@ pub fn startup_launch_args(exe_path: &PathBuf, start_minimized: bool) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn startup_launch_args_uses_daemon_flag_when_minimized() {

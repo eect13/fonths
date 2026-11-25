@@ -20,8 +20,8 @@ const readme = readFileSync(join(root, "README.md"), "utf8");
 const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 
 test("206c keeps ProductVersion 1.0.206 (amend-style like 206b)", () => {
-  assert.equal(pkg.version, "2.4.0");
-  assert.match(version, /2\.4\.0/);
+  assert.equal(pkg.version, "2.5.0");
+  assert.match(version, /2\.5\.0/);
 });
 
 test("hard allowlist is Gidugu only — emoji NOT hard-skipped", () => {

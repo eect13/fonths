@@ -180,8 +180,8 @@ fn extract_font_metadata(font: &FontRef<'_>, path_str: &str, fallback_stem: &str
         .unwrap_or_else(|| family_name.replace(' ', "-"));
 
     let mut axes = Vec::new();
-    if let Ok(fvar) = font.fvar() {
-        if let Ok(axis_records) = fvar.axes() {
+    if let Ok(fvar) = font.fvar()
+        && let Ok(axis_records) = fvar.axes() {
             for axis in axis_records {
                 axes.push(VariableAxis {
                     tag: axis.axis_tag().to_string(),
@@ -191,24 +191,21 @@ fn extract_font_metadata(font: &FontRef<'_>, path_str: &str, fallback_stem: &str
                 });
             }
         }
-    }
     let is_variable = !axes.is_empty();
 
     let mut features = BTreeSet::new();
-    if let Ok(gsub) = font.gsub() {
-        if let Ok(flist) = gsub.feature_list() {
+    if let Ok(gsub) = font.gsub()
+        && let Ok(flist) = gsub.feature_list() {
             for rec in flist.feature_records() {
                 features.insert(rec.feature_tag().to_string());
             }
         }
-    }
-    if let Ok(gpos) = font.gpos() {
-        if let Ok(flist) = gpos.feature_list() {
+    if let Ok(gpos) = font.gpos()
+        && let Ok(flist) = gpos.feature_list() {
             for rec in flist.feature_records() {
                 features.insert(rec.feature_tag().to_string());
             }
         }
-    }
 
     FontMetadata {
         path: path_str.to_string(),

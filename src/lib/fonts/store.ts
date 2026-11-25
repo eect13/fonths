@@ -35,6 +35,7 @@ import { fontMime } from "./fs-drop";
 import { coerceDesktopPrefs, DEFAULT_DESKTOP_PREFS, type DesktopPrefs } from "@/lib/desktop/prefs";
 import { isDesktopShellSync } from "@/lib/desktop/open-fonts";
 import { mergeMetrics } from "./metrics";
+import { fontMetricsFromLayout, type IndexedFamilyMeta } from "./native-parse";
 import { snapAxes } from "./axes";
 import {
   familyDuplicateHideIds,
@@ -192,6 +193,7 @@ interface FontState extends PersistedSlice {
   setGoogleFonts: (fonts: FontRecord[]) => void;
   patchFontAxes: (id: string, axes: { tag: string; name: string; min: number; max: number; def: number }[]) => void;
   patchFontMetrics: (id: string, metrics: FontMetrics) => void;
+  applyBulkMetadataIndex: (entries: IndexedFamilyMeta[]) => void;
   setCatalogLive: (value: boolean) => void;
   setScope: (scope: LibraryScope) => void;
   setFacet: (facet: LibraryFacet) => void;
@@ -690,6 +692,82 @@ export const useFontStore = create<FontState>()(
           const systemFonts = s.systemFonts.slice();
           systemFonts[si] = patch(systemFonts[si]!);
           return { systemFonts };
+        }),
+      applyBulkMetadataIndex: (entries) =>
+        set((s) => {
+          if (!entries.length) return s;
+          const byFamily = new Map<string, IndexedFamilyMeta>();
+          for (const entry of entries) {
+            const key = entry.family.trim().toLowerCase();
+            if (key) byFamily.set(key, entry);
+          }
+          if (!byFamily.size) return s;
+
+          let anyChanged = false;
+          const applyList = (list: FontRecord[]): { next: FontRecord[]; changed: boolean } => {
+            let listChanged = false;
+            const next = list.map((font) => {
+              const meta = byFamily.get(font.family.trim().toLowerCase());
+              if (!meta) return font;
+
+              const rawMetrics = meta.metrics
+                ? fontMetricsFromLayout({
+                    axes: meta.axes,
+                    otFeatures: meta.otFeatures,
+                    variable: meta.variable,
+                    glyphCount: meta.glyphCount,
+                    metrics: meta.metrics,
+                  })
+                : undefined;
+              const enrichedMetrics: FontMetrics | undefined =
+                rawMetrics ||
+                meta.xHeightRatio !== undefined ||
+                meta.contrastRatio !== undefined ||
+                meta.isFixedPitch !== undefined
+                  ? {
+                      upem: rawMetrics?.upem ?? font.metrics?.upem ?? 1000,
+                      weightClass: rawMetrics?.weightClass ?? font.metrics?.weightClass ?? 400,
+                      widthClass: rawMetrics?.widthClass ?? meta.widthClass ?? font.metrics?.widthClass ?? 5,
+                      ...rawMetrics,
+                      ...(meta.xHeightRatio !== undefined && rawMetrics?.xh === undefined
+                        ? { xh: meta.xHeightRatio }
+                        : {}),
+                      ...(meta.contrastRatio !== undefined && rawMetrics?.contrast === undefined
+                        ? { contrast: meta.contrastRatio }
+                        : {}),
+                      ...(meta.isFixedPitch !== undefined && rawMetrics?.isFixedPitch === undefined
+                        ? { isFixedPitch: meta.isFixedPitch }
+                        : {}),
+                    }
+                  : undefined;
+
+              const mergedMetrics = enrichedMetrics ? mergeMetrics(font.metrics, enrichedMetrics) : font.metrics;
+              const needOt = meta.otFeatures.length > 0 && !font.otFeatures?.length;
+              const needGlyphs = meta.glyphCount > 0 && !font.glyphCount;
+              const needAxes = meta.axes.length > 0 && (!font.axes?.length || !font.variable);
+              const needMetrics = Boolean(enrichedMetrics && mergedMetrics !== font.metrics);
+              if (!needOt && !needGlyphs && !needAxes && !needMetrics) return font;
+
+              listChanged = true;
+              anyChanged = true;
+              return {
+                ...font,
+                ...(needMetrics && mergedMetrics ? { metrics: mergedMetrics } : {}),
+                ...(needOt ? { otFeatures: meta.otFeatures } : {}),
+                ...(needGlyphs ? { glyphCount: meta.glyphCount } : {}),
+                ...(needAxes ? { axes: snapAxes(meta.axes), variable: true } : {}),
+              };
+            });
+            return { next: listChanged ? next : list, changed: listChanged };
+          };
+
+          const gRes = applyList(s.googleFonts);
+          const lRes = applyList(s.localFonts);
+          if (!anyChanged) return s;
+          return {
+            ...(gRes.changed ? { googleFonts: gRes.next } : {}),
+            ...(lRes.changed ? { localFonts: lRes.next } : {}),
+          };
         }),
       setCatalogLive: (value) => set({ catalogLive: value }),
       setScope: (scope) => {

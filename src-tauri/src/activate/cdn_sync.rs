@@ -38,11 +38,10 @@ pub fn load_cached_google_revisions() -> HashMap<String, String> {
 pub fn stamp_cdn_revision_if_known(dir: &Path, family: &str) {
     let revs = load_cached_google_revisions();
     let key = family.trim().to_ascii_lowercase();
-    if let Some(rev) = revs.get(&key) {
-        if !rev.is_empty() {
+    if let Some(rev) = revs.get(&key)
+        && !rev.is_empty() {
             write_marker_if_changed(&family_cdn_revision_marker(dir), rev);
         }
-    }
 }
 
 #[cfg(test)]
@@ -187,11 +186,10 @@ pub fn find_google_families_needing_cdn_update_in(
                 .ok()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty());
-            if let Some(live) = live_rev {
-                if local_rev.as_deref() != Some(live) {
+            if let Some(live) = live_rev
+                && local_rev.as_deref() != Some(live) {
                     return Some(CdnDirStatus::Outdated(family));
                 }
-            }
             Some(CdnDirStatus::UpToDate)
         })
         .collect();
@@ -256,7 +254,7 @@ pub fn sync_google_cdn_updates_blocking(
     let incomplete_count = incomplete.len();
     let mut to_queue: Vec<String> = Vec::with_capacity(outdated_count + incomplete_count);
     let mut seen = HashSet::new();
-    for f in outdated.into_iter().chain(incomplete.into_iter()) {
+    for f in outdated.into_iter().chain(incomplete) {
         if seen.insert(f.to_ascii_lowercase()) {
             to_queue.push(f);
         }

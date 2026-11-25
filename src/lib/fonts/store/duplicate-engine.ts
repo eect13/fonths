@@ -1,5 +1,6 @@
 import { bytesNearlySame } from "../binary-diff";
 import { idbGet } from "../idb";
+import { nativeHashFontPaths } from "../native-parse";
 import type { DuplicateGroup, FontRecord } from "../types";
 
 export function familyDuplicateHideIds(
@@ -54,11 +55,26 @@ export async function findDuplicates(
   googleFonts: FontRecord[] = [],
   systemFonts: FontRecord[] = [],
 ): Promise<DuplicateGroup[]> {
+  const missingOriginPaths = localFonts
+    .filter((f) => !f.checksum && Boolean(f.originPath))
+    .map((f) => f.originPath!);
+  let hashedLocalFonts = localFonts;
+  if (missingOriginPaths.length > 0) {
+    const rustHashes = await nativeHashFontPaths(missingOriginPaths).catch(() => null);
+    if (rustHashes) {
+      hashedLocalFonts = localFonts.map((f) =>
+        !f.checksum && f.originPath && rustHashes[f.originPath]
+          ? { ...f, checksum: rustHashes[f.originPath] }
+          : f,
+      );
+    }
+  }
+
   const groups: DuplicateGroup[] = [];
   const grouped = new Set<string>();
 
   const byHash = new Map<string, FontRecord[]>();
-  for (const font of localFonts) {
+  for (const font of hashedLocalFonts) {
     if (!font.checksum) continue;
     const list = byHash.get(font.checksum) ?? [];
     list.push(font);
@@ -70,7 +86,7 @@ export async function findDuplicates(
     fonts.forEach((f) => grouped.add(f.id));
   }
 
-  const rest = localFonts.filter((f) => !grouped.has(f.id));
+  const rest = hashedLocalFonts.filter((f) => !grouped.has(f.id));
   const bySize = new Map<number, FontRecord[]>();
   for (const font of rest) {
     const size = font.fileSize ?? 0;

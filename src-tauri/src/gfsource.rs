@@ -18,7 +18,7 @@ use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 /// Honest UA: app name + repo URL. No invented contact address.
-pub const POLITE_UA: &str = "Fonths/2.4 (+https://github.com/eect13/fonths)";
+pub const POLITE_UA: &str = "Fonths/2.5 (+https://github.com/eect13/fonths)";
 /// Metadata / manifest / API lane: polite burst-free concurrency and spacing.
 pub const MAX_CONCURRENT: usize = 3;
 pub const MIN_SPACING: Duration = Duration::from_millis(100);
@@ -134,11 +134,10 @@ pub fn parse_manifest(text: &str) -> Option<Manifest> {
         if let (Some(n), Some(u)) = (
             r.get("filename").and_then(|x| x.as_str()),
             r.get("url").and_then(|x| x.as_str()),
-        ) {
-            if u.starts_with("https://") {
+        )
+            && u.starts_with("https://") {
                 out.refs.push((n.to_string(), u.to_string()));
             }
-        }
     }
     if out.refs.is_empty() {
         None
@@ -708,11 +707,10 @@ pub fn manifest_missed_this_session(family: &str) -> bool {
 
 pub fn note_manifest_miss(family: &str) {
     let key = cache_key(family);
-    if !key.is_empty() {
-        if let Ok(mut g) = manifest_miss_set().lock() {
+    if !key.is_empty()
+        && let Ok(mut g) = manifest_miss_set().lock() {
             g.insert(key);
         }
-    }
 }
 
 /// Manifest cache file is fresh when younger than 7 days.
@@ -762,13 +760,11 @@ pub fn fetch_manifest_cached_with_rev(
     cancel: &dyn Fn() -> bool,
 ) -> Option<Manifest> {
     let cache = cache_dir.map(|d| d.join(format!("{}.json", cache_key(family))));
-    if let Some(p) = &cache {
-        if cache_fresh_for_revision(p, SystemTime::now(), live_revision) {
-            if let Some(m) = std::fs::read_to_string(p).ok().and_then(|t| parse_manifest(&t)) {
+    if let Some(p) = &cache
+        && cache_fresh_for_revision(p, SystemTime::now(), live_revision)
+            && let Some(m) = std::fs::read_to_string(p).ok().and_then(|t| parse_manifest(&t)) {
                 return Some(m);
             }
-        }
-    }
     if manifest_missed_this_session(family) || !manifest_circuit_allow() {
         return cache
             .as_ref()
@@ -932,13 +928,9 @@ pub fn fast_session_resume(config_dir: Option<&Path>) -> bool {
             return false;
         }
     }
-    if config_dir
+    !config_dir
         .map(|d| d.join(NO_FAST_RESUME_MARKER).exists())
         .unwrap_or(false)
-    {
-        return false;
-    }
-    true
 }
 
 pub fn set_fast_session_resume(config_dir: Option<&Path>, on: bool) {

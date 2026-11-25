@@ -1,4 +1,5 @@
 export type DeleteMode = "recycle" | "permanent";
+export type ActivationMode = "instant-zero-ram" | "daemon-tray" | "session-only";
 
 export type DesktopPrefs = {
   closeToTray: boolean;
@@ -8,6 +9,7 @@ export type DesktopPrefs = {
   fastSessionResume?: boolean;
   deleteMode?: DeleteMode;
   hkcuRegistrySync?: boolean;
+  activationMode?: ActivationMode;
 };
 
 export const DEFAULT_DESKTOP_PREFS: DesktopPrefs = {
@@ -18,7 +20,15 @@ export const DEFAULT_DESKTOP_PREFS: DesktopPrefs = {
   fastSessionResume: true,
   deleteMode: "recycle",
   hkcuRegistrySync: true,
+  activationMode: "instant-zero-ram",
 };
+
+function coerceActivationMode(raw: unknown): ActivationMode {
+  if (raw === "daemon-tray" || raw === "session-only" || raw === "instant-zero-ram") {
+    return raw;
+  }
+  return "instant-zero-ram";
+}
 
 export function coerceDesktopPrefs(raw: unknown): DesktopPrefs {
   const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
@@ -30,6 +40,7 @@ export function coerceDesktopPrefs(raw: unknown): DesktopPrefs {
     fastSessionResume: o.fastSessionResume === undefined ? true : Boolean(o.fastSessionResume),
     deleteMode: o.deleteMode === "permanent" ? "permanent" : "recycle",
     hkcuRegistrySync: o.hkcuRegistrySync === undefined ? true : Boolean(o.hkcuRegistrySync),
+    activationMode: coerceActivationMode(o.activationMode),
   };
 }
 
@@ -46,6 +57,7 @@ export async function applyDesktopPrefs(prefs: DesktopPrefs): Promise<void> {
       fastSessionResume: prefs.fastSessionResume !== false,
       deleteMode: prefs.deleteMode === "permanent" ? "permanent" : "recycle",
       hkcuRegistrySync: prefs.hkcuRegistrySync !== false,
+      activationMode: coerceActivationMode(prefs.activationMode),
     });
   } catch {
     /* web / old installer */

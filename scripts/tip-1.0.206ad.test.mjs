@@ -23,9 +23,9 @@ const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206ad keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "2.4.0");
-  assert.equal(tauri.version, "2.4.0");
-  assert.match(version, /2\.4\.0/);
+  assert.equal(pkg.version, "2.5.0");
+  assert.equal(tauri.version, "2.5.0");
+  assert.match(version, /2\.5\.0/);
 });
 
 test("P0: Cancel is a click, not pointerdown", () => {

@@ -1,5 +1,5 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { CircleHelp, Copy, Delete, Plus, Search } from "lucide-react";
+import { CircleHelp, Copy, Delete, Plus, Power, Search } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { FontPicker } from "./font-picker";
 import { HelpTip } from "./help-tip";
-import { cssFamilyStack } from "@/lib/fonts/loader";
+import { cssFamilyStack, loadFont } from "@/lib/fonts/loader";
 import { copyText } from "@/lib/copy-text";
 import { notifyIfUnusual, colorKindOf, shouldWarnColor } from "@/lib/fonts/color-font";
 import {
@@ -21,28 +21,45 @@ import {
   type GlyphBlock,
   type GlyphEntry,
 } from "@/lib/fonts/glyph-map";
-import { allFonts, findFont, useFontStore } from "@/lib/fonts/store";
+import { findFont, useFontStore } from "@/lib/fonts/store";
+import type { FontRecord } from "@/lib/fonts/types";
 import { cn } from "@/lib/utils";
 
-function pageForGlyphs(width: number, height: number) {
-  const cell = 48;
-  const cols = Math.max(4, Math.floor(Math.max(width, 200) / cell));
-  const rows = Math.max(4, Math.floor(Math.max(height, 220) / cell));
-  return Math.max(24, Math.min(120, cols * rows));
-}
+const GLYPH_CELL_TARGET = 44;
+const GLYPH_GAP = 1;
+const GLYPH_OVERSCAN_ROWS = 3;
 
 export function GlyphMap() {
   const localFonts = useFontStore((s) => s.localFonts);
   const googleFonts = useFontStore((s) => s.googleFonts);
+  const systemFonts = useFontStore((s) => s.systemFonts);
   const activatedSet = useFontStore((s) => s.activatedSet);
-  const activated = useMemo(
-    () =>
-      allFonts(localFonts, googleFonts)
-        .filter((font) => activatedSet.has(font.id))
-        .sort((a, b) => a.family.localeCompare(b.family)),
-    [localFonts, googleFonts, activatedSet],
-  );
-  const [fontId, setFontId] = useState(activated[0]?.id ?? "");
+  const diskFamilySet = useFontStore((s) => s.diskFamilySet);
+  const storeSelectedId = useFontStore((s) => s.selectedId);
+  const toggleActivated = useFontStore((s) => s.toggleActivated);
+
+  const inspectable = useMemo(() => {
+    const out: FontRecord[] = [
+      ...localFonts,
+      ...googleFonts.filter(
+        (f) => activatedSet.has(f.id) || diskFamilySet.has(f.family.trim().toLowerCase()),
+      ),
+      ...systemFonts,
+    ];
+    out.sort((a, b) => {
+      const ra = activatedSet.has(a.id) ? 0 : a.source === "local" ? 1 : a.source === "google" ? 2 : 3;
+      const rb = activatedSet.has(b.id) ? 0 : b.source === "local" ? 1 : b.source === "google" ? 2 : 3;
+      return ra - rb || a.family.localeCompare(b.family);
+    });
+    return out;
+  }, [localFonts, googleFonts, systemFonts, activatedSet, diskFamilySet]);
+
+  const [fontId, setFontId] = useState(() => {
+    if (storeSelectedId && (storeSelectedId.startsWith("s:") || findFont(storeSelectedId, localFonts, googleFonts))) {
+      return storeSelectedId;
+    }
+    return inspectable[0]?.id ?? "";
+  });
   const [atlas, setAtlas] = useState<GlyphAtlas | null>(() => (fontId ? peekGlyphAtlas(fontId) : null));
   const [busy, setBusy] = useState(false);
   const [blockLabel, setBlockLabel] = useState("Basic Latin");
@@ -51,20 +68,25 @@ export function GlyphMap() {
   const deferredQuery = useDeferredValue(query);
   const [copied, setCopied] = useState("");
   const [grouped, setGrouped] = useState(true);
-  const [page, setPage] = useState(48);
-  const [chunks, setChunks] = useState(1);
+  const [virt, setVirt] = useState({ scrollTop: 0, height: 420, cols: 8, rowHeight: 45 });
   const gridRef = useRef<HTMLDivElement>(null);
 
-  const font = findFont(fontId, localFonts, googleFonts);
+  const font = useMemo(
+    () =>
+      fontId.startsWith("s:")
+        ? systemFonts.find((f) => f.id === fontId)
+        : findFont(fontId, localFonts, googleFonts),
+    [fontId, systemFonts, localFonts, googleFonts],
+  );
 
   useEffect(() => {
-    if (fontId.startsWith("s:")) return;
-    if (!activated.length) {
-      setFontId("");
+    if (font) return;
+    if (!inspectable.length) {
+      if (fontId) setFontId("");
       return;
     }
-    if (!activatedSet.has(fontId)) setFontId(activated[0]!.id);
-  }, [activated, activatedSet, fontId]);
+    setFontId(inspectable[0]!.id);
+  }, [font, inspectable, fontId]);
 
   const activeFontId = font?.id;
   const fontRef = useRef(font);
@@ -74,6 +96,9 @@ export function GlyphMap() {
     const cur = fontRef.current;
     if (!cur) {
       return;
+    }
+    if (cur.source !== "system") {
+      void loadFont(cur);
     }
     const cached = peekGlyphAtlas(cur.id);
     if (cached) {
@@ -129,7 +154,10 @@ export function GlyphMap() {
   const filterKey = `${fontId}|${grouped}|${deferredQuery}|${blockLabel}`;
 
   useEffect(() => {
-    setChunks(1);
+    const box = gridRef.current;
+    const scroller = box?.closest("[data-radix-scroll-area-viewport]") as HTMLElement | null;
+    if (scroller) scroller.scrollTop = 0;
+    setVirt((v) => ({ ...v, scrollTop: 0 }));
   }, [filterKey]);
 
   useEffect(() => {
@@ -137,22 +165,37 @@ export function GlyphMap() {
     if (!box) return;
     const scroller = box.closest("[data-radix-scroll-area-viewport]") as HTMLElement | null;
     let raf = 0;
-    const measure = () => {
+    const syncLayout = () => {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
-        const w = (scroller ?? box).clientWidth || 480;
-        const h = scroller?.clientHeight || Math.max(280, window.innerHeight - 280);
-        setPage(pageForGlyphs(w, h));
+        const hostW = (scroller ?? box).clientWidth || 480;
+        const innerW = Math.max(200, hostW - 16);
+        const cols = Math.max(4, Math.floor((innerW + GLYPH_GAP) / (GLYPH_CELL_TARGET + GLYPH_GAP)));
+        const cellPx = (innerW - (cols - 1) * GLYPH_GAP) / cols;
+        const rowHeight = Math.max(40, cellPx + GLYPH_GAP);
+        const height = scroller?.clientHeight || Math.max(280, window.innerHeight - 280);
+        const scrollTop = scroller?.scrollTop ?? 0;
+        setVirt((prev) =>
+          prev.scrollTop === scrollTop &&
+          prev.height === height &&
+          prev.cols === cols &&
+          Math.abs(prev.rowHeight - rowHeight) < 0.5
+            ? prev
+            : { scrollTop, height, cols, rowHeight },
+        );
       });
     };
-    measure();
-    const ro = new ResizeObserver(measure);
+    syncLayout();
+    const ro = new ResizeObserver(syncLayout);
     ro.observe(scroller ?? box);
+    const onScroll = () => syncLayout();
+    scroller?.addEventListener("scroll", onScroll, { passive: true });
     return () => {
       cancelAnimationFrame(raf);
       ro.disconnect();
+      scroller?.removeEventListener("scroll", onScroll);
     };
-  }, [fontId, grouped]);
+  }, [fontId, grouped, inspectable.length]);
 
   function append(entry: GlyphEntry) {
     setCopied((s) => s + entry.char);
@@ -173,12 +216,12 @@ export function GlyphMap() {
     }
   }
 
-  if (!activated.length) {
+  if (!inspectable.length) {
     return (
-      <div className="fm-empty-pane flex flex-1 flex-col items-center justify-center text-center">
+      <div className="fm-empty-pane flex flex-1 flex-col items-center justify-center text-center" data-testid="glyphs-empty">
         <p className="font-heading text-3xl">Character Map</p>
         <p className="mt-2 max-w-sm text-sm text-muted-foreground">
-          Activate a typeface in the library, then open Glyphs to browse every character like Windows Character Map.
+          Add local font files, download a Google font, or load System fonts to browse every glyph without activating first.
         </p>
       </div>
     );
@@ -188,6 +231,15 @@ export function GlyphMap() {
   const glyphFace = atlas?.faceName
     ? `"${atlas.faceName.replace(/["\\]/g, "")}"`
     : stack;
+  const totalRows = Math.ceil(cells.length / virt.cols);
+  const startRow = Math.max(0, Math.floor(virt.scrollTop / virt.rowHeight) - GLYPH_OVERSCAN_ROWS);
+  const endRow = Math.min(totalRows, Math.ceil((virt.scrollTop + virt.height) / virt.rowHeight) + GLYPH_OVERSCAN_ROWS);
+  const startIdx = startRow * virt.cols;
+  const endIdx = Math.min(cells.length, endRow * virt.cols);
+  const visibleCells = cells.slice(startIdx, endIdx);
+  const padTop = startRow * virt.rowHeight;
+  const padBottom = Math.max(0, (totalRows - endRow) * virt.rowHeight);
+  const isInactiveFont = Boolean(font && font.source !== "system" && !activatedSet.has(font.id));
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -255,6 +307,19 @@ export function GlyphMap() {
             </HelpTip>
           ) : null}
         </p>
+        {isInactiveFont && font ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-9 gap-1.5"
+            data-testid="glyphs-activate-btn"
+            onClick={() => toggleActivated(font.id)}
+          >
+            <Power className="size-3.5" />
+            Activate
+          </Button>
+        ) : null}
       </div>
 
       <div className="flex min-h-0 flex-1">
@@ -282,37 +347,35 @@ export function GlyphMap() {
         ) : null}
 
         <ScrollArea className="min-w-0 flex-1">
-          <div ref={gridRef} className="grid grid-cols-[repeat(auto-fill,minmax(2.75rem,1fr))] gap-px p-2">
-            {cells.slice(0, page * chunks).map((entry) => (
-              <button
-                key={`${entry.gid}-${entry.cp}`}
-                type="button"
-                title={`${unicodeHex(entry.cp)} ${glyphLabel(entry)}`}
-                aria-label={`${unicodeHex(entry.cp)} ${glyphLabel(entry)}`}
-                onClick={() => setSelected(entry)}
-                onDoubleClick={() => append(entry)}
-                className={cn(
-                  "flex aspect-square items-center justify-center rounded-md text-xl hover:bg-accent",
-                  selected?.cp === entry.cp ? "bg-primary text-primary-foreground" : "bg-card",
-                )}
-                style={{ fontFamily: glyphFace, fontSynthesis: "none" }}
-              >
-                {glyphDisplay(entry)}
-              </button>
-            ))}
-          </div>
-          {cells.length > page * chunks ? (
-            <div className="flex flex-wrap items-center justify-center gap-2 px-3 pb-4 text-xs text-muted-foreground">
-              <span>
-                Showing {(page * chunks).toLocaleString()} of {cells.length.toLocaleString()}
-              </span>
-              <Button size="sm" variant="secondary" className="h-7 px-2.5" onClick={() => setChunks((n) => n + 1)}>
-                Show {Math.min(page, cells.length - page * chunks).toLocaleString()} more
-              </Button>
+          <div style={{ paddingTop: padTop, paddingBottom: padBottom }}>
+            <div
+              ref={gridRef}
+              data-testid="glyphs-grid"
+              className="grid gap-px p-2"
+              style={{ gridTemplateColumns: `repeat(${virt.cols}, minmax(0, 1fr))` }}
+            >
+              {visibleCells.map((entry) => (
+                <button
+                  key={`${entry.gid}-${entry.cp}`}
+                  type="button"
+                  title={`${unicodeHex(entry.cp)} ${glyphLabel(entry)}`}
+                  aria-label={`${unicodeHex(entry.cp)} ${glyphLabel(entry)}`}
+                  onClick={() => setSelected(entry)}
+                  onDoubleClick={() => append(entry)}
+                  className={cn(
+                    "flex aspect-square items-center justify-center rounded-md text-xl hover:bg-accent",
+                    selected?.cp === entry.cp ? "bg-primary text-primary-foreground" : "bg-card",
+                  )}
+                  style={{ fontFamily: glyphFace, fontSynthesis: "none" }}
+                >
+                  {glyphDisplay(entry)}
+                </button>
+              ))}
             </div>
-          ) : cells.length ? (
+          </div>
+          {cells.length ? (
             <p className="px-3 pb-4 text-center text-xs text-muted-foreground">
-              Showing {cells.length.toLocaleString()} of {cells.length.toLocaleString()}
+              {cells.length.toLocaleString()} glyphs
             </p>
           ) : null}
           {!busy && atlas && cells.length === 0 ? (

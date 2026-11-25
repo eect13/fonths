@@ -717,10 +717,17 @@ async function bufferFromDisk(family: string): Promise<ArrayBuffer | null> {
 async function bufferFromOrigin(path: string): Promise<ArrayBuffer | null> {
   try {
     const { convertFileSrc } = await import("@tauri-apps/api/core");
-    const res = await fetch(convertFileSrc(path));
-    if (!res.ok) return null;
-    const buf = await res.arrayBuffer();
-    return buf.byteLength >= 1000 ? buf : null;
+    for (const url of [convertFileSrc(path, "font"), convertFileSrc(path)]) {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) continue;
+        const buf = await res.arrayBuffer();
+        if (buf.byteLength >= 1000) return buf;
+      } catch {
+        /* try next protocol scheme */
+      }
+    }
+    return null;
   } catch {
     return null;
   }
@@ -890,12 +897,22 @@ async function buildGlyphAtlas(font: FontRecord): Promise<GlyphAtlas> {
 
   try {
     const { nativeFamilyCmap, nativeCmapFromBytes } = await import("./native-parse");
-    let rows = await nativeFamilyCmap(font.family);
+    let rows = font.source === "system" ? null : await nativeFamilyCmap(font.family);
+    if (!rows && font.originPath) {
+      const originBuf = await bufferFromOrigin(font.originPath);
+      if (originBuf) {
+        buffer = originBuf;
+        if (originBuf.byteLength <= 16_000_000) {
+          rows = await nativeCmapFromBytes(originBuf);
+        }
+      }
+    }
     if (!rows && font.source === "local") {
       const blob = await idbGet(font.id);
       if (blob) {
         const buf = await blob.arrayBuffer();
-        if (buf.byteLength <= 2_000_000) rows = await nativeCmapFromBytes(buf);
+        buffer = buf;
+        if (buf.byteLength <= 16_000_000) rows = await nativeCmapFromBytes(buf);
       }
     }
     if (rows) {

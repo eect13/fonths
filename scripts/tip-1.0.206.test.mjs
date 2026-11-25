@@ -17,10 +17,10 @@ const perm = readFileSync(join(root, "src-tauri/permissions/font-activate.toml")
 const mainRs = readFileSync(join(root, "src-tauri/src/lib.rs"), "utf8");
 
 test("version is 1.0.206", () => {
-  assert.equal(pkg.version, "2.4.0");
-  assert.match(version, /2\.4\.0/);
-  assert.match(cargo, /version = "2\.4\.0"/);
-  assert.match(tauriConf, /"version": "2\.4\.0"/);
+  assert.equal(pkg.version, "2.5.0");
+  assert.match(version, /2\.5\.0/);
+  assert.match(cargo, /version = "2\.5\.0"/);
+  assert.match(tauriConf, /"version": "2\.5\.0"/);
 });
 
 test("boot seeds GDI-incapable allowlist into settled", () => {

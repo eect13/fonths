@@ -46,7 +46,7 @@ test("git checkout stamps the real HEAD and does not claim no-git", () => {
     const { status, body } = stamp(gitEnv);
     assert.equal(status, 0);
     assert.match(body, /^sha=[0-9a-f]{40}$/m);
-    assert.match(body, /^version=2\.4\.0$/m);
+    assert.match(body, /^version=2\.5\.0$/m);
     assert.doesNotMatch(body, /source=no-git/);
     assert.doesNotMatch(body, /sha=unknown/);
   } finally {
@@ -62,7 +62,7 @@ test("GitHub zip (no .git) exits 0 and does not invent a commit", () => {
   assert.match(body, /^short=unknown$/m);
   assert.match(body, /^branch=archive$/m);
   assert.match(body, /^source=no-git$/m);
-  assert.match(body, /^version=2\.4\.0$/m);
+  assert.match(body, /^version=2\.5\.0$/m);
   assert.match(stderr, /no git checkout/i);
   assert.doesNotMatch(body, /sha=[0-9a-f]{7,}/);
 });

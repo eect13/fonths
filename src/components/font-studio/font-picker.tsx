@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useState, type UIEvent } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type UIEvent } from "react";
 import { ChevronsUpDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,13 +17,13 @@ export function FontPicker({
   onChange,
   label,
   prefetchAtlas = false,
-  pageSize = 0,
+  pageSize = 60,
 }: {
   value: string;
   onChange: (id: string) => void;
   label: string;
   prefetchAtlas?: boolean;
-  /** 0 = list every activated match (playground). Glyphs passes a page for huge libraries. */
+  /** Number of items rendered per page (defaults to 60 so huge local libraries open without lag). */
   pageSize?: number;
 }) {
   const localFonts = useFontStore((s) => s.localFonts);
@@ -34,20 +34,23 @@ export function FontPicker({
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const deferredQ = useDeferredValue(q);
-  const [shown, setShown] = useState(pageSize || Number.POSITIVE_INFINITY);
+  const [shown, setShown] = useState(pageSize > 0 ? pageSize : 60);
+  const hoverTimerRef = useRef<number | null>(null);
 
   const fonts = useMemo(
-    () => [...systemFonts, ...allFonts(localFonts, googleFonts)],
-    [systemFonts, localFonts, googleFonts],
+    () => (open ? [...systemFonts, ...allFonts(localFonts, googleFonts)] : []),
+    [open, systemFonts, localFonts, googleFonts],
   );
   const selected = findFont(value, localFonts, googleFonts);
 
   const topGoogleIds = useMemo(() => {
+    if (!open) return new Set<string>();
     const sorted = googleFonts.slice().sort((a, b) => (a.popularity || 9999) - (b.popularity || 9999));
     return new Set(sorted.slice(0, 80).map((f) => f.id));
-  }, [googleFonts]);
+  }, [open, googleFonts]);
 
   const filtered = useMemo(() => {
+    if (!open) return [];
     const query = deferredQ.trim().toLowerCase();
     const match = (f: FontRecord) => {
       if (!query && f.source === "google" && !activatedSet.has(f.id) && !topGoogleIds.has(f.id)) return false;
@@ -67,16 +70,17 @@ export function FontPicker({
       return (a.fullName || a.family).localeCompare(b.fullName || b.family);
     });
     return hits;
-  }, [fonts, deferredQ, activatedSet, topGoogleIds, customTags]);
+  }, [open, fonts, deferredQ, activatedSet, topGoogleIds, customTags]);
 
   const visible = useMemo(() => {
+    if (!open) return [];
     const cap = pageSize > 0 ? shown : filtered.length;
     const slice = filtered.slice(0, Math.min(filtered.length, cap));
     if (selected && !slice.some((f) => f.id === selected.id)) {
       return [selected, ...slice];
     }
     return slice;
-  }, [filtered, shown, pageSize, selected]);
+  }, [open, filtered, shown, pageSize, selected]);
 
   const groups = useMemo(() => {
     const windows = visible.filter((f) => f.source === "system");
@@ -93,6 +97,14 @@ export function FontPicker({
     setShown(pageSize > 0 ? pageSize : Number.POSITIVE_INFINITY);
   }, [q, open, pageSize]);
 
+  useEffect(() => {
+    return () => {
+      if (hoverTimerRef.current !== null) {
+        window.clearTimeout(hoverTimerRef.current);
+      }
+    };
+  }, []);
+
   function warm(font: FontRecord) {
     void loadFont(font);
     if (prefetchAtlas) {
@@ -100,7 +112,25 @@ export function FontPicker({
     }
   }
 
+  function scheduleWarm(font: FontRecord) {
+    if (hoverTimerRef.current !== null) {
+      window.clearTimeout(hoverTimerRef.current);
+    }
+    hoverTimerRef.current = window.setTimeout(() => {
+      hoverTimerRef.current = null;
+      warm(font);
+    }, 80);
+  }
+
+  function cancelWarm() {
+    if (hoverTimerRef.current !== null) {
+      window.clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+  }
+
   function pick(font: FontRecord) {
+    cancelWarm();
     onChange(font.id);
     setOpen(false);
     warm(font);
@@ -112,6 +142,8 @@ export function FontPicker({
     if (!t || t.scrollHeight - t.scrollTop - t.clientHeight > 64) return;
     setShown((n) => Math.min(filtered.length, (Number.isFinite(n) ? n : pageSize) + pageSize));
   }
+
+  const remaining = Math.max(0, filtered.length - shown);
 
   return (
     <Popover open={open} onOpenChange={setOpen} modal={false}>
@@ -142,18 +174,26 @@ export function FontPicker({
                 <p className="px-2 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
                   {group.label}
                 </p>
-                {group.items.map((font) => (
+                {group.items.map((font, idx) => (
                   <button
                     key={font.id}
                     type="button"
-                    onMouseEnter={() => warm(font)}
+                    onMouseEnter={() => scheduleWarm(font)}
+                    onMouseLeave={cancelWarm}
                     onClick={() => pick(font)}
                     className={cn(
                       "flex w-full items-baseline justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent",
                       font.id === value && "bg-accent",
                     )}
                   >
-                    <span className="truncate" style={{ fontFamily: cssFamilyStack(font) }}>
+                    <span
+                      className="truncate"
+                      style={
+                        idx < 30 || font.id === value
+                          ? { fontFamily: cssFamilyStack(font) }
+                          : undefined
+                      }
+                    >
                       {font.fullName || font.family}
                     </span>
                     <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">
@@ -163,6 +203,17 @@ export function FontPicker({
                 ))}
               </div>
             ))}
+            {pageSize > 0 && remaining > 0 && (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="w-full text-xs text-muted-foreground"
+                onClick={() => setShown((n) => Math.min(filtered.length, (Number.isFinite(n) ? n : pageSize) + pageSize))}
+              >
+                Show more ({remaining} remaining)
+              </Button>
+            )}
           </div>
         </ScrollArea>
       </PopoverContent>

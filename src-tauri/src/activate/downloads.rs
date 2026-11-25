@@ -35,12 +35,11 @@ pub fn forget_queued(family: &str) {
 }
 
 pub fn remember_failed(family: &str, reason: &str) {
-    if let Ok(mut p) = bulk().progress.lock() {
-        if !p.failed_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
+    if let Ok(mut p) = bulk().progress.lock()
+        && !p.failed_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
             p.failed_names.push(family.to_string());
             p.failed_details.push(format!("{family}: {reason}"));
         }
-    }
 }
 
 #[derive(Clone, Serialize)]
@@ -171,11 +170,10 @@ pub fn catalog_download_allowed() -> bool {
 }
 
 pub fn note_catalog_current(label: &str) {
-    if let Ok(mut p) = bulk().progress.lock() {
-        if p.current != label {
+    if let Ok(mut p) = bulk().progress.lock()
+        && p.current != label {
             p.current = label.to_string();
         }
-    }
 }
 
 #[cfg(test)]
@@ -232,11 +230,10 @@ pub fn emit_progress_throttled(app: &AppHandle, force: bool) {
     let force = force || idle;
     if !force {
         if let Ok(mut g) = last.lock() {
-            if let Some(t) = *g {
-                if t.elapsed() < Duration::from_millis(emit_progress_throttle_ms()) {
+            if let Some(t) = *g
+                && t.elapsed() < Duration::from_millis(emit_progress_throttle_ms()) {
                     return;
                 }
-            }
             *g = Some(Instant::now());
         }
     } else if let Ok(mut g) = last.lock() {
@@ -430,10 +427,7 @@ pub fn download_family(
                 wrote = wrote.saturating_add(1);
                 continue;
             }
-            match fetch_ttf_to_file(client, &slug, &version, *weight, *italic, "latin", &path) {
-                Ok(()) => wrote = wrote.saturating_add(1),
-                Err(_) => {}
-            }
+            if let Ok(()) = fetch_ttf_to_file(client, &slug, &version, *weight, *italic, "latin", &path) { wrote = wrote.saturating_add(1) }
         }
         // Drop any leftover ThinItalic / LightItalic / Fontsource shreds outside the plan.
         purge_unplanned_font_files(&root, &keys);
@@ -471,7 +465,8 @@ pub fn download_family(
         }
         write_fontsource_planned(&root, &fontsource_keys);
     } else if need_fontsource {
-        if let Some((all_subsets, weights, meta_styles, fs_ver)) = fontsource_meta(client, &slug) {
+        let meta = fontsource_meta(client, &slug);
+        if let Some((all_subsets, weights, meta_styles, fs_ver)) = meta {
             version = fs_ver.clone();
             let mut subsets = pick_subsets(&all_subsets);
             if subsets.is_empty() {
@@ -847,7 +842,7 @@ pub fn drain_download_queue(
             Ok(_) => {
                 forget_queued(&family);
                 if session_join_after_download(&family) {
-                    session_add(&app, &[family.clone()]);
+                    session_add(&app, std::slice::from_ref(&family));
                     notify_fonts_changed_maybe();
                     if let Ok(mut p) = state.progress.lock() {
                         if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(&family)) {
@@ -1013,11 +1008,10 @@ pub fn run_google_bulk_inner(app: AppHandle, families: Vec<String>) {
         }
         // One name-heal emit per drain wave (totals), not per family.
         emit_name_heal(&app, drain_heal);
-        if !state.cancel.load(Ordering::SeqCst) {
-            if let Ok(mut remaining) = queue.lock() {
+        if !state.cancel.load(Ordering::SeqCst)
+            && let Ok(mut remaining) = queue.lock() {
                 missing_queue.extend(remaining.drain(..));
             }
-        }
     }
 
     if state.cancel.load(Ordering::SeqCst) {
@@ -1256,12 +1250,11 @@ pub fn retry_google_downloads_blocking(app: AppHandle, families: Vec<String>) ->
             continue;
         }
         // Empty / missing folder — purge is a no-op; queue fetch.
-        if let Err(err) = purge_family_files_result(&app, family) {
-            if err.contains("locked") {
+        if let Err(err) = purge_family_files_result(&app, family)
+            && err.contains("locked") {
                 locked.push(family.clone());
                 continue;
             }
-        }
         need_fetch.push(family.clone());
     }
     if !live.is_empty() {
@@ -1356,12 +1349,15 @@ pub fn parse_metadata_pb_static_files(text: &str) -> Vec<(String, String, String
     out
 }
 
+pub type StaticFaceSpec = (String, String, String);
+pub type RepoStatics = (String, String, Vec<StaticFaceSpec>);
+
 /// c255 P1: google/fonts repo static faces for `family` → (license, folder, statics).
 /// Google CSS can itself serve the latin cut; the repo has the full face.
 pub fn google_fonts_repo_statics(
     client: &reqwest::blocking::Client,
     family: &str,
-) -> Option<(String, String, Vec<(String, String, String)>)> {
+) -> Option<RepoStatics> {
     google_fonts_repo_statics_pref(client, family, None)
 }
 
@@ -1371,7 +1367,7 @@ pub fn google_fonts_repo_statics_pref(
     client: &reqwest::blocking::Client,
     family: &str,
     pref: Option<&str>,
-) -> Option<(String, String, Vec<(String, String, String)>)> {
+) -> Option<RepoStatics> {
     let mut lics: Vec<&str> = pref.into_iter().collect();
     for l in ["ofl", "apache", "ufl"] {
         if !lics.contains(&l) {
@@ -1449,7 +1445,7 @@ pub fn replace_tiny_cjk_static_faces(
         return 0;
     }
     let mut replaced = 0usize;
-    let mut repo: Option<Option<(String, String, Vec<(String, String, String)>)>> = None;
+    let mut repo: Option<Option<RepoStatics>> = None;
     for (weight, style, path) in tiny_keys {
         if bulk().cancel.load(Ordering::SeqCst) {
             break;
@@ -1636,8 +1632,8 @@ pub fn repair_incomplete_families_blocking(
                 }
             } else if dir_is_complete(dir) {
                 // Complete Google folders: name-heal + pull missing catalog vars (no bust).
-                if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
-                    if is_official_google_family(name) || family_ensures_google_vf(name) {
+                if let Some(name) = dir.file_name().and_then(|s| s.to_str())
+                    && (is_official_google_family(name) || family_ensures_google_vf(name)) {
                         if let Some(ref c) = client {
                             let _ = replace_tiny_cjk_static_faces(&app, c, name);
                             let (ve, eh) = ensure_catalog_variable_faces(&app, c, name);
@@ -1649,7 +1645,6 @@ pub fn repair_incomplete_families_blocking(
                             heal.add(heal_google_instance_names_in_dir(dir, name));
                         }
                     }
-                }
             }
         });
     } else {
@@ -1784,16 +1779,16 @@ pub fn start_google_downloads_blocking(
         let explicit = intent_list.get(i).and_then(|s| parse_fetch_intent(s));
         let intent = match explicit {
             Some(i) => i,
-            None => match {
-                let r = resolve_fetch_intent_from_disk(&app, family);
-                if r.is_none() && !family.trim().is_empty() {
+            None => {
+                let resolved_opt = resolve_fetch_intent_from_disk(&app, family);
+                if resolved_opt.is_none() && !family.trim().is_empty() {
                     unresolved.push(family.trim().to_string());
                 }
-                r
-            } {
-                Some(i) => i,
-                None => continue, // skip ambiguous — never blind-infer Google/Fontsource
-            },
+                match resolved_opt {
+                    Some(i) => i,
+                    None => continue, // skip ambiguous — never blind-infer Google/Fontsource
+                }
+            }
         };
         remember_fetch_intent(family, intent);
         resolved.push(family.clone());
@@ -1908,13 +1903,11 @@ pub async fn cancel_google_downloads(app: AppHandle) -> Result<(), String> {
     if let Ok(mut pending) = state.pending.lock() {
         pending.clear();
     }
-    if let Ok(aq) = state.active_queue.lock() {
-        if let Some(ref q) = *aq {
-            if let Ok(mut guard) = q.lock() {
+    if let Ok(aq) = state.active_queue.lock()
+        && let Some(ref q) = *aq
+            && let Ok(mut guard) = q.lock() {
                 guard.clear();
             }
-        }
-    }
     if let Ok(mut queued) = state.queued.lock() {
         queued.clear();
     }
@@ -1948,15 +1941,13 @@ pub fn drop_google_download_families(families: Vec<String>) -> Result<u32, Strin
         pending.retain(|f| !keys.contains(&f.trim().to_lowercase()));
         dropped = dropped.saturating_add((before - pending.len()) as u32);
     }
-    if let Ok(aq) = state.active_queue.lock() {
-        if let Some(ref q) = *aq {
-            if let Ok(mut guard) = q.lock() {
+    if let Ok(aq) = state.active_queue.lock()
+        && let Some(ref q) = *aq
+            && let Ok(mut guard) = q.lock() {
                 let before = guard.len();
                 guard.retain(|f| !keys.contains(&f.trim().to_lowercase()));
                 dropped = dropped.saturating_add((before - guard.len()) as u32);
             }
-        }
-    }
     if let Ok(mut queued) = state.queued.lock() {
         for key in &keys {
             if queued.remove(key) {
@@ -1974,11 +1965,10 @@ pub fn drop_google_download_families(families: Vec<String>) -> Result<u32, Strin
             denied.insert(key.clone());
         }
     }
-    if let Ok(mut p) = state.progress.lock() {
-        if p.total > dropped {
+    if let Ok(mut p) = state.progress.lock()
+        && p.total > dropped {
             p.total = p.total.saturating_sub(dropped);
         }
-    }
     Ok(dropped)
 }
 

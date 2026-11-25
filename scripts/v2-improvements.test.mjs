@@ -421,7 +421,7 @@ test("13. Fonths 2.0.0 Skia + Fontations + Windows Activator replaces DirectWrit
   const inspectorTsx = readFileSync(join(process.cwd(), "src/components/font-studio/font-inspector.tsx"), "utf8");
   const appShellTsx = readFileSync(join(process.cwd(), "src/components/font-studio/app-shell.tsx"), "utf8");
 
-  assert.match(cargoToml, /version = "2\.4\.0"/);
+  assert.match(cargoToml, /version = "2\.5\.0"/);
   assert.doesNotMatch(cargoToml, /skia-safe/);
   assert.match(cargoToml, /read-fonts/);
   assert.match(cargoToml, /skrifa/);
@@ -734,7 +734,7 @@ test("19. Fonths 2.4.0 instant two-wave startup, ETag/304 Ask-Before-Sync Google
 
   // 1. Rust 2024 edition & modular backend/frontend files
   assert.match(cargoToml, /edition\s*=\s*"2024"/);
-  assert.match(cargoToml, /version\s*=\s*"2\.4\.0"/);
+  assert.match(cargoToml, /version\s*=\s*"2\.(4|5)\.0"/);
   for (const rel of [
     "src-tauri/src/activate/mod.rs",
     "src-tauri/src/activate/winfont.rs",
@@ -777,7 +777,7 @@ test("19. Fonths 2.4.0 instant two-wave startup, ETag/304 Ask-Before-Sync Google
   assert.match(gfsourceRs, /CDN_MIN_SPACING/);
   assert.match(gfsourceRs, /is_cdn_binary_url/);
   assert.match(gfsourceRs, /cache_fresh_for_revision/);
-  assert.match(gfsourceRs, /Fonths\/2\.4/);
+  assert.match(gfsourceRs, /Fonths\/2\.(4|5)/);
   assert.match(googleApiTs, /checkGoogleCdnUpdates/);
   assert.match(googleApiTs, /label:\s*"Sync now"/);
   assert.match(googleApiTs, /if \(syncFiles\)/);
@@ -788,4 +788,90 @@ test("19. Fonths 2.4.0 instant two-wave startup, ETag/304 Ask-Before-Sync Google
   assert.match(viteCfg, /codeSplitting/);
   assert.match(viteCfg, /react-vendor/);
   assert.match(viteCfg, /ui-vendor/);
+});
+
+test("20. Fonths 2.5.0 Rust 1.100, Zero-RAM persistent HKCU activation, WebView2/Playground performance, rayon meta-indexer, virtualized Glyphs, Rust duplicates & audit fixes", () => {
+  const cargoToml = readFileSync(join(process.cwd(), "src-tauri/Cargo.toml"), "utf8");
+  const modRs = readFileSync(join(process.cwd(), "src-tauri/src/activate/mod.rs"), "utf8");
+  const sessionStageRs = readFileSync(join(process.cwd(), "src-tauri/src/session_stage.rs"), "utf8");
+  const winfontRs = readFileSync(join(process.cwd(), "src-tauri/src/activate/winfont.rs"), "utf8");
+  const sessionRs = readFileSync(join(process.cwd(), "src-tauri/src/activate/session.rs"), "utf8");
+  const libRs = readFileSync(join(process.cwd(), "src-tauri/src/lib.rs"), "utf8");
+  const hooksNsh = readFileSync(join(process.cwd(), "src-tauri/windows/hooks.nsh"), "utf8");
+  const metaIndexRs = readFileSync(join(process.cwd(), "src-tauri/src/meta_index.rs"), "utf8");
+  const parseRs = readFileSync(join(process.cwd(), "src-tauri/src/parse.rs"), "utf8");
+  const perms = readFileSync(join(process.cwd(), "src-tauri/permissions/font-activate.toml"), "utf8");
+
+  const prefsTs = readFileSync(join(process.cwd(), "src/lib/desktop/prefs.ts"), "utf8");
+  const settingsTsx = readFileSync(join(process.cwd(), "src/components/font-studio/desktop-settings.tsx"), "utf8");
+  const loaderTs = readFileSync(join(process.cwd(), "src/lib/fonts/loader.ts"), "utf8");
+  const fontCardTsx = readFileSync(join(process.cwd(), "src/components/font-studio/font-card.tsx"), "utf8");
+  const pickerTsx = readFileSync(join(process.cwd(), "src/components/font-studio/font-picker.tsx"), "utf8");
+  const playgroundTsx = readFileSync(join(process.cwd(), "src/components/font-studio/playground.tsx"), "utf8");
+  const hydrateTs = readFileSync(join(process.cwd(), "src/lib/fonts/hydrate.ts"), "utf8");
+  const glyphMapTsx = readFileSync(join(process.cwd(), "src/components/font-studio/glyph-map.tsx"), "utf8");
+  const otFeaturesTs = readFileSync(join(process.cwd(), "src/lib/fonts/ot-features.ts"), "utf8");
+  const dupEngineTs = readFileSync(join(process.cwd(), "src/lib/fonts/store/duplicate-engine.ts"), "utf8");
+  const cssExportTsx = readFileSync(join(process.cwd(), "src/components/font-studio/css-export-dialog.tsx"), "utf8");
+  const watchTs = readFileSync(join(process.cwd(), "src/lib/fonts/watch-folder.ts"), "utf8");
+
+  // A1. Rust 1.100 + unused_dependencies + std::mem::DropGuard
+  assert.match(cargoToml, /version\s*=\s*"2\.5\.0"/);
+  assert.match(cargoToml, /rust-version\s*=\s*"1\.100"/);
+  assert.match(cargoToml, /unused_dependencies\s*=\s*"warn"/);
+  assert.match(modRs, /std::mem::DropGuard/);
+
+  // A2-A4. Zero-RAM Persistent HKCU + Diff-Only Reconcile + PREUNINSTALL-only deactivate hook
+  assert.match(sessionStageRs, /SESSION_PERSISTENT_ACTIVE_FILE:\s*&str\s*=\s*"\.persistent-active"/);
+  assert.match(sessionStageRs, /pub fn list_fm_entries/);
+  assert.match(sessionStageRs, /pub fn diff_reconcile_entries/);
+  assert.match(winfontRs, /pub fn adopt_persistent_hkcu_session/);
+  assert.match(sessionRs, /fn try_adopt_persistent_session/);
+  assert.match(sessionRs, /pub fn deactivate_all_and_exit_headless/);
+  assert.match(libRs, /--deactivate-all-and-exit/);
+  assert.match(libRs, /fn exit_preserving_active_fonts/);
+  assert.match(libRs, /activation_mode:\s*Option<String>/);
+
+  const preinstall = hooksNsh.match(/!macro NSIS_HOOK_PREINSTALL[\s\S]*?!macroend/)?.[0] ?? "";
+  const preuninstall = hooksNsh.match(/!macro NSIS_HOOK_PREUNINSTALL[\s\S]*?!macroend/)?.[0] ?? "";
+  assert.doesNotMatch(preinstall, /--deactivate-all-and-exit/);
+  assert.match(preuninstall, /--deactivate-all-and-exit/);
+
+  assert.equal(DEFAULT_DESKTOP_PREFS.activationMode, "instant-zero-ram");
+  assert.equal(coerceDesktopPrefs({}).activationMode, "instant-zero-ram");
+  assert.equal(coerceDesktopPrefs({ activationMode: "daemon-tray" }).activationMode, "daemon-tray");
+  assert.match(prefsTs, /instant-zero-ram/);
+  assert.match(settingsTsx, /id:\s*"instant-zero-ram"/);
+  assert.match(settingsTsx, /activation-mode-\$\{opt\.id\}/);
+
+  // A5 & A8. Preview pipeline + Playground fix + Fontations toggle
+  assert.match(loaderTs, /const FACE_LRU = 512/);
+  assert.match(loaderTs, /read_family_font/);
+  assert.match(fontCardTsx, /lastFitKeyRef/);
+  assert.match(fontCardTsx, /requestAnimationFrame/);
+  assert.match(pickerTsx, /pageSize\s*=\s*60/);
+  assert.match(pickerTsx, /if \(!open\) return \[\]/);
+  assert.match(pickerTsx, /80/);
+  assert.doesNotMatch(playgroundTsx, /useEffect\(\(\)\s*=>\s*\{\s*if \(left\) void loadFont/);
+  assert.match(playgroundTsx, /loadFontBounded/);
+  assert.match(playgroundTsx, /playground-fontations-toggle/);
+
+  // A6. Rust rayon background metadata pre-indexer
+  assert.match(metaIndexRs, /meta-index-v1\.json/);
+  assert.match(metaIndexRs, /pub async fn index_downloaded_metadata/);
+  assert.match(libRs, /meta_index::index_downloaded_metadata/);
+  assert.match(perms, /"index_downloaded_metadata"/);
+  assert.match(hydrateTs, /indexDownloadedMetadata/);
+
+  // A7 & A9 & A10. Glyphs virtualization + any-font inspection + ot cap 64 + Rust hash_font_paths + audit fixes
+  assert.match(glyphMapTsx, /inspectable/);
+  assert.match(glyphMapTsx, /glyphs-activate-btn/);
+  assert.match(glyphMapTsx, /GLYPH_OVERSCAN_ROWS/);
+  assert.match(otFeaturesTs, /\.slice\(0,\s*64\)/);
+  assert.match(otFeaturesTs, /hlig:/);
+  assert.match(parseRs, /pub async fn hash_font_paths/);
+  assert.match(perms, /"hash_font_paths"/);
+  assert.match(dupEngineTs, /nativeHashFontPaths/);
+  assert.match(cssExportTsx, /if \(!open\) return \{ fonts: \[\], systemSkipped: 0 \}/);
+  assert.match(watchTs, /filterOriginPathsByRule\(dedupedFresh,\s*root,\s*folder\.importFilter,\s*useFontStore\.getState\(\)\.localFonts\)/);
 });

@@ -15,6 +15,7 @@ import {
   useFontStore,
 } from "./store";
 import { loadFont, noteDiskFamilies, primeGooglePreview } from "./loader";
+import { indexDownloadedMetadata } from "./native-parse";
 import { inferLocalStyle } from "./style-tags";
 import { visibleFamilyNames } from "./visible-families";
 import { orderPreferKeys, PREFER_FIRST_PAGE } from "./prefer-order.mjs";
@@ -486,6 +487,11 @@ export function useHydrateFonts() {
       const scheduleIdle = () => {
         if (cancelled) return;
         void reclassifyStoredLocalFonts(() => cancelled);
+        void indexDownloadedMetadata().then((rows) => {
+          if (!cancelled && rows?.length) {
+            useFontStore.getState().applyBulkMetadataIndex(rows);
+          }
+        });
       };
       if (typeof requestIdleCallback === "function") {
         idleHandle = requestIdleCallback(scheduleIdle, { timeout: 2_500 });

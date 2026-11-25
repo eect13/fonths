@@ -313,11 +313,10 @@ pub fn parse_live_catalog_json(
                     italic = true;
                 }
                 let num_part = key.trim_end_matches(|c: char| !c.is_ascii_digit());
-                if let Ok(w) = num_part.parse::<u16>() {
-                    if (100..=1000).contains(&w) {
+                if let Ok(w) = num_part.parse::<u16>()
+                    && (100..=1000).contains(&w) {
                         weights.insert(w);
                     }
-                }
             }
         }
         if weights.is_empty() {

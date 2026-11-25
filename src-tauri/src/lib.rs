@@ -8,6 +8,7 @@ mod activate;
 mod delete_ops;
 mod fast_parse;
 mod google_cdn;
+mod meta_index;
 // Some sfnt/pacer helpers are only exercised by tests and live checks.
 #[cfg_attr(not(test), allow(dead_code))]
 mod gfsource;
@@ -17,17 +18,22 @@ mod namepatch;
 mod parse;
 mod session_stage;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager,
 };
 
+pub const DEACTIVATE_ALL_AND_EXIT_ARG: &str = "--deactivate-all-and-exit";
+
 static QUITTING: AtomicBool = AtomicBool::new(false);
 static HANDED_OFF_TO_DAEMON: AtomicBool = AtomicBool::new(false);
+static PRESERVED_ON_EXIT: AtomicBool = AtomicBool::new(false);
 static CLOSE_TO_TRAY: AtomicBool = AtomicBool::new(true);
 static START_MINIMIZED: AtomicBool = AtomicBool::new(false);
+/// 0 = instant-zero-ram (default), 1 = daemon-tray, 2 = session-only
+static ACTIVATION_MODE: AtomicU8 = AtomicU8::new(0);
 
 fn set_tray_tooltip(app: &tauri::AppHandle, text: &str) {
     if let Some(tray) = app.tray_by_id("main") {
@@ -97,12 +103,34 @@ fn handoff_to_daemon_and_exit(app: &tauri::AppHandle) {
     });
 }
 
+/// Zero-RAM Instant exit-on-close: persist HKCU per-user font keys + `.persistent-active`,
+/// stop any stale daemon, and exit the WebView2 UI process immediately (`0 MB` RAM, `0`
+/// background processes) while active fonts stay live system-wide.
+fn exit_preserving_active_fonts(app: &tauri::AppHandle) {
+    if PRESERVED_ON_EXIT.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    activate::persist_persistent_zero_ram_session(app);
+    daemon::signal_daemon_stop();
+    let _ = app.remove_tray_by_id("main");
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.hide();
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        handle.exit(0);
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        std::process::exit(0);
+    });
+}
+
 #[tauri::command]
 fn daemon_status() -> bool {
     daemon::is_daemon_running()
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn set_desktop_prefs(
     close_to_tray: bool,
     start_with_windows: bool,
@@ -111,10 +139,14 @@ fn set_desktop_prefs(
     fast_session_resume: Option<bool>,
     delete_mode: Option<String>,
     hkcu_registry_sync: Option<bool>,
+    activation_mode: Option<String>,
 ) {
     CLOSE_TO_TRAY.store(close_to_tray, Ordering::SeqCst);
     let minimized = start_minimized.unwrap_or(false);
     START_MINIMIZED.store(minimized, Ordering::SeqCst);
+    if let Some(mode) = activation_mode {
+        ACTIVATION_MODE.store(activate::set_activation_mode(&mode), Ordering::SeqCst);
+    }
     let _ = apply_start_with_windows(start_with_windows, minimized);
     activate::set_prefer_static_faces(prefer_static_faces.unwrap_or(false));
     activate::set_fast_session_resume(fast_session_resume.unwrap_or(true));
@@ -323,9 +355,9 @@ mod win_admin {
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
             if arg == "--relaunch-after-pid" {
-                if let Some(pid_str) = args.next() {
-                    if let Ok(pid) = pid_str.trim().parse::<u32>() {
-                        if pid != 0 && pid != std::process::id() {
+                if let Some(pid_str) = args.next()
+                    && let Ok(pid) = pid_str.trim().parse::<u32>()
+                        && pid != 0 && pid != std::process::id() {
                             unsafe {
                                 let handle = OpenProcess(SYNCHRONIZE, 0, pid);
                                 if handle != 0 {
@@ -335,8 +367,6 @@ mod win_admin {
                             }
                             std::thread::sleep(std::time::Duration::from_millis(120));
                         }
-                    }
-                }
                 break;
             }
         }
@@ -356,8 +386,8 @@ mod win_admin {
         }
         let is_admin = unsafe { IsUserAnAdmin() != 0 };
         if is_admin {
-            if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_none() {
-                if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_none()
+                && let Some(local) = std::env::var_os("LOCALAPPDATA") {
                     let admin_udf = std::path::PathBuf::from(local)
                         .join("app.fonths.desktop")
                         .join("EBWebView-Admin");
@@ -366,7 +396,6 @@ mod win_admin {
                         std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", admin_udf);
                     }
                 }
-            }
             unsafe {
                 let _ = ChangeWindowMessageFilter(WM_DROPFILES, MSGFLT_ADD);
                 let _ = ChangeWindowMessageFilter(WM_COPYDATA, MSGFLT_ADD);
@@ -405,7 +434,12 @@ pub fn run() {
         println!("Fonths {} (commit {BUILD_SHA})", env!("CARGO_PKG_VERSION"));
         return;
     }
-    // Pure-Rust headless tray daemon & clean installer quit command (exits before WebView2 initializes).
+    // Pure-Rust headless tray daemon & clean installer/uninstaller quit commands (exit before WebView2).
+    if std::env::args().any(|a| a == DEACTIVATE_ALL_AND_EXIT_ARG) {
+        let _ = daemon::quit_daemon_and_wait(4_000);
+        activate::deactivate_all_and_exit_headless();
+        return;
+    }
     if std::env::args().any(|a| a == daemon::QUIT_DAEMON_ARG) {
         let _ = daemon::quit_daemon_and_wait(6_000);
         return;
@@ -415,6 +449,7 @@ pub fn run() {
         daemon::run_headless_daemon(handoff);
         return;
     }
+    ACTIVATION_MODE.store(activate::get_activation_mode_code(), Ordering::SeqCst);
     #[cfg(windows)]
     {
         win_admin::wait_for_relaunch_parent_pid();
@@ -555,6 +590,7 @@ pub fn run() {
             activate::sync_google_cdn_updates,
             scanner::dwrite_engine_info,
             scanner::dwrite_inspect_font,
+            meta_index::index_downloaded_metadata,
             parse::parse_family_cmap,
             parse::parse_family_layout,
             parse::parse_font_layout,
@@ -563,6 +599,7 @@ pub fn run() {
             parse::read_family_preview_info,
             parse::hash_bytes,
             parse::hash_font_path,
+            parse::hash_font_paths,
             parse::index_font_paths,
             parse::diff_font_bytes,
             parse::list_system_fonts,
@@ -579,7 +616,11 @@ pub fn run() {
                         let _ = window.hide();
                         set_tray_tooltip(window.app_handle(), "Fonths — running in background");
                     } else {
-                        handoff_to_daemon_and_exit(window.app_handle());
+                        match ACTIVATION_MODE.load(Ordering::SeqCst) {
+                            1 => handoff_to_daemon_and_exit(window.app_handle()),
+                            2 => quit_gracefully(window.app_handle()),
+                            _ => exit_preserving_active_fonts(window.app_handle()),
+                        }
                     }
                     return;
                 }
@@ -590,7 +631,9 @@ pub fn run() {
         .expect("error while building Fonths")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
-                if HANDED_OFF_TO_DAEMON.load(Ordering::SeqCst) {
+                if HANDED_OFF_TO_DAEMON.load(Ordering::SeqCst)
+                    || PRESERVED_ON_EXIT.load(Ordering::SeqCst)
+                {
                     return;
                 }
                 activator::cleanup_on_exit(app);

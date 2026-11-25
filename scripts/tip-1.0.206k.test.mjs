@@ -57,8 +57,8 @@ function settleCancelRemoveWithKeepFailed(activated, pendingDeactivate, batchIds
 }
 
 test("206k keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.4.0");
-  assert.match(version, /2\.4\.0/);
+  assert.equal(pkg.version, "2.5.0");
+  assert.match(version, /2\.5\.0/);
 });
 
 test("P0 beginOwnedJob(remove) clears lastFailedNames", () => {

@@ -485,7 +485,49 @@ try {
   await p2.keyboard.press("Escape");
   await p2.waitForTimeout(200);
 
-  // Verify v2.4.0 read-only check_google_cdn_updates never auto-queues downloads
+  // Verify v2.5.0 Rust rayon background metadata pre-indexer & parallel file hasher
+  const metaIndexRows = await p2.evaluate(() =>
+    window.__TAURI_INTERNALS__.invoke("index_downloaded_metadata"),
+  );
+  assert.ok(Array.isArray(metaIndexRows), "index_downloaded_metadata must return an array");
+  const figMeta = metaIndexRows.find((r) => r.family === "Figtree");
+  assert.ok(figMeta && figMeta.glyphCount > 0 && Array.isArray(figMeta.axes), "Expected Figtree metadata in index_downloaded_metadata");
+
+  const hashPairs = await p2.evaluate(
+    (paths) => window.__TAURI_INTERNALS__.invoke("hash_font_paths", { paths }),
+    [figtreeFixture, interFixture],
+  );
+  assert.equal(Array.isArray(hashPairs) && hashPairs.length, 2, "hash_font_paths should hash both fixtures");
+  for (const [, hex] of hashPairs) {
+    assert.match(hex, /^[0-9a-f]{64}$/i, "Expected 64-char SHA-256 hex");
+  }
+
+  // Verify v2.5.0 Playground Fontations canvas toggle & local font switch without hang
+  await p2.getByRole("link", { name: "Playground" }).click();
+  await p2.waitForSelector('[data-testid="playground-top-controls"]', { timeout: 10_000 });
+  const headingPickerBtn = p2.locator('[data-testid="playground-top-controls"] button[aria-haspopup="dialog"]').first();
+  await headingPickerBtn.click();
+  await p2.waitForSelector('input[placeholder="Search typefaces…"]', { timeout: 5_000 });
+  await p2.fill('input[placeholder="Search typefaces…"]', "Figtree");
+  await p2.locator('[role="dialog"] button:has-text("Figtree")').first().click();
+  await p2.waitForTimeout(300);
+  const pickedHeading = await headingPickerBtn.innerText();
+  assert.ok(pickedHeading.includes("Figtree"), `Expected Figtree picked in Playground, got: ${pickedHeading}`);
+
+  await p2.waitForSelector('[data-testid="playground-fontations-toggle"]', { timeout: 10_000 });
+  await p2.click('[data-testid="playground-fontations-toggle"]');
+  const fontationsPressed = await p2.locator('[data-testid="playground-fontations-toggle"]').getAttribute("aria-pressed");
+  assert.equal(fontationsPressed, "true");
+  await p2.waitForSelector('[data-testid="playground-viewport-primary"] canvas', { timeout: 10_000 });
+  await p2.click('[data-testid="playground-fontations-toggle"]');
+
+  // Verify v2.5.0 Glyphs tab inspects library/local/system fonts without requiring prior activation
+  await p2.getByRole("link", { name: "Glyphs" }).click();
+  await p2.waitForSelector('[data-testid="glyphs-grid"]', { timeout: 10_000 });
+  const glyphButtons = await p2.locator('[data-testid="glyphs-grid"] button').count();
+  assert.ok(glyphButtons > 10 && glyphButtons < 300, `Expected virtualized glyph slice (>10 & <300), got ${glyphButtons}`);
+
+  // Verify v2.4.0+ read-only check_google_cdn_updates never auto-queues downloads
   const cdnCheck = await p2.evaluate(() =>
     window.__TAURI_INTERNALS__.invoke("check_google_cdn_updates"),
   );

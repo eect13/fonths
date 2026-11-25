@@ -14,16 +14,23 @@ export const DEFAULT_ON = new Set([
 ]);
 
 /** Layout glue — not useful as user toggles. */
-const HIDDEN = new Set(["ccmp", "mark", "mkmk", "rlig", "locl", "size", "aalt", "abvm", "abvs", "akhn", "blwf", "blws", "pref", "pres", "psts"]);
+export const HIDDEN = new Set(["ccmp", "mark", "mkmk", "rlig", "locl", "size", "aalt", "abvm", "abvs", "akhn", "blwf", "blws", "pref", "pres", "psts"]);
 
 export const FEATURE_LABEL: Record<string, string> = {
   liga: "Ligatures",
   clig: "Contextual ligatures",
   dlig: "Discretionary ligatures",
+  hlig: "Historical ligatures",
   calt: "Contextual alts",
+  cswh: "Contextual swashes",
   kern: "Kerning",
   smcp: "Small caps",
   c2sc: "Caps → small caps",
+  pcap: "Petite capitals",
+  unic: "Unicase",
+  titl: "Titling alternates",
+  cpsp: "Capital spacing",
+  locl: "Localized forms",
   swsh: "Swashes",
   salt: "Stylistic alts",
   tnum: "Tabular nums",
@@ -31,6 +38,7 @@ export const FEATURE_LABEL: Record<string, string> = {
   lnum: "Lining nums",
   pnum: "Proportional nums",
   frac: "Fractions",
+  afrc: "Alternative fractions",
   zero: "Slashed zero",
   case: "Case sensitive",
   hist: "Historical forms",
@@ -74,7 +82,7 @@ export function togglesFor(tags: string[] | undefined): string[] {
   if (!user.length) return [...COMMON_TOGGLES];
   const preferred = COMMON_TOGGLES.filter((tag) => user.includes(tag));
   const rest = user.filter((tag) => !preferred.includes(tag as (typeof COMMON_TOGGLES)[number]));
-  return [...preferred, ...rest].slice(0, 20);
+  return [...preferred, ...rest].slice(0, 64);
 }
 
 export function featureSettingsCss(values: Record<string, boolean>, tags: string[]): string {

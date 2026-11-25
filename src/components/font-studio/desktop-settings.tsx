@@ -10,7 +10,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
-import { applyDesktopPrefs, type DeleteMode } from "@/lib/desktop/prefs";
+import { applyDesktopPrefs, type ActivationMode, type DeleteMode } from "@/lib/desktop/prefs";
 import { syncGoogleCdnFiles } from "@/lib/fonts/google-api";
 import {
   cleanupTempStageFiles,
@@ -98,6 +98,26 @@ export function DesktopSettings() {
     { id: "recycle", label: "Recycle Bin", hint: "Move deleted library fonts to Windows Recycle Bin" },
     { id: "permanent", label: "Permanent Delete", hint: "Permanently remove deleted library fonts immediately" },
   ];
+
+  const activationModeOpts: { id: ActivationMode; label: string; hint: string }[] = [
+    {
+      id: "instant-zero-ram",
+      label: "Zero-RAM Instant",
+      hint: "Keep active fonts registered via native Windows HKCU per-user Fonts + hardlinks, exit Fonths with 0 MB RAM and 0 background processes, and adopt in <20 ms on reopen.",
+    },
+    {
+      id: "daemon-tray",
+      label: "Headless Tray Daemon",
+      hint: "Hand active fonts off to the ~6 MB pure-Rust system tray daemon when closing the window.",
+    },
+    {
+      id: "session-only",
+      label: "Temporary Session Only",
+      hint: "Unload all active fonts and remove temporary HKCU entries whenever the window closes.",
+    },
+  ];
+  const activationMode: ActivationMode = prefs.activationMode ?? "instant-zero-ram";
+  const activeModeHint = activationModeOpts.find((o) => o.id === activationMode)?.hint ?? "";
 
   const handleCleanTempCache = async () => {
     setCleaningTemp(true);
@@ -233,11 +253,34 @@ export function DesktopSettings() {
 
         {/* Group 2: Background & Startup (separate from GDI restore) */}
         <div className="space-y-2" data-testid="background-mode-card">
+          <div className="fm-settings-group rounded-md bg-secondary/70 p-2.5 text-sm space-y-2">
+            <div>
+              <p className="font-medium">Activation Mode</p>
+              <p className="text-xs text-muted-foreground">{activeModeHint}</p>
+            </div>
+            <div className="fm-settings-opts flex flex-wrap" role="group" aria-label="Activation mode" data-testid="activation-mode-group">
+              {activationModeOpts.map((opt) => (
+                <Button
+                  key={opt.id}
+                  type="button"
+                  size="sm"
+                  variant={activationMode === opt.id ? "default" : "outline"}
+                  aria-label={opt.label}
+                  aria-pressed={activationMode === opt.id}
+                  title={opt.hint}
+                  data-testid={`activation-mode-${opt.id}`}
+                  onClick={() => setDesktopPrefs({ activationMode: opt.id })}
+                >
+                  {opt.label}
+                </Button>
+              ))}
+            </div>
+          </div>
           <label className="fm-settings-row flex items-center justify-between gap-3 rounded-md bg-secondary text-sm">
             <div>
-              <p className="font-medium">Run in background (Headless daemon)</p>
+              <p className="font-medium">Keep fonts active when closing window</p>
               <p className="text-xs text-muted-foreground">
-                Closing the window hands active fonts off to the lightweight pure-Rust tray daemon (~6 MB RAM) and exits WebView2 — keeping fonts live in Word, Adobe, and Figma with zero idle browser memory.
+                Follows your Activation Mode above on close (Zero-RAM Instant or Tray Daemon). Turn OFF to always unload active fonts when closing Fonths.
               </p>
             </div>
             <Switch

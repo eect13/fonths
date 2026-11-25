@@ -319,7 +319,7 @@ export async function refreshWatchedFolders(): Promise<void> {
       }
       const filteredFresh =
         dedupedFresh.length && folder.importFilter
-          ? filterOriginPathsByRule(dedupedFresh, root, folder.importFilter, localFonts)
+          ? filterOriginPathsByRule(dedupedFresh, root, folder.importFilter, useFontStore.getState().localFonts)
           : dedupedFresh;
       if (
         filteredFresh.length &&

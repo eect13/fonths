@@ -757,7 +757,7 @@ fn wrap_and_shape_lines(
 /// Convert `tiny-skia` premultiplied RGBA8888 pixels to unpremultiplied RGBA8888 for HTML5 Canvas `ImageData`.
 fn unpremultiply_rgba(premul: &[u8]) -> Vec<u8> {
     let mut out = vec![0u8; premul.len()];
-    for (src, dst) in premul.chunks_exact(4).zip(out.chunks_exact_mut(4)) {
+    for (src, dst) in premul.as_chunks::<4>().0.iter().zip(out.as_chunks_mut::<4>().0.iter_mut()) {
         let a = src[3];
         if a == 0 {
             dst.copy_from_slice(&[0, 0, 0, 0]);
@@ -850,13 +850,12 @@ impl Worker {
 
         // Variable font coordinates: combine explicit variations with requested weight/italic axes.
         let mut variations = p.variations.clone();
-        if let Some(style) = pick.style {
-            if style.variable {
-                if let Some(w) = p.weight {
-                    if !variations.contains_key("wght") && style.wght_max > style.wght_min {
+        if let Some(style) = pick.style
+            && style.variable {
+                if let Some(w) = p.weight
+                    && !variations.contains_key("wght") && style.wght_max > style.wght_min {
                         variations.insert("wght".into(), w.clamp(style.wght_min, style.wght_max));
                     }
-                }
                 if p.italic {
                     if style.has_ital_axis && !variations.contains_key("ital") {
                         variations.insert("ital".into(), 1.0);
@@ -870,7 +869,6 @@ impl Worker {
                     }
                 }
             }
-        }
 
         let active = if variations.is_empty() {
             base
@@ -1107,6 +1105,7 @@ fn run_render_loop(rx: mpsc::Receiver<RenderRequest>) {
 
 /// Fixed-size Fontations render returning raw RGBA8888 pixel bytes (`width * height * 4`, no header).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn render_font_preview(
     state: State<'_, FontationsRendererState>,
     font_path: String,
@@ -1139,6 +1138,7 @@ pub async fn render_font_preview(
 /// auto-sizes height to the laid-out paragraph (capped at `max_height`), and coalesces
 /// rapid updates per `slot`. Returns `[u32 LE width][u32 LE height]` + RGBA8888 pixels.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn render_font_specimen(
     state: State<'_, FontationsRendererState>,
     slot: String,
@@ -1194,7 +1194,7 @@ mod tests {
     }
 
     fn alpha_count(px: &[u8]) -> usize {
-        px.chunks_exact(4).filter(|c| c[3] > 0).count()
+        px.as_chunks::<4>().0.iter().filter(|c| c[3] > 0).count()
     }
 
     #[test]

@@ -34,21 +34,43 @@ export function CssExportDialog({
   const selectedId = useFontStore((s) => s.selectedId);
   const [copied, setCopied] = useState<string | null>(null);
 
-  const fonts = useMemo(() => {
+  const { fonts, systemSkipped } = useMemo(() => {
+    if (!open) return { fonts: [], systemSkipped: 0 };
     const ids = selectedId ? [selectedId, ...activated.filter((id) => id !== selectedId)] : activated;
-    return ids
-      .map((id) => findFont(id, localFonts, googleFonts))
-      .filter((f): f is NonNullable<typeof f> => Boolean(f));
-  }, [activated, localFonts, googleFonts, selectedId]);
+    let skipped = 0;
+    const list: NonNullable<ReturnType<typeof findFont>>[] = [];
+    for (const id of ids) {
+      if (id.startsWith("s:")) {
+        skipped += 1;
+        continue;
+      }
+      const found = findFont(id, localFonts, googleFonts);
+      if (found && found.source !== "system") list.push(found);
+      else if (found) skipped += 1;
+    }
+    return { fonts: list, systemSkipped: skipped };
+  }, [open, activated, localFonts, googleFonts, selectedId]);
 
-  const snippets = {
-    bundle: exportBundle(fonts),
-    import: exportGoogleImport(fonts) || "/* No Google Fonts families in the current set */",
-    link: exportLinkTag(fonts) || "<!-- No Google Fonts families in the current set -->",
-    families: exportFontFamilies(fonts),
-    faces: exportLocalFaces(fonts) || "/* No uploaded files — catalog CSS does not need local @font-face */",
-    tailwind: exportTailwind(fonts),
-  };
+  const snippets = useMemo(() => {
+    if (!open || !fonts.length) {
+      return {
+        bundle: "",
+        import: "",
+        link: "",
+        families: "",
+        faces: "",
+        tailwind: "",
+      };
+    }
+    return {
+      bundle: exportBundle(fonts),
+      import: exportGoogleImport(fonts) || "/* No Google Fonts families in the current set */",
+      link: exportLinkTag(fonts) || "<!-- No Google Fonts families in the current set -->",
+      families: exportFontFamilies(fonts),
+      faces: exportLocalFaces(fonts) || "/* No uploaded files — catalog CSS does not need local @font-face */",
+      tailwind: exportTailwind(fonts),
+    };
+  }, [open, fonts]);
 
   async function copy(key: string, value: string) {
     try {
@@ -68,8 +90,12 @@ export function CssExportDialog({
           <DialogTitle>CSS export</DialogTitle>
           <DialogDescription>
             {fonts.length
-              ? `Activated typefaces${selectedId ? ", with the open specimen first" : ""}.`
-              : "Activate a typeface to export CSS."}
+              ? `Activated typefaces${selectedId && !selectedId.startsWith("s:") ? ", with the open specimen first" : ""}.${
+                  systemSkipped > 0 ? ` (${systemSkipped} system font${systemSkipped === 1 ? "" : "s"} excluded.)` : ""
+                }`
+              : systemSkipped > 0
+                ? "System fonts are OS-installed and cannot be exported as @font-face or Google CSS."
+                : "Activate a typeface to export CSS."}
           </DialogDescription>
         </DialogHeader>
         {fonts.length === 0 ? (

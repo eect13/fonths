@@ -89,11 +89,10 @@ pub fn request_docs_vf_cancel_native(app: AppHandle) {
         return;
     }
     bulk().docs_cancel.store(true, Ordering::SeqCst);
-    if let Ok(mut p) = bulk().progress.lock() {
-        if p.running {
+    if let Ok(mut p) = bulk().progress.lock()
+        && p.running {
             p.current = "Cancelling Documents refresh…".into();
         }
-    }
     let _ = app.emit("docs-vf-cancel-requested", ());
     emit_progress_force(&app);
 }
@@ -274,11 +273,10 @@ pub fn sync_documents_vf_policy_work(app: AppHandle) -> Result<SyncDocsResult, S
     let state = bulk();
     // Consolidate any legacy Activated/ and Library/ split folders into the single
     // unified Documents\Font Manager library root when not active/cancelled.
-    if let Ok(root) = documents_root(&app) {
-        if !state.docs_cancel.load(Ordering::SeqCst) {
+    if let Ok(root) = documents_root(&app)
+        && !state.docs_cancel.load(Ordering::SeqCst) {
             let _ = consolidate_legacy_roots_in(&root, Some(&state.docs_cancel));
         }
-    }
     sweep_gdi_maps_part_files();
 
     let mut dirs: Vec<PathBuf> = Vec::new();
@@ -445,7 +443,7 @@ pub fn merge_disk_family_rows(rows: Vec<DiskFamily>) -> Vec<DiskFamily> {
         }
     }
     let mut out: Vec<DiskFamily> = by_key.into_values().collect();
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|a| a.name.to_lowercase());
     out
 }
 
@@ -621,24 +619,25 @@ pub fn scan_disk_families_blocking(app: AppHandle) -> Result<Vec<DiskFamily>, St
     if dirs.is_empty() {
         return Ok(Vec::new());
     }
+    type DirScanStamp = (u64, u64, usize, u64);
+    type ScanMissResult = (String, Option<DirScanStamp>, Option<DiskFamily>);
     let cache_path = scan_index_file_path();
     let mut cached_map = load_scan_index_map(cache_path.as_deref());
     let mut hits: Vec<DiskFamily> = Vec::new();
-    let mut misses: Vec<(PathBuf, Option<(u64, u64, usize, u64)>)> = Vec::new();
+    let mut misses: Vec<(PathBuf, Option<DirScanStamp>)> = Vec::new();
     let mut live_keys: HashSet<String> = HashSet::with_capacity(dirs.len());
     let mut cache_dirty = false;
     for dir in &dirs {
         let key = dir.to_string_lossy().into_owned();
         live_keys.insert(key.clone());
         let stamp = dir_scan_stamp(dir);
-        if let (Some(st), Some(entry)) = (stamp, cached_map.get(&key)) {
-            if entry.stamp == st {
+        if let (Some(st), Some(entry)) = (stamp, cached_map.get(&key))
+            && entry.stamp == st {
                 if let Some(ref row) = entry.row {
                     hits.push(row.clone());
                 }
                 continue;
             }
-        }
         misses.push((dir.clone(), stamp));
     }
     if cached_map.len() > live_keys.len() {
@@ -647,11 +646,11 @@ pub fn scan_disk_families_blocking(app: AppHandle) -> Result<Vec<DiskFamily>, St
     }
     if !misses.is_empty() {
         cache_dirty = true;
-        let scan_miss = |dir: &Path, stamp: Option<(u64, u64, usize, u64)>| {
+        let scan_miss = |dir: &Path, stamp: Option<DirScanStamp>| {
             let row = scan_single_disk_family(dir);
             (dir.to_string_lossy().into_owned(), stamp, row)
         };
-        let computed: Vec<(String, Option<(u64, u64, usize, u64)>, Option<DiskFamily>)> =
+        let computed: Vec<ScanMissResult> =
             if misses.len() <= 8 {
                 misses
                     .into_iter()
@@ -725,7 +724,7 @@ pub fn recycle_or_leave(dir: &Path) -> Result<bool, String> {
             crate::font_protocol::evict_path(path);
             intact_forget(path);
         }
-        crate::font_protocol::evict_dir(&dir);
+        crate::font_protocol::evict_dir(dir);
         gdi_flush_local();
         recycle_bin_windows(dir)?;
         eprintln!("[fm] prune: moved {} to the Recycle Bin", dir.display());
@@ -836,7 +835,7 @@ pub fn purge_non_google_fonts_in(
             crate::font_protocol::evict_path(path);
             intact_forget(path);
         }
-        crate::font_protocol::evict_dir(&dir);
+        crate::font_protocol::evict_dir(dir);
         gdi_flush_local();
         let res = if permanent {
             fs::remove_dir_all(dir).map_err(|e| e.to_string())
@@ -1038,11 +1037,11 @@ pub fn list_leftover_stage_files_blocking(app: AppHandle) -> Result<Vec<Leftover
             return Ok(Vec::new());
         }
         let (active_stages, mapped_sources) = collect_active_stages_and_sources(&app);
-        return Ok(find_leftover_stage_files_in(
+        Ok(find_leftover_stage_files_in(
             &maps_root,
             &active_stages,
             &mapped_sources,
-        ));
+        ))
     }
     #[cfg(not(windows))]
     {
@@ -1110,7 +1109,7 @@ pub fn recycle_leftover_stage_files_blocking(
             });
         };
         let (active_stages, _) = collect_active_stages_and_sources(&app);
-        return Ok(recycle_stage_files_in(&maps_root, &active_stages, paths));
+        Ok(recycle_stage_files_in(&maps_root, &active_stages, paths))
     }
     #[cfg(not(windows))]
     {

@@ -166,11 +166,10 @@ pub mod winfont {
     }
 
     fn gdi_path_for(src: &Path) -> PathBuf {
-        if let Ok(m) = maps().lock() {
-            if let Some(p) = m.get(src) {
+        if let Ok(m) = maps().lock()
+            && let Some(p) = m.get(src) {
                 return p.clone();
             }
-        }
         super::gdi_map_dest_for(src)
             .filter(|p| p.is_file())
             .unwrap_or_else(|| src.to_path_buf())
@@ -217,9 +216,15 @@ pub mod winfont {
 
     pub fn sync_hkcu_all_active_stages() {
         let stages = snapshot_stage_paths();
-        if !stages.is_empty() {
-            crate::session_stage::hkcu_session::sync_entries_batch(&stages, super::sandbox_active());
-        }
+        let _ = diff_reconcile_hkcu_entries(&stages);
+    }
+
+    pub fn list_fm_hkcu_entries() -> HashMap<String, String> {
+        crate::session_stage::hkcu_session::list_fm_entries(super::sandbox_active())
+    }
+
+    pub fn diff_reconcile_hkcu_entries(paths: &[PathBuf]) -> (usize, usize) {
+        crate::session_stage::hkcu_session::diff_reconcile_entries(paths, super::sandbox_active())
     }
 
     fn sync_hkcu_session_entry(gdi: &Path) {
@@ -404,6 +409,74 @@ pub mod winfont {
         remember_map(&src, &gdi);
     }
 
+    fn adopt_face_map(
+        m: &crate::session_stage::FaceMap,
+        require_min_bytes: Option<u64>,
+        hkcu_entries: Option<&HashMap<String, String>>,
+        allowed_families: Option<&HashSet<String>>,
+    ) -> Option<String> {
+        let src = PathBuf::from(&m.source);
+        let gdi = PathBuf::from(&m.stage);
+        if src.as_os_str().is_empty()
+            || gdi.as_os_str().is_empty()
+            || crate::session_stage::must_not_register_as_gdi_path(&gdi)
+            || is_windows_fonts_path(&gdi)
+            || is_windows_fonts_path(&src)
+            || !gdi.is_file()
+        {
+            return None;
+        }
+        if let Some(min_bytes) = require_min_bytes {
+            let len = fs::metadata(&gdi).map(|md| md.len()).unwrap_or(0);
+            if len < min_bytes {
+                return None;
+            }
+        }
+        if let Some(entries) = hkcu_entries {
+            let val_name = crate::session_stage::session_hkcu_value_name(&gdi);
+            let target = crate::session_stage::normalize_registry_font_path(&gdi);
+            let matched = entries
+                .get(&val_name)
+                .map(|cur| cur.eq_ignore_ascii_case(&target))
+                .unwrap_or(false);
+            if !matched {
+                return None;
+            }
+        }
+        let fam = m.family.trim();
+        let chosen = if !fam.is_empty() {
+            fam.to_string()
+        } else if let Some(parent_name) = src
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str())
+        {
+            let fam_name = super::dir_family_name(src.parent().unwrap_or(Path::new("")));
+            if fam_name.is_empty() {
+                parent_name.to_string()
+            } else {
+                fam_name
+            }
+        } else {
+            String::new()
+        };
+        if chosen.is_empty() {
+            return None;
+        }
+        let lower = chosen.to_lowercase();
+        if let Some(allow) = allowed_families
+            && !allow.contains(&lower)
+        {
+            return None;
+        }
+        remember_map(&src, &gdi);
+        if let Ok(mut g) = loaded().lock() {
+            g.insert(src.clone());
+        }
+        bind(&chosen, &src);
+        Some(lower)
+    }
+
     /// Adopt the live Windows session held by the running headless `--daemon` process so
     /// reopening the UI window is instant (<20ms) without re-scanning or re-calling GDI.
     /// ONLY call when `crate::daemon::is_daemon_running()` is verified true.
@@ -413,38 +486,37 @@ pub mod winfont {
     ) -> Vec<String> {
         let mut adopted_families: HashSet<String> = HashSet::new();
         for m in disk_maps {
-            let src = PathBuf::from(&m.source);
-            let gdi = PathBuf::from(&m.stage);
-            if src.as_os_str().is_empty()
-                || gdi.as_os_str().is_empty()
-                || crate::session_stage::must_not_register_as_gdi_path(&gdi)
-                || !gdi.is_file()
-            {
-                continue;
+            if let Some(lower) = adopt_face_map(m, None, None, None) {
+                adopted_families.insert(lower);
             }
-            remember_map(&src, &gdi);
-            if let Ok(mut g) = loaded().lock() {
-                g.insert(src.clone());
-            }
-            let fam = m.family.trim();
-            if !fam.is_empty() {
-                bind(fam, &src);
-                adopted_families.insert(fam.to_lowercase());
-            } else if let Some(parent_name) = src
-                .parent()
-                .and_then(|p| p.file_name())
-                .and_then(|s| s.to_str())
-            {
-                let fam_name = super::dir_family_name(src.parent().unwrap_or(Path::new("")));
-                let chosen = if fam_name.is_empty() {
-                    parent_name.to_string()
-                } else {
-                    fam_name
-                };
-                if !chosen.is_empty() {
-                    bind(&chosen, &src);
-                    adopted_families.insert(chosen.to_lowercase());
-                }
+        }
+        session_families
+            .iter()
+            .filter(|f| adopted_families.contains(&f.trim().to_lowercase()))
+            .cloned()
+            .collect()
+    }
+
+    /// Adopt persistent per-user HKCU session entries when `.persistent-active` is present,
+    /// verifying that each staged file (`>= 256` bytes) exists outside Documents / `Windows\Fonts`
+    /// and matches `HKCU\...\Fonts` (`hkcu_entries`).
+    pub fn adopt_persistent_hkcu_session(
+        disk_maps: &[crate::session_stage::FaceMap],
+        session_families: &[String],
+        hkcu_entries: &HashMap<String, String>,
+    ) -> Vec<String> {
+        if disk_maps.is_empty() || session_families.is_empty() || hkcu_entries.is_empty() {
+            return Vec::new();
+        }
+        let allowed: HashSet<String> = session_families
+            .iter()
+            .map(|f| f.trim().to_lowercase())
+            .filter(|f| !f.is_empty())
+            .collect();
+        let mut adopted_families: HashSet<String> = HashSet::new();
+        for m in disk_maps {
+            if let Some(lower) = adopt_face_map(m, Some(256), Some(hkcu_entries), Some(&allowed)) {
+                adopted_families.insert(lower);
             }
         }
         session_families
@@ -886,7 +958,7 @@ pub mod winfont {
         #[cfg(test)]
         {
             let _ = paths;
-            return Vec::new();
+            Vec::new()
         }
         #[cfg(not(test))]
         unsafe {
@@ -1094,11 +1166,10 @@ pub mod winfont {
                         if local_ok > 0 {
                             removed_ref.fetch_add(local_ok, Ordering::Relaxed);
                         }
-                        if !local_retry.is_empty() {
-                            if let Ok(mut r) = retry_ref.lock() {
+                        if !local_retry.is_empty()
+                            && let Ok(mut r) = retry_ref.lock() {
                                 r.extend(local_retry);
                             }
-                        }
                     });
                 }
             });
@@ -1366,5 +1437,85 @@ pub mod winfont {
             return FontCacheRestartOutcome::Restarted;
         }
         worst
+    }
+
+    #[cfg(test)]
+    mod persistent_tests {
+        use super::*;
+        use crate::session_stage::{
+            normalize_registry_font_path, session_hkcu_value_name, FaceMap,
+        };
+
+        #[test]
+        fn adopt_persistent_hkcu_session_verifies_stage_size_hkcu_and_excludes_unsafe_paths() {
+            let tmp = std::env::temp_dir().join(format!("fm-adopt-hkcu-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&tmp);
+            fs::create_dir_all(&tmp).unwrap();
+
+            let valid_stage = tmp.join("gdi-maps").join("valid_a.ttf");
+            fs::create_dir_all(valid_stage.parent().unwrap()).unwrap();
+            fs::write(&valid_stage, vec![0x41u8; 512]).unwrap();
+
+            let tiny_stage = tmp.join("gdi-maps").join("tiny_b.ttf");
+            fs::write(&tiny_stage, vec![0x42u8; 64]).unwrap();
+
+            let missing_hkcu_stage = tmp.join("gdi-maps").join("no_reg_c.ttf");
+            fs::write(&missing_hkcu_stage, vec![0x43u8; 512]).unwrap();
+
+            let docs_stage = tmp.join("Documents").join("Fonths").join("DocsFont").join("d.ttf");
+            fs::create_dir_all(docs_stage.parent().unwrap()).unwrap();
+            fs::write(&docs_stage, vec![0x44u8; 512]).unwrap();
+
+            let mut hkcu = HashMap::new();
+            hkcu.insert(
+                session_hkcu_value_name(&valid_stage),
+                normalize_registry_font_path(&valid_stage),
+            );
+            hkcu.insert(
+                session_hkcu_value_name(&tiny_stage),
+                normalize_registry_font_path(&tiny_stage),
+            );
+            hkcu.insert(
+                session_hkcu_value_name(&docs_stage),
+                normalize_registry_font_path(&docs_stage),
+            );
+
+            let maps = vec![
+                FaceMap {
+                    source: tmp.join("Fonts").join("ValidA.ttf").to_string_lossy().into(),
+                    stage: valid_stage.to_string_lossy().into(),
+                    registry_name: String::new(),
+                    family: "Valid A".into(),
+                },
+                FaceMap {
+                    source: tmp.join("Fonts").join("TinyB.ttf").to_string_lossy().into(),
+                    stage: tiny_stage.to_string_lossy().into(),
+                    registry_name: String::new(),
+                    family: "Tiny B".into(),
+                },
+                FaceMap {
+                    source: tmp.join("Fonts").join("NoRegC.ttf").to_string_lossy().into(),
+                    stage: missing_hkcu_stage.to_string_lossy().into(),
+                    registry_name: String::new(),
+                    family: "NoReg C".into(),
+                },
+                FaceMap {
+                    source: docs_stage.to_string_lossy().into(),
+                    stage: docs_stage.to_string_lossy().into(),
+                    registry_name: String::new(),
+                    family: "DocsFont".into(),
+                },
+            ];
+            let fams = vec![
+                "Valid A".into(),
+                "Tiny B".into(),
+                "NoReg C".into(),
+                "DocsFont".into(),
+            ];
+            let adopted = adopt_persistent_hkcu_session(&maps, &fams, &hkcu);
+            assert_eq!(adopted, vec!["Valid A".to_string()]);
+
+            let _ = fs::remove_dir_all(&tmp);
+        }
     }
 }

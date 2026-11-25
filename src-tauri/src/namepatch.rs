@@ -371,12 +371,12 @@ fn replace_name_table(font: &[u8], rebuilt: &[u8]) -> Option<Vec<u8>> {
     let i = name_i?;
     let dir = 12 + i * 16;
     let mut out = font.to_vec();
-    while out.len() % 4 != 0 {
+    while !out.len().is_multiple_of(4) {
         out.push(0);
     }
     let new_off = out.len() as u32;
     out.extend_from_slice(rebuilt);
-    while out.len() % 4 != 0 {
+    while !out.len().is_multiple_of(4) {
         out.push(0);
     }
     let new_len = rebuilt.len() as u32;
@@ -674,7 +674,7 @@ pub fn read_name_id(font: &[u8], name_id: u16) -> Option<String> {
             return None;
         }
         let units: Vec<u16> = bytes
-            .chunks_exact(2)
+            .as_chunks::<2>().0.iter()
             .map(|c| u16::from_be_bytes([c[0], c[1]]))
             .collect();
         return String::from_utf16(&units).ok();

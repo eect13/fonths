@@ -27,8 +27,8 @@ const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.m
 const barClear = readFileSync(join(root, "scripts/settled-idle-bar-clear.test.mjs"), "utf8");
 
 test("206f keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.4.0");
-  assert.match(version, /2\.4\.0/);
+  assert.equal(pkg.version, "2.5.0");
+  assert.match(version, /2\.5\.0/);
 });
 
 test("P1 soft Retry clears session_gdi_refused before Activate", () => {

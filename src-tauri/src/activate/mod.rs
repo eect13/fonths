@@ -77,7 +77,7 @@ fn sandbox_root() -> Option<PathBuf> {
     SANDBOX_ROOT.get().cloned().flatten()
 }
 
-fn documents_root(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn documents_root(app: &AppHandle) -> Result<PathBuf, String> {
     if let Some(sb) = sandbox_root() {
         return Ok(sb.join("Documents").join("Fonths"));
     }
@@ -97,6 +97,7 @@ pub(crate) fn documents_root_headless() -> Option<PathBuf> {
         // Query Windows Known Folder `FOLDERID_Documents` ({FDD39AD0-238F-46AF-ADB4-6C85480369C7})
         // so redirected OneDrive / custom Documents locations match `app.path().document_dir()`.
         #[repr(C)]
+        #[allow(clippy::upper_case_acronyms)]
         struct GUID {
             data1: u32,
             data2: u16,
@@ -154,11 +155,11 @@ pub(crate) fn documents_root_headless() -> Option<PathBuf> {
 use std::os::windows::ffi::OsStringExt;
 
 const PROVIDERS_DIR: &str = "Providers";
-const GOOGLE_CONTAINER: &str = "Google";
-const UPLOADS_CONTAINER: &str = "Uploads";
+pub(crate) const GOOGLE_CONTAINER: &str = "Google";
+pub(crate) const UPLOADS_CONTAINER: &str = "Uploads";
 
 /// FontBase-style provider layout: `Documents\Fonths\Providers\Google` (separate from `Uploads`).
-fn google_container_path(root: &Path) -> PathBuf {
+pub(crate) fn google_container_path(root: &Path) -> PathBuf {
     root.join(PROVIDERS_DIR).join(GOOGLE_CONTAINER)
 }
 
@@ -249,7 +250,7 @@ fn sfnt_upload_family(path: &Path) -> Option<String> {
     let mut dir = vec![0u8; num_tables * 16];
     f.read_exact(&mut dir).ok()?;
     let (mut name_off, mut name_len) = (0u64, 0usize);
-    for rec in dir.chunks_exact(16) {
+    for rec in dir.as_chunks::<16>().0 {
         if &rec[0..4] == b"name" {
             name_off = u64::from(u32::from_be_bytes([rec[8], rec[9], rec[10], rec[11]]));
             name_len = u32::from_be_bytes([rec[12], rec[13], rec[14], rec[15]]) as usize;
@@ -283,7 +284,7 @@ fn sfnt_family_from_name_table(name: &[u8]) -> Option<String> {
         };
         let utf16 = |raw: &[u8]| {
             let units: Vec<u16> = raw
-                .chunks_exact(2)
+                .as_chunks::<2>().0.iter()
                 .map(|c| u16::from_be_bytes([c[0], c[1]]))
                 .filter(|&u| u != 0)
                 .collect();
@@ -454,7 +455,7 @@ fn migrate_shared_family_folders_on_boot(app: &AppHandle) {
 }
 
 /// Family name a folder stands for: its `.family` marker, else the folder name.
-fn dir_family_name(dir: &Path) -> String {
+pub(crate) fn dir_family_name(dir: &Path) -> String {
     read_family_name_marker(dir).unwrap_or_else(|| {
         dir.file_name()
             .and_then(|s| s.to_str())
@@ -560,28 +561,26 @@ fn consolidate_dir_into(src_dir: &Path, dest_dir: &Path, moved: &mut u32) {
             continue;
         };
         let dst_file = dest_dir.join(fname);
-        if src_file.is_file() && !dst_file.exists() {
-            if fs::rename(&src_file, &dst_file).is_ok() {
+        if src_file.is_file() && !dst_file.exists()
+            && fs::rename(&src_file, &dst_file).is_ok() {
                 intact_forget(&src_file);
                 merged_any = true;
             }
-        }
     }
     // Remove source dir only if now completely empty.
     if fs::read_dir(src_dir)
         .map(|mut it| it.next().is_none())
         .unwrap_or(false)
-    {
-        if fs::remove_dir(src_dir).is_ok() || merged_any {
+        && (fs::remove_dir(src_dir).is_ok() || merged_any) {
             *moved = moved.saturating_add(1);
         }
-    }
 }
 
 /// Consolidate flat legacy folders (`root/<Family>`) and split `Activated/` /
 /// `Library/` folders into FontBase-style containers:
-///   - `Documents\Font Manager\Google\<Family>` (Google Fonts & catalog)
-///   - `Documents\Font Manager\Uploads\<Family>` (user added/uploaded fonts)
+/// - `Documents\Font Manager\Google\<Family>` (Google Fonts & catalog)
+/// - `Documents\Font Manager\Uploads\<Family>` (user added/uploaded fonts)
+///
 /// Never overwrites existing files and stops cleanly if `cancel` is triggered.
 fn consolidate_legacy_roots_in(root: &Path, cancel: Option<&AtomicBool>) -> u32 {
     let mut moved = 0u32;
@@ -675,7 +674,7 @@ fn legacy_unicode_folder(family: &str) -> Option<String> {
         .map(|c| if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') { '-' } else { c })
         .collect();
     let t = t.trim_end_matches(['.', ' ']).trim().to_string();
-    (!t.is_empty() && t.chars().any(|c| !c.is_ascii())).then_some(t)
+    (!t.is_empty() && !t.is_ascii()).then_some(t)
 }
 
 /// True for paths that must never be treated as (or deleted as) one family's folder:
@@ -718,7 +717,7 @@ fn is_protected_family_dir(root: &Path, dir: &Path) -> bool {
     }
 }
 
-fn walk_font_files(dir: &Path, out: &mut Vec<PathBuf>) {
+pub(crate) fn walk_font_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(rd) = fs::read_dir(dir) else {
         return;
     };
@@ -766,13 +765,11 @@ fn ttf_intact(path: &Path) -> bool {
         .unwrap_or(0);
     {
         let cache = intact_cache();
-        if let Ok(g) = cache.lock() {
-            if let Some(&(m, l, ok)) = g.get(path) {
-                if m == mtime && l == len {
+        if let Ok(g) = cache.lock()
+            && let Some(&(m, l, ok)) = g.get(path)
+                && m == mtime && l == len {
                     return ok;
                 }
-            }
-        }
     }
     let ok = ttf_intact_read(path);
     if let Ok(mut g) = intact_cache().lock() {
@@ -792,8 +789,10 @@ fn ttf_intact_read(path: &Path) -> bool {
     ttf_magic(&magic)
 }
 
-fn intact_cache() -> &'static Mutex<HashMap<PathBuf, (u64, u64, bool)>> {
-    static C: OnceLock<Mutex<HashMap<PathBuf, (u64, u64, bool)>>> = OnceLock::new();
+type IntactCacheMap = Mutex<HashMap<PathBuf, (u64, u64, bool)>>;
+
+fn intact_cache() -> &'static IntactCacheMap {
+    static C: OnceLock<IntactCacheMap> = OnceLock::new();
     C.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -928,7 +927,7 @@ fn copy_with_lock_retry(src: &Path, dst: &Path) -> std::io::Result<u64> {
             Err(e) => return Err(e),
         }
     }
-    Err(last_err.unwrap_or_else(|| std::io::Error::new(ErrorKind::Other, "copy locked")))
+    Err(last_err.unwrap_or_else(|| std::io::Error::other("copy locked")))
 }
 
 fn rotated_stage_path(dest: &Path) -> PathBuf {
@@ -994,11 +993,10 @@ fn ensure_gdi_session_copy_to(src: &Path, maps_root: &Path) -> Option<PathBuf> {
     // Zero-copy NTFS hardlink fast path: creates a stage entry in microseconds with 0 bytes
     // copied when `src` and `maps_root` share the same NTFS volume. Deleting the stage entry
     // never deletes the user's original in Documents\Fonths.
-    if !dest.exists() || fs::remove_file(&dest).is_ok() {
-        if fs::hard_link(src, &dest).is_ok() && dest.is_file() {
+    if (!dest.exists() || fs::remove_file(&dest).is_ok())
+        && fs::hard_link(src, &dest).is_ok() && dest.is_file() {
             return Some(dest);
         }
-    }
     let tmp = dest.with_extension("part");
     let _ = fs::remove_file(&tmp);
     match copy_with_lock_retry(src, &tmp) {
@@ -1129,7 +1127,7 @@ fn register_path_detailed_fast(path: &Path, preverified_stage: bool) -> Option<R
     }
     #[cfg(windows)]
     {
-        return outcome_to_fail(winfont::register_detailed_with_fast(path, preverified_stage));
+        outcome_to_fail(winfont::register_detailed_with_fast(path, preverified_stage))
     }
     #[cfg(not(windows))]
     {
@@ -1430,11 +1428,10 @@ fn suppress_fail_toast_known_incapable(app: &AppHandle, family: &str) -> bool {
 
 /// Quiet settle: clear JS pending without failed toast or Activated mark.
 fn note_settled_quiet(family: &str) {
-    if let Ok(mut p) = bulk().progress.lock() {
-        if !p.settled_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
+    if let Ok(mut p) = bulk().progress.lock()
+        && !p.settled_names.iter().any(|n| n.eq_ignore_ascii_case(family)) {
             p.settled_names.push(family.to_string());
         }
-    }
 }
 
 fn register_intact_family_detailed(
@@ -1462,8 +1459,8 @@ fn register_intact_family_detailed(
         let (n, fail) = register_intact_family_pass(app, family, RegisterFaceMode::VarsOnly);
         if n > 0 {
             let (_del, lock) = commit_vf_primary_after_successful_add(app, family);
-            if lock > 0 {
-                if let Ok(mut p) = bulk().progress.lock() {
+            if lock > 0
+                && let Ok(mut p) = bulk().progress.lock() {
                     p.failed = p.failed.saturating_add(lock as u32);
                     let detail = format!(
                         "{family}: {lock} static(s) locked — deactivate fonts or quit Adobe/Word, then Repair"
@@ -1472,7 +1469,6 @@ fn register_intact_family_detailed(
                         p.failed_details.push(detail);
                     }
                 }
-            }
             (n, fail)
         } else {
             // Fallback: VF Add returned 0 — keep statics & compat sidecars, register all intact faces.
@@ -1751,20 +1747,18 @@ fn seed_known_gdi_incapable_settled(app: &AppHandle) {
     }
 }
 
-struct HkcuBatchGuard;
+struct HkcuBatchGuard(#[allow(dead_code)] std::mem::DropGuard<(), fn(())>);
+
+fn finish_hkcu_batch_drop(_: ()) {
+    #[cfg(windows)]
+    winfont::finish_hkcu_batch();
+}
 
 impl HkcuBatchGuard {
     fn new() -> Self {
         #[cfg(windows)]
         winfont::begin_hkcu_batch();
-        Self
-    }
-}
-
-impl Drop for HkcuBatchGuard {
-    fn drop(&mut self) {
-        #[cfg(windows)]
-        winfont::finish_hkcu_batch();
+        Self(std::mem::DropGuard::new((), finish_hkcu_batch_drop))
     }
 }
 
@@ -1772,7 +1766,7 @@ impl Drop for HkcuBatchGuard {
 fn unregister_family_session(family: &str) -> u32 {
     #[cfg(windows)]
     {
-        return winfont::unregister_family(family);
+        winfont::unregister_family(family)
     }
     #[cfg(not(windows))]
     {
@@ -2811,7 +2805,7 @@ fn clear_sans_face_needs_intel_heal(path: &Path) -> bool {
     };
     let len = meta.len();
     // Odd subset / restricted-embedding Fontsource bodies.
-    (len >= 24 * 1024 && len <= 96 * 1024) || os2_fstype_restricted(path)
+    (24 * 1024..=96 * 1024).contains(&len) || os2_fstype_restricted(path)
 }
 
 /// Read OS/2 fsType when present. fsType bit 1 (0x2) / bit 2 (0x4) = restricted
@@ -2991,6 +2985,7 @@ fn family_has_complete_settled(app: &AppHandle, family: &str) -> bool {
 
 /// Early-skip Activate walk/Add: known-incapable + (this-session refused OR already `.complete` settled)
 /// + intact full-size. Never claims Activated.
+///
 /// 1.0.188: purge FS/latin remnants first so undersized offer dest cannot block skip.
 fn family_early_skip_known_incapable(app: &AppHandle, family: &str) -> bool {
     if !family_known_gdi_session_incapable(family) {
@@ -3085,13 +3080,11 @@ fn path_stamp_secs_len(path: &Path) -> Option<(u64, u64)> {
 /// directory header so normal fonts do not re-open files on every activation.
 fn sanitize_on_disk_for_gdi(path: &Path) -> bool {
     let stamp = path_stamp_secs_len(path);
-    if let Some((mtime, len)) = stamp {
-        if let Ok(g) = clean_sfnt_cache().lock() {
-            if g.get(path) == Some(&(mtime, len)) {
+    if let Some((mtime, len)) = stamp
+        && let Ok(g) = clean_sfnt_cache().lock()
+            && g.get(path) == Some(&(mtime, len)) {
                 return false;
             }
-        }
-    }
     {
         let Ok(mut f) = fs::File::open(path) else {
             return false;
@@ -3101,11 +3094,10 @@ fn sanitize_on_disk_for_gdi(path: &Path) -> bool {
             return false;
         };
         if !crate::namepatch::sfnt_header_needs_gdi_sanitize(&header[..n]) {
-            if let Some((mtime, len)) = stamp {
-                if let Ok(mut g) = clean_sfnt_cache().lock() {
+            if let Some((mtime, len)) = stamp
+                && let Ok(mut g) = clean_sfnt_cache().lock() {
                     g.insert(path.to_path_buf(), (mtime, len));
                 }
-            }
             return false;
         }
     }
@@ -3113,11 +3105,10 @@ fn sanitize_on_disk_for_gdi(path: &Path) -> bool {
         return false;
     };
     let Some(clean) = crate::namepatch::gdi_sanitize_ttf(&bytes) else {
-        if let Some((mtime, len)) = stamp {
-            if let Ok(mut g) = clean_sfnt_cache().lock() {
+        if let Some((mtime, len)) = stamp
+            && let Ok(mut g) = clean_sfnt_cache().lock() {
                 g.insert(path.to_path_buf(), (mtime, len));
             }
-        }
         return false;
     };
     let tmp = path.with_extension("ttf.gdisan");
@@ -3130,11 +3121,10 @@ fn sanitize_on_disk_for_gdi(path: &Path) -> bool {
         return false;
     }
     intact_forget(path);
-    if let Some((mtime, len)) = path_stamp_secs_len(path) {
-        if let Ok(mut g) = clean_sfnt_cache().lock() {
+    if let Some((mtime, len)) = path_stamp_secs_len(path)
+        && let Ok(mut g) = clean_sfnt_cache().lock() {
             g.insert(path.to_path_buf(), (mtime, len));
         }
-    }
     true
 }
 
@@ -3240,10 +3230,12 @@ fn fontsource_jsdelivr_pin(npm_version: &str, foundry_version: &str) -> String {
         .to_string()
 }
 
+type FontsourceMeta = (Vec<String>, Vec<u16>, Vec<bool>, String);
+
 fn fontsource_meta(
     client: &reqwest::blocking::Client,
     slug: &str,
-) -> Option<(Vec<String>, Vec<u16>, Vec<bool>, String)> {
+) -> Option<FontsourceMeta> {
     let url = format!("https://api.fontsource.org/v1/fonts/{slug}");
     let opts = gfsource::PoliteOpts { ua: None, timeout: Some(CATALOG_PROBE_TIMEOUT), cdn_lane: false };
     let text = String::from_utf8(gfsource::polite_fetch(client, &url, &opts, &cancel_requested).ok()?).ok()?;
@@ -3626,8 +3618,8 @@ fn is_official_google_family(family: &str) -> bool {
         let raw = include_str!("../../../src/lib/fonts/google-directory.json");
         let mut by_lower = HashSet::new();
         let mut by_slug = HashSet::new();
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
-            if let Some(arr) = v.get("families").and_then(|x| x.as_array()) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw)
+            && let Some(arr) = v.get("families").and_then(|x| x.as_array()) {
                 for name in arr {
                     if let Some(s) = name.as_str() {
                         let t = s.trim();
@@ -3639,7 +3631,6 @@ fn is_official_google_family(family: &str) -> bool {
                     }
                 }
             }
-        }
         (by_lower, by_slug)
     });
     let key = family.trim().to_ascii_lowercase();
@@ -3721,11 +3712,10 @@ fn forget_fetch_intent(family: &str) {
 
 fn intent_for_family(family: &str) -> FetchIntent {
     let key = family.trim().to_lowercase();
-    if let Ok(map) = bulk().intents.lock() {
-        if let Some(i) = map.get(&key) {
+    if let Ok(map) = bulk().intents.lock()
+        && let Some(i) = map.get(&key) {
             return *i;
         }
-    }
     infer_fetch_intent(family)
 }
 
@@ -3737,21 +3727,19 @@ fn resolve_fetch_intent_from_disk(app: &AppHandle, family: &str) -> Option<Fetch
         return None;
     }
     let key = family.to_lowercase();
-    if let Ok(map) = bulk().intents.lock() {
-        if let Some(i) = map.get(&key) {
+    if let Ok(map) = bulk().intents.lock()
+        && let Some(i) = map.get(&key) {
             return Some(*i);
         }
-    }
     for dir in family_locations(app, family) {
         migrate_download_source_stamp(&dir);
         if let Some(i) = read_download_source(&dir) {
             return Some(i);
         }
-        if let Ok(root) = documents_root(app) {
-            if dir_is_upload_container_child(&root, &dir) {
+        if let Ok(root) = documents_root(app)
+            && dir_is_upload_container_child(&root, &dir) {
                 return Some(FetchIntent::Local);
             }
-        }
         if read_google_planned_keys(&dir).is_some() {
             return Some(FetchIntent::Google);
         }
@@ -3883,11 +3871,10 @@ fn face_allowed_for_register(dir: &Path, path: &Path, family: &str) -> bool {
             if !slug.is_empty() && filename_has_latin_subset(name, &slug) {
                 return false;
             }
-            if let Some(fs_keys) = read_fontsource_planned_keys(dir) {
-                if fs_keys.iter().any(|k| k == name) {
+            if let Some(fs_keys) = read_fontsource_planned_keys(dir)
+                && fs_keys.iter().any(|k| k == name) {
                     return false;
                 }
-            }
             true
         }
         FetchIntent::Fontsource => {
@@ -3895,11 +3882,10 @@ fn face_allowed_for_register(dir: &Path, path: &Path, family: &str) -> bool {
                 return keys.iter().any(|k| k == name);
             }
             // No FS plan: never Add Google-planned leftovers for the Fontsource card.
-            if let Some(g_keys) = read_google_planned_keys(dir) {
-                if g_keys.iter().any(|k| k == name) {
+            if let Some(g_keys) = read_google_planned_keys(dir)
+                && g_keys.iter().any(|k| k == name) {
                     return false;
                 }
-            }
             true
         }
     }
@@ -3921,8 +3907,8 @@ fn google_catalog_meta_maps() -> &'static (HashMap<String, GoogleCatalogMeta>, H
         let raw = include_str!("../../../src/lib/fonts/google-catalog.json");
         let mut by_lower = HashMap::new();
         let mut by_slug = HashMap::new();
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
-            if let Some(arr) = v.get("families").and_then(|x| x.as_array()) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw)
+            && let Some(arr) = v.get("families").and_then(|x| x.as_array()) {
                 for row in arr {
                     let Some(row) = row.as_array() else { continue };
                     if row.len() < 5 {
@@ -3960,7 +3946,6 @@ fn google_catalog_meta_maps() -> &'static (HashMap<String, GoogleCatalogMeta>, H
                     by_slug.insert(slug_family(t), meta);
                 }
             }
-        }
         (by_lower, by_slug)
     })
 }
@@ -3996,8 +3981,8 @@ fn fontsource_other_meta_maps() -> &'static (HashMap<String, FontsourceOtherMeta
         let raw = include_str!("../../../src/lib/fonts/fontsource-other.json");
         let mut by_lower = HashMap::new();
         let mut by_slug = HashMap::new();
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
-            if let Some(arr) = v.get("families").and_then(|x| x.as_array()) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw)
+            && let Some(arr) = v.get("families").and_then(|x| x.as_array()) {
                 for row in arr {
                     let Some(row) = row.as_array() else { continue };
                     if row.len() < 5 {
@@ -4014,7 +3999,6 @@ fn fontsource_other_meta_maps() -> &'static (HashMap<String, FontsourceOtherMeta
                     by_slug.insert(slug_family(t), meta);
                 }
             }
-        }
         (by_lower, by_slug)
     })
 }
@@ -4605,11 +4589,10 @@ fn vf_primary_purge_safe_for_dir(dir: &Path, family: &str) -> bool {
             if !info.supported || !info.is_variable {
                 return false;
             }
-            if let Some(ref tf) = info.typographic_family {
-                if !tf.trim().eq_ignore_ascii_case(trimmed) {
+            if let Some(ref tf) = info.typographic_family
+                && !tf.trim().eq_ignore_ascii_case(trimmed) {
                     return false;
                 }
-            }
             let win32_id1 = crate::namepatch::read_name_id(&bytes, 1).or(info.win32_family);
             if let Some(ref w32) = win32_id1 {
                 let w32t = w32.trim();
@@ -5005,7 +4988,7 @@ impl FaceStreamPermit {
     /// Unbounded cancel-aware wait. Never give up after ~30s — that silently dropped
     /// faces when DOWNLOAD_WORKERS×face streams contended on FACE_STREAM_SLOTS.
     fn acquire(reserve: u64) -> Option<Self> {
-        let reserve = reserve.max(256).min(MAX_IN_FLIGHT_BYTES);
+        let reserve = reserve.clamp(256, MAX_IN_FLIGHT_BYTES);
         let slots = face_slots();
         let bytes = in_flight_bytes();
         loop {
@@ -5445,7 +5428,7 @@ impl gfsource::GoogleFontsSource for LiveGoogleFonts<'_> {
 }
 
 /// `%LOCALAPPDATA%\Fonths` (same root as gdi-maps).
-fn fm_local_root() -> Option<PathBuf> {
+pub(crate) fn fm_local_root() -> Option<PathBuf> {
     local_app_data().map(|l| l.join("Fonths"))
 }
 
@@ -5469,6 +5452,36 @@ fn fast_session_resume() -> bool {
 
 pub fn set_fast_session_resume(on: bool) {
     gfsource::set_fast_session_resume(fm_local_root().as_deref(), on);
+}
+
+pub fn parse_activation_mode_code(raw: &str) -> u8 {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "daemon-tray" | "daemon" | "tray" => 1,
+        "session-only" | "temporary" | "session" => 2,
+        _ => 0,
+    }
+}
+
+pub fn set_activation_mode(mode: &str) -> u8 {
+    let code = parse_activation_mode_code(mode);
+    let label = match code {
+        1 => "daemon-tray",
+        2 => "session-only",
+        _ => "instant-zero-ram",
+    };
+    if let Some(root) = fm_local_root() {
+        let _ = fs::create_dir_all(&root);
+        let _ = fs::write(root.join("activation-mode.txt"), label);
+    }
+    code
+}
+
+#[allow(dead_code)]
+pub fn get_activation_mode_code() -> u8 {
+    fm_local_root()
+        .and_then(|root| fs::read_to_string(root.join("activation-mode.txt")).ok())
+        .map(|s| parse_activation_mode_code(&s))
+        .unwrap_or(0)
 }
 
 pub fn sync_hkcu_registry_now() {
@@ -5613,8 +5626,8 @@ fn discover_css2_google_listing(
     client: &reqwest::blocking::Client,
     family: &str,
 ) -> Vec<(String, String, String)> {
-    if family_ensures_google_vf(family) {
-        if let Some(listed) = discover_variable_google_listing(client, family) {
+    if family_ensures_google_vf(family)
+        && let Some(listed) = discover_variable_google_listing(client, family) {
             // Axis-range CSS sometimes yields `font-weight: 200 1000` → key `200-1000`
             // (2 faces) instead of discrete static instances. Prefer discrete static
             // multi-face listing for planned keys; real var TTFs download separately.
@@ -5622,7 +5635,6 @@ fn discover_css2_google_listing(
                 return listed;
             }
         }
-    }
     let static_axis = static_weight_axis();
     // Static ital,wght@0|1,w next. Bare family= last.
     let axes = [
@@ -5678,16 +5690,14 @@ fn parse_google_instance_face_name(slug: &str, filename: &str) -> Option<(String
     let stem = lower.rsplit_once('.').map(|(s, _)| s).unwrap_or(&lower);
     let prefix = format!("{}-", slug.to_ascii_lowercase());
     let rest = stem.strip_prefix(&prefix)?;
-    if let Some(w) = rest.strip_suffix("-normal") {
-        if !w.is_empty() {
+    if let Some(w) = rest.strip_suffix("-normal")
+        && !w.is_empty() {
             return Some((w.to_string(), "normal".into()));
         }
-    }
-    if let Some(w) = rest.strip_suffix("-italic") {
-        if !w.is_empty() {
+    if let Some(w) = rest.strip_suffix("-italic")
+        && !w.is_empty() {
             return Some((w.to_string(), "italic".into()));
         }
-    }
     None
 }
 
@@ -5701,16 +5711,14 @@ fn instance_name_needs_heal(font: &[u8], family: &str) -> bool {
     }
     let id1 = crate::namepatch::read_name_id(font, 1);
     let id16 = crate::namepatch::read_name_id(font, 16);
-    if let Some(ref s) = id1 {
-        if s != fam {
+    if let Some(ref s) = id1
+        && s != fam {
             return true;
         }
-    }
-    if let Some(ref s) = id16 {
-        if s != fam {
+    if let Some(ref s) = id16
+        && s != fam {
             return true;
         }
-    }
     id1.is_none() && id16.is_none()
 }
 
@@ -5909,8 +5917,7 @@ fn is_tiny_latin_subset_face(path: &Path) -> bool {
         return false;
     };
     let len = meta.len();
-    len >= UNDERSIZED_GOOGLE_FACE_MIN_BYTES
-        && len <= UNDERSIZED_GOOGLE_FACE_MAX_BYTES
+    (UNDERSIZED_GOOGLE_FACE_MIN_BYTES..=UNDERSIZED_GOOGLE_FACE_MAX_BYTES).contains(&len)
         && ttf_intact(path)
 }
 
@@ -5952,9 +5959,11 @@ fn sfnt_num_glyphs_bytes(b: &[u8]) -> Option<u16> {
     None
 }
 
+type GlyphCountCacheMap = Mutex<HashMap<PathBuf, (u64, u64, Option<u16>)>>;
+
 /// Cached by (mtime, len) — Scan polls, so never re-read unchanged faces.
 fn sfnt_num_glyphs_path(path: &Path) -> Option<u16> {
-    static C: OnceLock<Mutex<HashMap<PathBuf, (u64, u64, Option<u16>)>>> = OnceLock::new();
+    static C: OnceLock<GlyphCountCacheMap> = OnceLock::new();
     let meta = fs::metadata(path).ok()?;
     let len = meta.len();
     let mtime = meta
@@ -5964,13 +5973,11 @@ fn sfnt_num_glyphs_path(path: &Path) -> Option<u16> {
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
     let cache = C.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(g) = cache.lock() {
-        if let Some(&(m, l, n)) = g.get(path) {
-            if m == mtime && l == len {
+    if let Ok(g) = cache.lock()
+        && let Some(&(m, l, n)) = g.get(path)
+            && m == mtime && l == len {
                 return n;
             }
-        }
-    }
     let n = sfnt_num_glyphs_read(path);
     if let Ok(mut g) = cache.lock() {
         g.insert(path.to_path_buf(), (mtime, len, n));
@@ -5990,7 +5997,7 @@ fn sfnt_num_glyphs_read(path: &Path) -> Option<u16> {
     let n = u16::from_be_bytes([head[4], head[5]]) as usize;
     let mut dir = vec![0u8; n.min(64) * 16];
     f.read_exact(&mut dir).ok()?;
-    let rec = dir.chunks_exact(16).find(|r| &r[0..4] == b"maxp")?;
+    let rec = dir.as_chunks::<16>().0.iter().find(|r| &r[0..4] == b"maxp")?;
     let off = u32::from_be_bytes([rec[8], rec[9], rec[10], rec[11]]) as u64;
     f.seek(SeekFrom::Start(off + 4)).ok()?;
     let mut g = [0u8; 2];
@@ -6075,27 +6082,25 @@ fn dir_listing_signature(dir: &Path) -> Option<u64> {
     Some(h.finish())
 }
 
+type OutlierCacheMap = Mutex<HashMap<(PathBuf, String), (u64, bool)>>;
+
 /// c253 #5 glyph-count outlier, cached per (dir, slug) until the listing changes.
 fn dir_has_glyph_outlier_cached(dir: &Path, slug: &str) -> bool {
-    static C: OnceLock<Mutex<HashMap<(PathBuf, String), (u64, bool)>>> = OnceLock::new();
+    static C: OnceLock<OutlierCacheMap> = OnceLock::new();
     let sig = dir_listing_signature(dir);
     let key = (dir.to_path_buf(), slug.to_string());
     let cache = C.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(sig) = sig {
-        if let Ok(g) = cache.lock() {
-            if let Some(&(s, v)) = g.get(&key) {
-                if s == sig {
+    if let Some(sig) = sig
+        && let Ok(g) = cache.lock()
+            && let Some(&(s, v)) = g.get(&key)
+                && s == sig {
                     return v;
                 }
-            }
-        }
-    }
     let v = dir_has_glyph_outlier_uncached(dir, slug);
-    if let Some(sig) = sig {
-        if let Ok(mut g) = cache.lock() {
+    if let Some(sig) = sig
+        && let Ok(mut g) = cache.lock() {
             g.insert(key, (sig, v));
         }
-    }
     v
 }
 
@@ -6135,7 +6140,7 @@ struct FaceFallbacks<'a> {
     client: &'a reqwest::blocking::Client,
     family: &'a str,
     lic: Option<&'a str>,
-    repo: Option<Option<(String, String, Vec<(String, String, String)>)>>,
+    repo: Option<Option<downloads::RepoStatics>>,
     css: Option<GListing>,
 }
 
@@ -6290,6 +6295,8 @@ fn download_listed_faces_to_dir(
     out
 }
 
+type FetchedGoogleFaces = (usize, Vec<downloads::StaticFaceSpec>, Vec<String>, HealStats);
+
 /// Google-first install path: discover richest listing, then stream faces to disk.
 /// Returns (faces written/intact, listed keys, var filenames, heal from intact heals).
 fn fetch_google_family_faces_to_dir(
@@ -6297,7 +6304,7 @@ fn fetch_google_family_faces_to_dir(
     family: &str,
     slug: &str,
     root: &Path,
-) -> (usize, Vec<(String, String, String)>, Vec<String>, HealStats) {
+) -> FetchedGoogleFaces {
     let official = is_official_google_family(family);
     let ensure_vf = family_ensures_google_vf(family);
     if !catalog_download_allowed() {
@@ -6476,11 +6483,10 @@ fn pull_emoji_upstream_color_ttf(
             }
         }
     }
-    if let Some(bytes) = fallback_cbdt {
-        if write_font_file(&dest, &bytes).is_ok() && ttf_intact(&dest) {
+    if let Some(bytes) = fallback_cbdt
+        && write_font_file(&dest, &bytes).is_ok() && ttf_intact(&dest) {
             return 1;
         }
-    }
     0
 }
 
@@ -6810,7 +6816,7 @@ fn index_disk(app: &AppHandle, gc: bool) -> DiskIndex {
             by_key.entry(key).or_default().extend(intact.iter().cloned());
         }
     });
-    names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    names.sort_by_key(|a| a.to_lowercase());
     names.dedup();
     DiskIndex { by_key, names }
 }
@@ -6955,22 +6961,18 @@ fn write_expected_faces(dir: &Path, expected: usize) {
 }
 
 fn read_expected_faces(dir: &Path) -> Option<usize> {
-    if let Ok(s) = fs::read_to_string(family_expected_marker(dir)) {
-        if let Ok(n) = s.trim().parse::<usize>() {
-            if n > 0 {
+    if let Ok(s) = fs::read_to_string(family_expected_marker(dir))
+        && let Ok(n) = s.trim().parse::<usize>()
+            && n > 0 {
                 return Some(n);
             }
-        }
-    }
     // New stamps store the expected count in `.complete` itself.
-    if let Ok(s) = fs::read_to_string(family_complete_marker(dir)) {
-        if let Ok(n) = s.trim().parse::<usize>() {
-            if n > 1 {
+    if let Ok(s) = fs::read_to_string(family_complete_marker(dir))
+        && let Ok(n) = s.trim().parse::<usize>()
+            && n > 1 {
                 // Trust multi-face counts without a sidecar. Legacy stamps were bare "1".
                 return Some(n);
             }
-        }
-    }
     None
 }
 
@@ -7438,11 +7440,10 @@ fn official_google_complete_is_lie(dir: &Path) -> bool {
         return true;
     }
     let slug = dir_slug_hint(dir);
-    if let Some(floor) = google_catalog_face_floor(family) {
-        if count_intact_google_face_keys(dir, &slug) < floor {
+    if let Some(floor) = google_catalog_face_floor(family)
+        && count_intact_google_face_keys(dir, &slug) < floor {
             return true;
         }
-    }
     // Official Google without a planned key list cannot prove stamp honesty.
     true
 }
@@ -8041,11 +8042,10 @@ fn unload_now(app: &AppHandle, families: &[String], report: bool) -> u32 {
                             thread::sleep(Duration::from_millis(200));
                         }
                         OnDiskRegisterGate::Run => {
-                            if report {
-                                if let Ok(mut p) = st.progress.lock() {
+                            if report
+                                && let Ok(mut p) = st.progress.lock() {
                                     p.paused = false;
                                 }
-                            }
                             break;
                         }
                     }
@@ -8064,11 +8064,10 @@ fn unload_now(app: &AppHandle, families: &[String], report: bool) -> u32 {
                 }
             }
             OnDiskRegisterGate::Run => {
-                if report {
-                    if let Ok(mut p) = state.progress.lock() {
+                if report
+                    && let Ok(mut p) = state.progress.lock() {
                         p.paused = false;
                     }
-                }
             }
         }
         let t = family.trim();
@@ -8142,6 +8141,9 @@ fn unload_now(app: &AppHandle, families: &[String], report: bool) -> u32 {
             let remaining = load_session_families(app);
             if remaining.is_empty() {
                 winfont::clear_all_hkcu_session_entries();
+                if let Ok(root) = documents_root(app) {
+                    crate::session_stage::clear_persistent_active_marker_in(&root);
+                }
             }
             let now = winfont::snapshot_loaded();
             for p in leftover_loaded_after_unload(&remaining, &now, winfont::is_windows_fonts_path) {
@@ -8277,7 +8279,7 @@ pub async fn uninstall_font_family(app: AppHandle, family: String) -> Result<(),
 
 pub fn uninstall_font_family_blocking(app: AppHandle, family: String) -> Result<(), String> {
     // Await unload on this thread before DeleteFile — do not race GDI.
-    let _ = unload_now(&app, &[family.clone()], false);
+    let _ = unload_now(&app, std::slice::from_ref(&family), false);
     gdi_flush_local();
     purge_family_files_result(&app, &family)?;
     // Empty after Explorer-delete is success (missing = already gone).
@@ -8771,7 +8773,7 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String], done_ba
                     denied.remove(&family.trim().to_lowercase());
                 }
                 let done_n = processed.fetch_add(1, Ordering::SeqCst) + 1;
-                if done_n % 64 == 0 {
+                if done_n.is_multiple_of(64) {
                     thread::yield_now();
                 }
                 let restoring = session_boot().running.load(Ordering::SeqCst);
@@ -8854,11 +8856,10 @@ fn register_on_disk_parallel_progress(app: &AppHandle, ready: &[String], done_ba
                             p.failed_details.push(detail);
                         }
                     }
-                } else if k > 0 {
-                    if let Ok(mut g) = registered.lock() {
+                } else if k > 0
+                    && let Ok(mut g) = registered.lock() {
                         g.push(family.clone());
                     }
-                }
                 // After register: Cancel → clear remaining queue (do not mark rest ready).
                 if bulk().cancel.load(Ordering::SeqCst) {
                     if let Ok(mut q) = queue.lock() {

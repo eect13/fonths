@@ -37,12 +37,12 @@ function activateVisibleBody() {
 }
 
 test("206t keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.4.0");
-  assert.match(version, /2\.4\.0/);
+  assert.equal(pkg.version, "2.5.0");
+  assert.match(version, /2\.5\.0/);
   const tauri = JSON.parse(
     readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"),
   );
-  assert.equal(tauri.version, "2.4.0");
+  assert.equal(tauri.version, "2.5.0");
 });
 
 test("docs mark 206t Fixed; React #185; tip-sha stamp; no tip-install/pack", () => {

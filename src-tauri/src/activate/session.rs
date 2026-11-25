@@ -34,7 +34,7 @@ pub fn quit_unload_budget(app: &AppHandle) -> Duration {
         let n = load_session_paths(app)
             .len()
             .max(winfont::snapshot_loaded().len());
-        return quit_unload_budget_for(n);
+        quit_unload_budget_for(n)
     }
     #[cfg(not(windows))]
     {
@@ -483,11 +483,10 @@ pub fn session_boot_push_ready(family: &str) {
     if !session_boot().running.load(Ordering::SeqCst) {
         return;
     }
-    if let Ok(mut g) = session_boot().ready.lock() {
-        if !g.iter().any(|n| n.eq_ignore_ascii_case(family)) {
+    if let Ok(mut g) = session_boot().ready.lock()
+        && !g.iter().any(|n| n.eq_ignore_ascii_case(family)) {
             g.push(family.to_string());
         }
-    }
 }
 
 #[derive(Clone, Serialize)]
@@ -577,12 +576,14 @@ pub fn session_boot_finish(ready: &[String]) {
     boot.done.store(true, Ordering::SeqCst);
 }
 
+pub type PrestagedTarget = (String, Vec<(PathBuf, PathBuf)>);
+
 /// Partition saved session families into those already backed by valid on-disk
 /// `gdi-maps` entries in `.session-maps.json` vs. those needing Documents folder scans.
 pub fn partition_prestaged_targets(
     families: &[String],
     disk_maps: &[crate::session_stage::FaceMap],
-) -> (Vec<(String, Vec<(PathBuf, PathBuf)>)>, Vec<String>) {
+) -> (Vec<PrestagedTarget>, Vec<String>) {
     if disk_maps.is_empty() {
         return (Vec::new(), families.to_vec());
     }
@@ -611,12 +612,11 @@ pub fn partition_prestaged_targets(
     let mut uncovered = Vec::new();
     for fam in families {
         let key = fam.trim().to_ascii_lowercase();
-        if let Some(pairs) = by_family.get(&key) {
-            if !pairs.is_empty() {
+        if let Some(pairs) = by_family.get(&key)
+            && !pairs.is_empty() {
                 covered.push((fam.clone(), pairs.clone()));
                 continue;
             }
-        }
         uncovered.push(fam.clone());
     }
     (covered, uncovered)
@@ -684,20 +684,18 @@ fn register_prestaged_wave(
                 if let Ok(mut rg) = ready.lock() {
                     rg.push(fam.clone());
                 }
-                if own_progress {
-                    if let Ok(mut p) = bulk().progress.lock() {
+                if own_progress
+                    && let Ok(mut p) = bulk().progress.lock() {
                         p.done = p.done.saturating_add(1).min(total_cap as u32);
                         p.current = format!("Restoring {}/{}", p.done, total_cap);
                         if !p.ready_names.iter().any(|n| n.eq_ignore_ascii_case(&fam)) {
                             p.ready_names.push(fam.clone());
                         }
                     }
-                }
-            } else if needs_fallback {
-                if let Ok(mut rf) = retry.lock() {
+            } else if needs_fallback
+                && let Ok(mut rf) = retry.lock() {
                     rf.push(fam);
                 }
-            }
             if own_progress {
                 let due = last_emit
                     .lock()
@@ -720,6 +718,25 @@ fn register_prestaged_wave(
     (out_ready, out_retry)
 }
 
+#[cfg(windows)]
+fn try_adopt_persistent_session(app: &AppHandle, root: &Path) -> Vec<String> {
+    let session_fams = dedupe_family_names(&load_session_families(app));
+    if session_fams.is_empty() {
+        return Vec::new();
+    }
+    if let Some(maps_root) = gdi_maps_root()
+        && crate::session_stage::load_session_maps_in(root).is_empty()
+    {
+        let _ = rebuild_session_maps_in(root, &maps_root);
+    }
+    let disk_maps = crate::session_stage::load_session_maps_in(root);
+    if disk_maps.is_empty() {
+        return Vec::new();
+    }
+    let hkcu_entries = winfont::list_fm_hkcu_entries();
+    winfont::adopt_persistent_hkcu_session(&disk_maps, &session_fams, &hkcu_entries)
+}
+
 pub fn session_begin(app: &AppHandle) {
     session_boot_begin();
     if sandbox_root().is_some() {
@@ -739,21 +756,29 @@ pub fn session_begin(app: &AppHandle) {
         //    re-stage missing copy-only) BEFORE recover clear.
         // 3) recover_stale_session — missing stage ≠ unlock→nuke.
         let daemon_active = crate::daemon::is_daemon_running();
-        let clean_exit = documents_root(app)
-            .ok()
+        let root_opt = documents_root(app).ok();
+        let persistent_hkcu = !daemon_active
+            && crate::session_stage::hkcu_sync_enabled()
+            && root_opt
+                .as_ref()
+                .map(|r| crate::session_stage::has_persistent_active_marker_in(r))
+                .unwrap_or(false);
+        let clean_exit = root_opt
+            .as_ref()
             .map(|root| {
-                crate::session_stage::take_clean_exit_marker_in(&root)
-                    && load_session_paths_in(&root).is_empty()
-                    && !session_active_file_in(&root).is_file()
-                    && crate::session_stage::load_session_maps_in(&root).is_empty()
+                crate::session_stage::take_clean_exit_marker_in(root)
+                    && load_session_paths_in(root).is_empty()
+                    && !session_active_file_in(root).is_file()
+                    && crate::session_stage::load_session_maps_in(root).is_empty()
             })
             .unwrap_or(false);
+        let mut persistent_adopted: Vec<String> = Vec::new();
         if daemon_active {
             // Headless daemon already holds the live GDI session — adopt its active face maps
             // immediately (<20ms) without re-scanning or re-calling AddFontResourceExW.
-            if let (Ok(root), Some(maps_root)) = (documents_root(app), gdi_maps_root()) {
-                let _ = rebuild_session_maps_in(&root, &maps_root);
-                let disk_maps = crate::session_stage::load_session_maps_in(&root);
+            if let (Some(root), Some(maps_root)) = (root_opt.as_ref(), gdi_maps_root()) {
+                let _ = rebuild_session_maps_in(root, &maps_root);
+                let disk_maps = crate::session_stage::load_session_maps_in(root);
                 let session_fams = load_session_families(app);
                 if !disk_maps.is_empty() && !session_fams.is_empty() {
                     let adopted = winfont::adopt_daemon_live_session(&disk_maps, &session_fams);
@@ -768,21 +793,43 @@ pub fn session_begin(app: &AppHandle) {
                     }
                 }
             }
+        } else if persistent_hkcu {
+            if let Some(root) = root_opt.as_ref() {
+                persistent_adopted = try_adopt_persistent_session(app, root);
+                if !persistent_adopted.is_empty() {
+                    let requested = dedupe_family_names(&load_session_families(app));
+                    if persistent_adopted.len() >= requested.len() {
+                        seed_known_gdi_incapable_settled(app);
+                        session_boot_finish(&persistent_adopted);
+                        let handle = app.clone();
+                        thread::spawn(move || {
+                            let _ = index_disk(&handle, true);
+                        });
+                        return;
+                    }
+                } else {
+                    crate::session_stage::clear_persistent_active_marker_in(root);
+                    if let Some(maps_root) = gdi_maps_root() {
+                        let _ = rebuild_session_maps_in(root, &maps_root);
+                    }
+                    recover_stale_session(app);
+                }
+            }
         } else if clean_exit {
             migrate_shared_family_folders_on_boot(app);
         } else {
-            if let Ok(root) = documents_root(app) {
-                unload_documents_session_leftovers(app, &root);
-            }
-            // Card 36: after last session's Documents fonts are unloaded (so renames are
-            // not blocked by GDI), before maps / restore resolve family folders.
-            migrate_shared_family_folders_on_boot(app);
-            if let (Ok(root), Some(maps_root)) = (documents_root(app), gdi_maps_root()) {
-                let _ = rebuild_session_maps_in(&root, &maps_root);
+            if let Some(root) = root_opt.as_ref() {
+                unload_documents_session_leftovers(app, root);
+                migrate_shared_family_folders_on_boot(app);
+                if let Some(maps_root) = gdi_maps_root() {
+                    let _ = rebuild_session_maps_in(root, &maps_root);
+                }
+            } else {
+                migrate_shared_family_folders_on_boot(app);
             }
             recover_stale_session(app);
         }
-        if !daemon_active {
+        if !daemon_active && persistent_adopted.is_empty() {
             winfont::clear_all_hkcu_session_entries();
         }
         // 1.0.156 leftover: session copies under the per-user Fonts tree.
@@ -805,14 +852,26 @@ pub fn session_begin(app: &AppHandle) {
             Vec::new()
         };
         let (candidate_fams, mut settled_skip) = partition_session_restore_targets(app, &families);
-        let (covered_prestaged, mut uncovered_fams) = if fast_resume && !disk_maps.is_empty() {
-            partition_prestaged_targets(&candidate_fams, &disk_maps)
+        let remaining_candidates: Vec<String> = if persistent_adopted.is_empty() {
+            candidate_fams
         } else {
-            (Vec::new(), candidate_fams.clone())
+            let adopted_set: HashSet<String> = persistent_adopted
+                .iter()
+                .map(|f| f.trim().to_ascii_lowercase())
+                .collect();
+            candidate_fams
+                .into_iter()
+                .filter(|f| !adopted_set.contains(&f.trim().to_ascii_lowercase()))
+                .collect()
+        };
+        let (covered_prestaged, mut uncovered_fams) = if fast_resume && !disk_maps.is_empty() {
+            partition_prestaged_targets(&remaining_candidates, &disk_maps)
+        } else {
+            (Vec::new(), remaining_candidates.clone())
         };
 
         let own_progress = !bulk().running.load(Ordering::SeqCst);
-        let mut prestaged_ready: Vec<String> = Vec::new();
+        let mut prestaged_ready: Vec<String> = persistent_adopted;
         let initial_total = families.len().saturating_sub(settled_skip.len());
         if own_progress && (initial_total > 0 || !settled_skip.is_empty()) {
             if let Ok(mut p) = bulk().progress.lock() {
@@ -848,7 +907,9 @@ pub fn session_begin(app: &AppHandle) {
             const WAVE0_SIZE: usize = 32;
             let split_at = WAVE0_SIZE.min(covered_prestaged.len());
             let (wave0, wave1) = covered_prestaged.split_at(split_at);
+            let _w0_hkcu_batch = HkcuBatchGuard::new();
             let (w0_ready, w0_retry) = register_prestaged_wave(app, wave0, own_progress);
+            drop(_w0_hkcu_batch);
             prestaged_ready.extend(w0_ready);
             uncovered_fams.extend(w0_retry);
             if !prestaged_ready.is_empty() {
@@ -953,7 +1014,8 @@ pub fn session_begin(app: &AppHandle) {
             emit_progress_force(app);
         }
         if !ready.is_empty() {
-            // HkcuBatchGuard already diff-synced HKCU when dropped above — avoid redundant double write.
+            // Reconcile HKCU diff-only so unchanged registry values avoid redundant rewrites.
+            winfont::sync_hkcu_all_active_stages();
             persist_activation_sidecars(app);
             notify_fonts_changed();
         }
@@ -1063,14 +1125,19 @@ pub fn session_end(app: &AppHandle) {
         if plan.clear_maps {
             clear_session_maps(app);
         }
-        if plan.fail_loud.is_none() && plan.keep_paths.is_empty() {
-            if let Ok(root) = documents_root(app) {
+        if let Ok(root) = documents_root(app) {
+            crate::session_stage::clear_persistent_active_marker_in(&root);
+        }
+        if plan.fail_loud.is_none() && plan.keep_paths.is_empty()
+            && let Ok(root) = documents_root(app) {
                 crate::session_stage::write_clean_exit_marker_in(&root);
             }
-        }
     }
     #[cfg(not(windows))]
     {
+        if let Ok(root) = documents_root(app) {
+            crate::session_stage::clear_persistent_active_marker_in(&root);
+        }
         clear_session_sidecars(app);
     }
 }
@@ -1078,6 +1145,32 @@ pub fn session_end(app: &AppHandle) {
 /// Flush live session maps & paths right before handing ownership off to the headless daemon.
 pub fn persist_session_handoff(app: &AppHandle) {
     persist_activation_sidecars(app);
+}
+
+/// Flush live session maps, diff-reconcile HKCU per-user font keys, and stamp `.persistent-active`
+/// before exiting in Zero-RAM Instant mode (active fonts stay live with 0 MB app RAM).
+pub fn persist_persistent_zero_ram_session(app: &AppHandle) {
+    persist_activation_sidecars(app);
+    #[cfg(windows)]
+    {
+        if crate::session_stage::hkcu_sync_enabled() {
+            let stages = crate::session_stage::filter_session_paths_refuse_documents(
+                &winfont::snapshot_stage_paths(),
+            );
+            let _ = winfont::diff_reconcile_hkcu_entries(&stages);
+        }
+        if let Ok(root) = documents_root(app) {
+            let has_active = !winfont::loaded_is_empty()
+                || !crate::session_stage::load_session_maps_in(&root).is_empty();
+            if has_active {
+                let _ = crate::session_stage::take_clean_exit_marker_in(&root);
+                crate::session_stage::write_persistent_active_marker_in(&root);
+            } else {
+                crate::session_stage::clear_persistent_active_marker_in(&root);
+            }
+        }
+        notify_fonts_changed();
+    }
 }
 
 /// Headless pure-Rust login activation (`fonths.exe --daemon`): registers remembered
@@ -1233,28 +1326,44 @@ pub fn session_begin_headless() {
     }
 }
 
+#[cfg(windows)]
+fn unload_headless_session_paths(include_all_staged: bool) {
+    winfont::begin_unload();
+    winfont::clear_all_hkcu_session_entries();
+    let mut extra = winfont::snapshot_stage_paths();
+    let live_maps = winfont::snapshot_face_maps();
+    extra = merge_unique_paths(extra, crate::session_stage::stage_paths_from_maps(&live_maps));
+    if include_all_staged {
+        extra = merge_unique_paths(extra, winfont::list_gdi_maps_files());
+    }
+    let root_opt = documents_root_headless();
+    if let Some(ref root) = root_opt {
+        extra = merge_unique_paths(extra, load_session_paths_in(root));
+        let disk_maps = crate::session_stage::load_session_maps_in(root);
+        extra = merge_unique_paths(extra, crate::session_stage::stage_paths_from_maps(&disk_maps));
+    }
+    extra = crate::session_stage::filter_session_paths_refuse_documents(&extra);
+    let _ = winfont::unload_paths(extra, true);
+    if let Some(ref root) = root_opt {
+        clear_session_sidecars_in(root);
+        crate::session_stage::clear_persistent_active_marker_in(root);
+        crate::session_stage::clear_session_maps_in(root);
+        crate::session_stage::write_clean_exit_marker_in(root);
+    }
+    notify_fonts_changed();
+}
+
 /// Headless pure-Rust daemon exit: unloads every staged session path, clears HKCU keys,
 /// broadcasts `WM_FONTCHANGE`, clears sidecars, and writes `.session-clean-exit`.
 pub fn session_end_headless() {
     #[cfg(windows)]
-    {
-        winfont::begin_unload();
-        winfont::clear_all_hkcu_session_entries();
-        let mut extra = winfont::snapshot_stage_paths();
-        let live_maps = winfont::snapshot_face_maps();
-        extra = merge_unique_paths(extra, crate::session_stage::stage_paths_from_maps(&live_maps));
-        let root_opt = documents_root_headless();
-        if let Some(ref root) = root_opt {
-            extra = merge_unique_paths(extra, load_session_paths_in(root));
-            let disk_maps = crate::session_stage::load_session_maps_in(root);
-            extra = merge_unique_paths(extra, crate::session_stage::stage_paths_from_maps(&disk_maps));
-        }
-        extra = crate::session_stage::filter_session_paths_refuse_documents(&extra);
-        let _ = winfont::unload_paths(extra, true);
-        if let Some(ref root) = root_opt {
-            clear_session_sidecars_in(root);
-            crate::session_stage::clear_session_maps_in(root);
-            crate::session_stage::write_clean_exit_marker_in(root);
-        }
-    }
+    unload_headless_session_paths(false);
+}
+
+/// CLI `--deactivate-all-and-exit` hook (NSIS uninstaller): cleanly unloads all staged
+/// session paths, removes all `Fonths Session ` HKCU entries, clears sidecars + `.persistent-active`,
+/// and broadcasts `WM_FONTCHANGE` without touching `C:\Windows\Fonts`.
+pub fn deactivate_all_and_exit_headless() {
+    #[cfg(windows)]
+    unload_headless_session_paths(true);
 }

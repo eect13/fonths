@@ -34,4 +34,7 @@
   !insertmacro FM_ASK_CLOSE "fonths"
   !insertmacro FM_ASK_CLOSE "font-manager"
   !insertmacro FM_ASK_CLOSE "${MAINBINARYNAME}"
+  IfFileExists "$INSTDIR\fonths.exe" 0 +3
+    nsExec::ExecToStack '"$INSTDIR\fonths.exe" --deactivate-all-and-exit'
+    Pop $R9
 !macroend

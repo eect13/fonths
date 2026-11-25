@@ -74,6 +74,7 @@ const FitSpecimen = memo(function FitSpecimen({
 }) {
   const maxSize = typeof style.fontSize === "number" ? style.fontSize : Number.parseFloat(String(style.fontSize ?? 36));
   const fittedPx = useRef(0);
+  const lastFitKeyRef = useRef("");
   const [faceTick, setFaceTick] = useState(0);
 
   useEffect(() => {
@@ -112,25 +113,49 @@ const FitSpecimen = memo(function FitSpecimen({
     if (fittedPx.current > 0) el.style.fontSize = `${fittedPx.current}px`;
   }, [specRef, weight, fvs, style.fontStyle]);
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     const el = specRef.current;
     if (!el || !ready) return;
-    let size = Number.isFinite(maxSize) && maxSize > 0 ? maxSize : 36;
-    el.style.fontSize = `${size}px`;
-    const pane = el.parentElement;
-    let budget = el.clientHeight;
-    if (pane) {
-      const cs = getComputedStyle(pane);
-      budget =
-        pane.clientHeight - (Number.parseFloat(cs.paddingTop) || 0) - (Number.parseFloat(cs.paddingBottom) || 0);
-    }
-    let guard = 0;
-    while (el.scrollHeight > budget + 1 && size > 13 && guard < 14) {
-      size *= 0.86;
-      el.style.fontSize = `${size}px`;
-      guard += 1;
-    }
-    fittedPx.current = size;
+    let cancelled = false;
+    const raf = window.requestAnimationFrame(() => {
+      if (cancelled) return;
+      const startSize = Number.isFinite(maxSize) && maxSize > 0 ? maxSize : 36;
+      const pane = el.parentElement;
+      let budget = el.clientHeight;
+      if (pane) {
+        const cs = getComputedStyle(pane);
+        budget =
+          pane.clientHeight - (Number.parseFloat(cs.paddingTop) || 0) - (Number.parseFloat(cs.paddingBottom) || 0);
+      }
+      const key = `${startSize}|${fitKey}|${faceTick}|${String(style.fontFamily)}|${String(style.fontStyle)}|${String(style.lineHeight)}|${String(style.letterSpacing)}|${el.clientWidth}|${Math.round(budget)}`;
+      if (key === lastFitKeyRef.current && fittedPx.current > 0) {
+        el.style.fontSize = `${fittedPx.current}px`;
+        return;
+      }
+      el.style.fontSize = `${startSize}px`;
+      let chosen = startSize;
+      if (el.scrollHeight > budget + 1 && startSize > 13 && budget > 0) {
+        let lo = 13;
+        let hi = startSize;
+        for (let step = 0; step < 5; step += 1) {
+          const mid = (lo + hi) * 0.5;
+          el.style.fontSize = `${mid}px`;
+          if (el.scrollHeight <= budget + 1) {
+            chosen = mid;
+            lo = mid;
+          } else {
+            hi = mid;
+          }
+        }
+        el.style.fontSize = `${chosen}px`;
+      }
+      fittedPx.current = chosen;
+      lastFitKeyRef.current = key;
+    });
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(raf);
+    };
   }, [ready, loaded, faceTick, fitKey, maxSize, weight, style.fontFamily, style.fontStyle, style.lineHeight, style.letterSpacing, specRef]);
 
   return (

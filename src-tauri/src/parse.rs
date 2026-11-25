@@ -29,7 +29,7 @@ pub struct CmapGlyph {
     pub name: String,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Debug, Serialize, serde::Deserialize, Clone)]
 pub struct FontAxisOut {
     pub tag: String,
     pub name: String,
@@ -39,7 +39,7 @@ pub struct FontAxisOut {
     pub def_value: f64,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Debug, Serialize, serde::Deserialize, Clone)]
 pub struct FontMetricsOut {
     pub upem: u16,
     #[serde(rename = "weightClass")]
@@ -58,7 +58,7 @@ pub struct FontMetricsOut {
     pub is_fixed_pitch: Option<bool>,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Debug, Serialize, serde::Deserialize, Clone)]
 pub struct FontLayout {
     pub axes: Vec<FontAxisOut>,
     #[serde(rename = "otFeatures")]
@@ -364,11 +364,10 @@ fn axes_from_face(font: &FontRef<'_>) -> Vec<FontAxisOut> {
             continue;
         }
         let mut name = name_by_id(font, axis.axis_name_id()).unwrap_or_else(|| tag.clone());
-        if name == tag {
-            if let Some(stat) = stat_names.get(&tag) {
+        if name == tag
+            && let Some(stat) = stat_names.get(&tag) {
                 name = stat.clone();
             }
-        }
         axes.push(FontAxisOut {
             tag,
             name,
@@ -454,20 +453,18 @@ fn metrics_from_face(font: &FontRef<'_>) -> FontMetricsOut {
 
 fn layout_from_face(font: &FontRef<'_>) -> FontLayout {
     let mut ot = BTreeSet::new();
-    if let Ok(gsub) = font.gsub() {
-        if let Ok(flist) = gsub.feature_list() {
+    if let Ok(gsub) = font.gsub()
+        && let Ok(flist) = gsub.feature_list() {
             for rec in flist.feature_records() {
                 ot.insert(rec.feature_tag().to_string());
             }
         }
-    }
-    if let Ok(gpos) = font.gpos() {
-        if let Ok(flist) = gpos.feature_list() {
+    if let Ok(gpos) = font.gpos()
+        && let Ok(flist) = gpos.feature_list() {
             for rec in flist.feature_records() {
                 ot.insert(rec.feature_tag().to_string());
             }
         }
-    }
     let axes = axes_from_face(font);
     let glyph_count = font.maxp().ok().map(|m| m.num_glyphs()).unwrap_or(0);
     FontLayout {
@@ -520,7 +517,7 @@ fn cmap_cache() -> &'static Mutex<HashMap<String, Vec<CmapGlyph>>> {
     C.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn path_mtime_size_key(path: &Path) -> Option<(String, u64, u64)> {
+pub(crate) fn path_mtime_size_key(path: &Path) -> Option<(String, u64, u64)> {
     let meta = std::fs::metadata(path).ok()?;
     let mtime_secs = meta
         .modified()
@@ -535,25 +532,27 @@ fn path_mtime_size_key(path: &Path) -> Option<(String, u64, u64)> {
     Some((norm, mtime_secs, meta.len()))
 }
 
-fn layout_cache() -> &'static Mutex<HashMap<(String, u64, u64), FontLayout>> {
-    static C: OnceLock<Mutex<HashMap<(String, u64, u64), FontLayout>>> = OnceLock::new();
+type PathCacheKey = (String, u64, u64);
+type LayoutCacheMap = Mutex<HashMap<PathCacheKey, FontLayout>>;
+type IndexCacheMap = Mutex<HashMap<PathCacheKey, Vec<FontIndexOut>>>;
+
+fn layout_cache() -> &'static LayoutCacheMap {
+    static C: OnceLock<LayoutCacheMap> = OnceLock::new();
     C.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn index_cache() -> &'static Mutex<HashMap<(String, u64, u64), Vec<FontIndexOut>>> {
-    static C: OnceLock<Mutex<HashMap<(String, u64, u64), Vec<FontIndexOut>>>> = OnceLock::new();
+fn index_cache() -> &'static IndexCacheMap {
+    static C: OnceLock<IndexCacheMap> = OnceLock::new();
     C.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 pub fn parse_layout_for_path_cached(path: &Path) -> Result<FontLayout, String> {
     let key = path_mtime_size_key(path);
-    if let Some(ref k) = key {
-        if let Ok(cache) = layout_cache().lock() {
-            if let Some(hit) = cache.get(k) {
+    if let Some(ref k) = key
+        && let Ok(cache) = layout_cache().lock()
+            && let Some(hit) = cache.get(k) {
                 return Ok(hit.clone());
             }
-        }
-    }
     // Zero-copy mmap + Fontations (`read-fonts`) touches only metadata pages on disk.
     let file = crate::fast_parse::open_shared_read(path).map_err(|e| e.to_string())?;
     let layout = if let Ok(mmap) = unsafe { Mmap::map(&file) } {
@@ -564,14 +563,13 @@ pub fn parse_layout_for_path_cached(path: &Path) -> Result<FontLayout, String> {
         let data = std::fs::read(path).map_err(|e| e.to_string())?;
         merge_layouts(all_faces(&data, |_, _, face| layout_from_face(face))?)?
     };
-    if let Some(k) = key {
-        if let Ok(mut cache) = layout_cache().lock() {
+    if let Some(k) = key
+        && let Ok(mut cache) = layout_cache().lock() {
             if cache.len() >= 2048 {
                 cache.clear();
             }
             cache.insert(k, layout.clone());
         }
-    }
     Ok(layout)
 }
 
@@ -584,11 +582,10 @@ pub async fn parse_family_cmap(app: AppHandle, family: String) -> Result<Vec<Cma
 
 pub fn parse_family_cmap_blocking(app: AppHandle, family: String) -> Result<Vec<CmapGlyph>, String> {
     let key = family.to_ascii_lowercase();
-    if let Ok(cache) = cmap_cache().lock() {
-        if let Some(hit) = cache.get(&key) {
+    if let Ok(cache) = cmap_cache().lock()
+        && let Some(hit) = cache.get(&key) {
             return Ok(hit.clone());
         }
-    }
     let path = activate::read_family_font_blocking(app, family, None)?;
     let file = crate::fast_parse::open_shared_read(Path::new(&path)).map_err(|e| e.to_string())?;
     let glyphs = if let Ok(mmap) = unsafe { Mmap::map(&file) } {
@@ -709,6 +706,29 @@ pub fn hash_font_path_blocking(path: String) -> Result<String, String> {
     hash_file(Path::new(&path))
 }
 
+/// Hash multiple on-disk font files in parallel with `rayon` streaming SHA-256 so JS
+/// duplicate detection never allocates huge `ArrayBuffer` copies from IndexedDB.
+#[tauri::command]
+pub async fn hash_font_paths(paths: Vec<String>) -> Result<Vec<(String, String)>, String> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    tauri::async_runtime::spawn_blocking(move || Ok(hash_font_paths_blocking(&paths)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+pub fn hash_font_paths_blocking(paths: &[String]) -> Vec<(String, String)> {
+    use rayon::prelude::*;
+    paths
+        .par_iter()
+        .filter_map(|p| {
+            let hash = crate::fast_parse::sha256_file_streaming(Path::new(p)).ok()?;
+            Some((p.clone(), hash))
+        })
+        .collect()
+}
+
 #[derive(Serialize, Clone)]
 pub struct FontIndexOut {
     pub path: String,
@@ -737,13 +757,11 @@ pub struct FontIndexOut {
 
 fn index_one_path(path: &Path) -> Result<Vec<FontIndexOut>, String> {
     let cache_key = path_mtime_size_key(path);
-    if let Some(ref k) = cache_key {
-        if let Ok(cache) = index_cache().lock() {
-            if let Some(hit) = cache.get(k) {
+    if let Some(ref k) = cache_key
+        && let Ok(cache) = index_cache().lock()
+            && let Some(hit) = cache.get(k) {
                 return Ok(hit.clone());
             }
-        }
-    }
     let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
     let file_size = meta.len();
     if file_size < 12 {
@@ -812,14 +830,13 @@ fn index_one_path(path: &Path) -> Result<Vec<FontIndexOut>, String> {
         })?
     };
 
-    if let Some(k) = cache_key {
-        if let Ok(mut cache) = index_cache().lock() {
+    if let Some(k) = cache_key
+        && let Ok(mut cache) = index_cache().lock() {
             if cache.len() >= 131_072 {
                 cache.clear();
             }
             cache.insert(k, out.clone());
         }
-    }
     Ok(out)
 }
 
@@ -1389,5 +1406,29 @@ pub(crate) mod tests {
                 row.path
             );
         }
+    }
+
+    #[test]
+    fn hash_font_paths_computes_real_sha256_in_parallel() {
+        let dir = std::env::temp_dir().join(format!("fm-hash-paths-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f1 = dir.join("a.ttf");
+        let f2 = dir.join("b.ttf");
+        let fig = include_bytes!("../../tests/fixtures/Figtree-wght.ttf");
+        std::fs::write(&f1, fig).unwrap();
+        std::fs::write(&f2, fig).unwrap();
+
+        let missing = dir.join("missing.ttf");
+        let out = hash_font_paths_blocking(&[
+            f1.to_string_lossy().into(),
+            f2.to_string_lossy().into(),
+            missing.to_string_lossy().into(),
+        ]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].1, out[1].1);
+        assert_eq!(out[0].1.len(), 64);
+        assert_eq!(out[0].1, hex_sha256(fig));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

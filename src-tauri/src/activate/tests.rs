@@ -1275,7 +1275,7 @@ mod install_path_tests {
             urls[1],
             "https://raw.githubusercontent.com/google/fonts/main/ofl/chirongoroundtc/ChironGoRoundTC%5Bwght%5D.ttf"
         );
-        assert!(MAX_TTF_FETCH_BYTES >= 64 * 1024 * 1024, "CJK VFs need >52MB headroom");
+        const { assert!(MAX_TTF_FETCH_BYTES >= 64 * 1024 * 1024, "CJK VFs need >52MB headroom"); }
     }
 
     #[test]
@@ -2933,7 +2933,7 @@ mod session_sidecar_tests {
         let root = temp_root("stale");
         let fake = root.join("face.ttf");
         fs::write(&fake, b"\x00\x01\x00\x00").unwrap();
-        save_session_paths_in(&root, &[fake.clone()]);
+        save_session_paths_in(&root, std::slice::from_ref(&fake));
         fs::write(session_active_file_in(&root), b"[\"Roboto\"]\n").unwrap();
         crate::session_stage::save_session_maps_in(
             &root,
@@ -3337,7 +3337,7 @@ mod session_sidecar_tests {
         let woff = up.join("My-Upload.woff2");
         fs::write(&woff, b"wOF2 not an sfnt").unwrap();
         fs::write(up.join(".complete"), b"1").unwrap();
-        boot_tidy_family_dir(&up, &[woff.clone()], false);
+        boot_tidy_family_dir(&up, std::slice::from_ref(&woff), false);
         assert!(woff.is_file(), "WOFF2 upload must survive startup");
         assert!(up.is_dir());
         let empty = root.join("Empty");
@@ -3414,7 +3414,7 @@ mod session_sidecar_tests {
             let at = out.len();
             out[r + 8..r + 12].copy_from_slice(&(at as u32).to_be_bytes());
             out.extend_from_slice(&ttc[off..off + len]);
-            while out.len() % 4 != 0 {
+            while !out.len().is_multiple_of(4) {
                 out.push(0);
             }
         }
@@ -3954,11 +3954,11 @@ mod c260_tests {
         fs::create_dir_all(&d).unwrap();
         fs::write(d.join("barlow-400-normal.ttf"), sfnt(272)).unwrap();
         fs::write(d.join("barlow-500-normal.ttf"), sfnt(680)).unwrap();
-        assert!(repair_must_download(&[d.clone()], "Barlow"), "cut 400 → download path");
+        assert!(repair_must_download(std::slice::from_ref(&d), "Barlow"), "cut 400 → download path");
         fs::write(d.join("barlow-400-normal.ttf"), sfnt(680)).unwrap();
-        assert!(repair_must_download(&[d.clone()], "Barlow"), "pre-c258 (no .full-source) → download path");
+        assert!(repair_must_download(std::slice::from_ref(&d), "Barlow"), "pre-c258 (no .full-source) → download path");
         gfsource::set_full_source(&d, ListingSource::Manifest);
-        assert!(!repair_must_download(&[d.clone()], "Barlow"), "healthy full-source folder → reregister is fine");
+        assert!(!repair_must_download(std::slice::from_ref(&d), "Barlow"), "healthy full-source folder → reregister is fine");
         // The retry loop asks before reregistering.
         let body = fn_body("pub fn retry_google_downloads_blocking", 2500);
         let ask = body.find("repair_must_download").expect("retry must ask repair_must_download");
@@ -4075,7 +4075,7 @@ mod c260f_tests {
         fs::create_dir_all(&inactive).unwrap();
         fs::create_dir_all(&active).unwrap();
         // Inactive cut family: files only.
-        mark_repair_files_only("Barlow", &[inactive.clone()]);
+        mark_repair_files_only("Barlow", std::slice::from_ref(&inactive));
         assert!(repair_files_only("Barlow"));
         assert!(!register_allowed_for_path(&inactive.join("barlow-400-normal.ttf")), "no GDI load");
         assert!(!session_join_after_download("Barlow"), "stays inactive");
@@ -4149,7 +4149,7 @@ mod c263_tests {
     #[test]
     fn c263_b2_files_only_marks_cleared() {
         let d = std::env::temp_dir().join(format!("fm-c263-{}", std::process::id()));
-        mark_repair_files_only("Barlow", &[d.clone()]);
+        mark_repair_files_only("Barlow", std::slice::from_ref(&d));
         mark_repair_files_only("Tinos", &[d.join("t")]);
         clear_all_repair_files_only();
         assert!(!repair_files_only("Barlow") && !repair_files_only("Tinos"));

@@ -55,7 +55,7 @@ const familyFaces = new Map<string, FontFace[]>();
 /** Track fallback Blob URLs per family so eviction revokes them and prevents memory leaks. */
 const familyBlobUrls = new Map<string, string[]>();
 /** Drop oldest FontFace families so 2k+ Activate does not grow document.fonts without bound. */
-const FACE_LRU = 384;
+const FACE_LRU = 512;
 /** Injected Google/Fontsource `<style>` tags — CSSOM has no FontFace LRU. */
 export const CSS_LRU = 96;
 const cssOrder: string[] = [];
@@ -989,13 +989,8 @@ export async function loadLocalFont(font: FontRecord): Promise<void> {
   if (pending) return pending;
 
   const promise = (async () => {
-    const blob = await idbGet(font.id);
-    if (!blob) return;
-    const buffer = await blob.arrayBuffer();
-    const copy = buffer.slice(0);
-    const probed = await rememberFileAxes(font, copy);
-    const isVf = probed === true || (probed === null && font.variable);
     const family = font.cssFamily || font.family;
+    const isVf = font.variable;
     const weight = isVf ? vfWeight(font) : String(font.weights[0] ?? 400);
     const style = isVf ? vfStyleDescriptor(font) : font.italic ? "italic" : "normal";
     const opts: FontFaceDescriptors = {
@@ -1004,8 +999,42 @@ export async function loadLocalFont(font: FontRecord): Promise<void> {
       display: "swap",
       ...(isVf ? { stretch: "50% 200%" } : {}),
     };
+    if (await inTauri()) {
+      try {
+        const { invoke, convertFileSrc } = await import("@tauri-apps/api/core");
+        const diskPath =
+          font.originPath ||
+          (await invoke<string>("read_family_font", {
+            family: font.family,
+            ...(font.italic ? { italic: true } : {}),
+          }).catch(() => ""));
+        if (diskPath) {
+          const url = convertFileSrc(diskPath, "font");
+          const face = new FontFace(family, `url(${JSON.stringify(url)})`, opts);
+          await face.load();
+          document.fonts.add(face);
+          localFaces.set(font.id, { face, url: "" });
+          loadedLocal.add(font.id);
+          return;
+        }
+      } catch {
+        /* fall back to IndexedDB bytes below */
+      }
+    }
+    const blob = await idbGet(font.id);
+    if (!blob) return;
+    const buffer = await blob.arrayBuffer();
+    const copy = buffer.slice(0);
+    const probed = await rememberFileAxes(font, copy);
+    const resolvedVf = probed === true || (probed === null && font.variable);
+    const resolvedOpts: FontFaceDescriptors = {
+      weight: resolvedVf ? vfWeight(font) : String(font.weights[0] ?? 400),
+      style: resolvedVf ? vfStyleDescriptor(font) : font.italic ? "italic" : "normal",
+      display: "swap",
+      ...(resolvedVf ? { stretch: "50% 200%" } : {}),
+    };
     try {
-      const face = new FontFace(family, copy, opts);
+      const face = new FontFace(family, copy, resolvedOpts);
       await face.load();
       document.fonts.add(face);
       localFaces.set(font.id, { face, url: "" });
@@ -1015,7 +1044,7 @@ export async function loadLocalFont(font: FontRecord): Promise<void> {
       /* WebView2 sometimes rejects raw buffers; fall back to a blob URL. */
     }
     const url = URL.createObjectURL(new Blob([copy], { type: blob.type || "font/ttf" }));
-    const face = new FontFace(family, `url(${url})`, opts);
+    const face = new FontFace(family, `url(${url})`, resolvedOpts);
     await face.load();
     document.fonts.add(face);
     localFaces.set(font.id, { face, url });

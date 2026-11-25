@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeftRight, ChevronDown, ChevronUp, Columns2, Copy, Lock, RotateCcw, Sparkles, Square, Unlock, ZoomIn } from "lucide-react";
+import { ArrowLeftRight, ChevronDown, ChevronUp, Columns2, Copy, Cpu, Lock, RotateCcw, Sparkles, Square, Unlock, ZoomIn } from "lucide-react";
 import { toast } from "sonner";
 import { copyText } from "@/lib/copy-text";
 import { Badge } from "@/components/ui/badge";
@@ -7,11 +7,17 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { FontPicker } from "./font-picker";
+import { SkiaFontCanvas } from "./skia-font-canvas";
+import { inDesktopShell } from "@/lib/desktop/open-fonts";
 import { googleFontId } from "@/lib/fonts/catalog";
 import { cssFamilyStack, loadFont, loadFontWeight } from "@/lib/fonts/loader";
+import { nativeFamilyLayout } from "@/lib/fonts/native-parse";
+import { HIDDEN as HIDDEN_OT_TAGS, labelForFeature } from "@/lib/fonts/ot-features";
+import { familyFontFiles } from "@/lib/fonts/skia-engine";
 import { loadSystemFonts } from "@/lib/fonts/system-fonts";
 import { synthesisForFont } from "@/lib/fonts/synthesis";
 import { allFonts, findFont, useFontStore } from "@/lib/fonts/store";
+import type { FontRecord } from "@/lib/fonts/types";
 import {
   axesForFont,
   defaultAxisValues,
@@ -85,11 +91,24 @@ function loadPlaygroundSnapshot(): PlaygroundSnapshot {
   }
 }
 
+function loadFontBounded(font: FontRecord, ms = 4000): Promise<void> {
+  return Promise.race([
+    loadFont(font, "full"),
+    new Promise<void>((resolve) => window.setTimeout(resolve, ms)),
+  ]);
+}
+
+function resolveFontPaths(font: FontRecord | undefined): Promise<string[]> {
+  if (!font) return Promise.resolve([]);
+  if (font.originPath) return Promise.resolve([font.originPath]);
+  return familyFontFiles(font.family);
+}
+
 function buildFeatureSettings(map: Record<string, boolean>): string | undefined {
   const parts: string[] = [];
-  for (const item of OT_TOGGLES) {
-    if (map[item.tag] === true) parts.push(`"${item.tag}" 1`);
-    else if (map[item.tag] === false && item.tag === "liga") parts.push(`"liga" 0`);
+  for (const [tag, enabled] of Object.entries(map)) {
+    if (enabled) parts.push(`"${tag}" 1`);
+    else if (tag === "liga") parts.push(`"liga" 0`);
   }
   return parts.length ? parts.join(", ") : undefined;
 }
@@ -205,6 +224,15 @@ export function Playground() {
   );
   const [controlsCollapsed, setControlsCollapsed] = useState(false);
   const [singlePane, setSinglePane] = useState(false);
+  const [desktopShell, setDesktopShell] = useState(false);
+  const [useFontations, setUseFontations] = useState(false);
+  const [leftPaths, setLeftPaths] = useState<string[]>([]);
+  const [rightPaths, setRightPaths] = useState<string[]>([]);
+  const [discoveredOtTags, setDiscoveredOtTags] = useState<string[]>([]);
+
+  useEffect(() => {
+    void inDesktopShell().then(setDesktopShell);
+  }, []);
   const [otFeatures, setOtFeatures] = useState<Record<string, boolean>>(
     () => (snap.otFeatures && typeof snap.otFeatures === "object" ? snap.otFeatures : { liga: true }),
   );
@@ -330,17 +358,10 @@ export function Playground() {
   }, [hydrated, activatedFonts, localFonts, googleFonts, leftId, rightId]);
 
   useEffect(() => {
-    if (left) void loadFont(left, "full");
-  }, [left]);
-  useEffect(() => {
-    if (right) void loadFont(right, "full");
-  }, [right]);
-
-  useEffect(() => {
     const cur = leftRef.current;
     setSuggestIdx(0);
     if (!cur) return;
-    void loadFont(cur, "full");
+    void loadFontBounded(cur);
     if (keepLeftPresetRef.current) {
       keepLeftPresetRef.current = false;
       return;
@@ -352,7 +373,7 @@ export function Playground() {
   useEffect(() => {
     const cur = rightRef.current;
     if (!cur) return;
-    void loadFont(cur, "full");
+    void loadFontBounded(cur);
     if (keepRightPresetRef.current) {
       keepRightPresetRef.current = false;
       return;
@@ -360,6 +381,44 @@ export function Playground() {
     setRightAxes(defaultAxisValues(axesForFont(cur), instancesForFont(cur)));
     setRightWeight(defaultWeightForFont(cur));
   }, [rightId]);
+
+  useEffect(() => {
+    const base = new Set<string>();
+    for (const tag of leftRef.current?.otFeatures ?? []) base.add(tag);
+    for (const tag of rightRef.current?.otFeatures ?? []) base.add(tag);
+    setDiscoveredOtTags([...base]);
+    if (!desktopShell) return;
+    let cancelled = false;
+    void (async () => {
+      const fams = [leftRef.current?.family, rightRef.current?.family].filter((f): f is string => Boolean(f));
+      const layouts = await Promise.all(fams.map((f) => nativeFamilyLayout(f).catch(() => null)));
+      if (cancelled) return;
+      const merged = new Set(base);
+      for (const layout of layouts) {
+        for (const tag of layout?.otFeatures ?? []) merged.add(tag);
+      }
+      setDiscoveredOtTags([...merged]);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [leftId, rightId, desktopShell]);
+
+  useEffect(() => {
+    if (!useFontations || !desktopShell) return;
+    let cancelled = false;
+    void Promise.all([resolveFontPaths(leftRef.current), resolveFontPaths(rightRef.current)]).then(
+      ([lp, rp]) => {
+        if (!cancelled) {
+          setLeftPaths(lp);
+          setRightPaths(rp);
+        }
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [useFontations, leftId, rightId, desktopShell]);
 
   const featureSettings = useMemo(() => buildFeatureSettings(otFeatures), [otFeatures]);
 
@@ -603,6 +662,27 @@ export function Playground() {
     fontFeatureSettings: featureSettings,
   };
 
+  const numericOtFeatures = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const [tag, enabled] of Object.entries(otFeatures)) {
+      if (enabled) out[tag] = 1;
+      else if (tag === "liga") out.liga = 0;
+    }
+    return out;
+  }, [otFeatures]);
+
+  const allOtPills = useMemo(() => {
+    const seen = new Set(OT_TOGGLES.map((t) => t.tag));
+    const extras: { tag: string; label: string; hint: string }[] = [];
+    for (const tag of discoveredOtTags) {
+      if (seen.has(tag) || HIDDEN_OT_TAGS.has(tag)) continue;
+      seen.add(tag);
+      extras.push({ tag, label: tag, hint: labelForFeature(tag) });
+      if (extras.length >= 16) break;
+    }
+    return [...OT_TOGGLES, ...extras];
+  }, [discoveredOtTags]);
+
   const zoomWrapperStyle: React.CSSProperties =
     zoom === 1
       ? {}
@@ -747,6 +827,21 @@ export function Playground() {
             Suggest pair
           </Button>
           <span className="hidden h-3.5 w-px bg-border sm:inline-block" aria-hidden />
+          {desktopShell ? (
+            <Button
+              type="button"
+              size="sm"
+              variant={useFontations ? "default" : "outline"}
+              className="h-6 px-2 text-[11px]"
+              aria-pressed={useFontations}
+              data-testid="playground-fontations-toggle"
+              title="Render Heading and Body via Rust Fontations (HarfRust + Skrifa) canvas"
+              onClick={() => setUseFontations((v) => !v)}
+            >
+              <Cpu className="size-3" />
+              Fontations
+            </Button>
+          ) : null}
           <Button
             type="button"
             size="sm"
@@ -786,25 +881,73 @@ export function Playground() {
           data-testid="playground-viewport-primary"
         >
           <div style={zoomWrapperStyle}>
+            {useFontations && leftPaths.length > 0 ? (
+              <div className="mb-2" style={headingBaseStyle}>
+                <SkiaFontCanvas
+                  slot="playground-heading-primary"
+                  fontPaths={leftPaths}
+                  text={heading}
+                  fontSize={leftSize}
+                  lineHeight={leftLineHeight}
+                  letterSpacing={leftTracking}
+                  weight={leftAxes.wght ?? leftWeight}
+                  features={numericOtFeatures}
+                  variations={leftAxes}
+                  themeKey={invert ? "ink" : "paper"}
+                />
+              </div>
+            ) : null}
             <AutoTextarea
               value={heading}
               onChange={setHeading}
               aria-label="Heading sample"
-              className="outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              style={{
-                ...headingBaseStyle,
-                ...(leftVarStyle ?? {}),
-              }}
+              className={cn(
+                "outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                useFontations && leftPaths.length > 0 && "rounded border border-border/50 px-2 py-1 text-xs opacity-75",
+              )}
+              style={
+                useFontations && leftPaths.length > 0
+                  ? { fontSize: 12, lineHeight: 1.4 }
+                  : {
+                      ...headingBaseStyle,
+                      ...(leftVarStyle ?? {}),
+                    }
+              }
             />
+            {useFontations && rightPaths.length > 0 ? (
+              <div className="mt-4 mb-2" style={bodyBaseStyle}>
+                <SkiaFontCanvas
+                  slot="playground-body-primary"
+                  fontPaths={rightPaths}
+                  text={body}
+                  fontSize={rightSize}
+                  lineHeight={rightLineHeight}
+                  letterSpacing={rightTracking}
+                  weight={rightAxes.wght ?? rightWeight}
+                  features={numericOtFeatures}
+                  variations={rightAxes}
+                  themeKey={invert ? "ink" : "paper"}
+                />
+              </div>
+            ) : null}
             <AutoTextarea
               value={body}
               onChange={setBody}
               aria-label="Body sample"
-              className="mt-4 outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              style={{
-                ...bodyBaseStyle,
-                ...(rightVarStyle ?? {}),
-              }}
+              className={cn(
+                "outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                useFontations && rightPaths.length > 0
+                  ? "mt-2 rounded border border-border/50 px-2 py-1 text-xs opacity-75"
+                  : "mt-4",
+              )}
+              style={
+                useFontations && rightPaths.length > 0
+                  ? { fontSize: 12, lineHeight: 1.4 }
+                  : {
+                      ...bodyBaseStyle,
+                      ...(rightVarStyle ?? {}),
+                    }
+              }
             />
           </div>
         </article>
@@ -824,24 +967,58 @@ export function Playground() {
           data-testid="playground-viewport-inverted"
         >
           <div style={zoomWrapperStyle}>
-            <p
-              className="break-words [overflow-wrap:anywhere]"
-              style={{
-                ...headingBaseStyle,
-                ...(leftVarStyle ?? {}),
-              }}
-            >
-              {heading}
-            </p>
-            <p
-              className="mt-4 max-w-prose break-words [overflow-wrap:anywhere]"
-              style={{
-                ...bodyBaseStyle,
-                ...(rightVarStyle ?? {}),
-              }}
-            >
-              {body}
-            </p>
+            {useFontations && leftPaths.length > 0 ? (
+              <div style={headingBaseStyle}>
+                <SkiaFontCanvas
+                  slot="playground-heading-inverted"
+                  fontPaths={leftPaths}
+                  text={heading}
+                  fontSize={leftSize}
+                  lineHeight={leftLineHeight}
+                  letterSpacing={leftTracking}
+                  weight={leftAxes.wght ?? leftWeight}
+                  features={numericOtFeatures}
+                  variations={leftAxes}
+                  themeKey={invert ? "paper" : "ink"}
+                />
+              </div>
+            ) : (
+              <p
+                className="break-words [overflow-wrap:anywhere]"
+                style={{
+                  ...headingBaseStyle,
+                  ...(leftVarStyle ?? {}),
+                }}
+              >
+                {heading}
+              </p>
+            )}
+            {useFontations && rightPaths.length > 0 ? (
+              <div className="mt-4 max-w-prose" style={bodyBaseStyle}>
+                <SkiaFontCanvas
+                  slot="playground-body-inverted"
+                  fontPaths={rightPaths}
+                  text={body}
+                  fontSize={rightSize}
+                  lineHeight={rightLineHeight}
+                  letterSpacing={rightTracking}
+                  weight={rightAxes.wght ?? rightWeight}
+                  features={numericOtFeatures}
+                  variations={rightAxes}
+                  themeKey={invert ? "paper" : "ink"}
+                />
+              </div>
+            ) : (
+              <p
+                className="mt-4 max-w-prose break-words [overflow-wrap:anywhere]"
+                style={{
+                  ...bodyBaseStyle,
+                  ...(rightVarStyle ?? {}),
+                }}
+              >
+                {body}
+              </p>
+            )}
           </div>
         </article>
         ) : null}
@@ -917,7 +1094,7 @@ export function Playground() {
         </div>
 
         <div className="flex flex-wrap items-center gap-1" role="group" aria-label="OpenType features">
-          {OT_TOGGLES.map((feat) => {
+          {allOtPills.map((feat) => {
             const on = Boolean(otFeatures[feat.tag]);
             return (
               <button
