@@ -1,3 +1,4 @@
+import { readRustModule, readTsModule } from "./lib/read-source.mjs";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -22,25 +23,25 @@ const downloadBar = readFileSync(
   join(root, "src/components/font-studio/download-bar.tsx"),
   "utf8",
 );
-const osActivate = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf8");
+const osActivate = readTsModule(root, "src/lib/fonts/os-activate.ts");
 const activateQueueSrc = readFileSync(
   join(root, "src/lib/fonts/activate-queue.mjs"),
   "utf8",
 );
 const gdiMirror = readFileSync(join(root, "src/lib/fonts/gdi-incapable.ts"), "utf8");
-const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
+const activateRs = readRustModule(root, "src-tauri/src/activate.rs");
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const readme = readFileSync(join(root, "README.md"), "utf8");
 const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 
 test("206s keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.3.0");
-  assert.match(version, /2\.3\.0/);
+  assert.equal(pkg.version, "2.4.0");
+  assert.match(version, /2\.4\.0/);
   const tauri = JSON.parse(
     readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"),
   );
-  assert.equal(tauri.version, "2.3.0");
+  assert.equal(tauri.version, "2.4.0");
 });
 
 test("docs mark 206s Fixed; UIA smoke hooks; no tip-install/pack", () => {
@@ -50,12 +51,14 @@ test("docs mark 206s Fixed; UIA smoke hooks; no tip-install/pack", () => {
   assert.match(readme, /No tip-install/);
   if (bugs) assert.match(bugs, /No tip-install/);
   if (bugs) {
-    const sStart = bugs.indexOf("## Fixed in tip / 1.0.206s");
-    assert.ok(sStart >= 0);
-    const sSec = bugs.slice(sStart, bugs.indexOf("## Fixed in tip / 1.0.206r"));
-    assert.doesNotMatch(sSec, /tip-install(?!\/pack)|APPROVE FOR PACK/i);
-    assert.match(sSec, /Settings|density|Activate All|Deactivate All|Pause|Cancel/i);
-  }
+    if (bugs) {
+      const sStart = bugs.indexOf("## Fixed in tip / 1.0.206s");
+      assert.ok(sStart >= 0);
+      const sSec = bugs.slice(sStart, bugs.indexOf("## Fixed in tip / 1.0.206r"));
+      assert.doesNotMatch(sSec, /tip-install(?!\/pack)|APPROVE FOR PACK/i);
+      assert.match(sSec, /Settings|density|Activate All|Deactivate All|Pause|Cancel/i);
+    }
+    }
 });
 
 test("Settings gear: stable aria-label Settings + data-testid settings-open", () => {

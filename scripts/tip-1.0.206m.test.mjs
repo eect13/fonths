@@ -22,8 +22,8 @@ const HONEST_PREFER =
   "selected/favorites/visible/first-page/recent";
 
 test("206m keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.3.0");
-  assert.match(version, /2\.3\.0/);
+  assert.equal(pkg.version, "2.4.0");
+  assert.match(version, /2\.4\.0/);
 });
 
 test("docs mark 206m; prefer copy honesty; no tip-install", () => {
@@ -74,13 +74,15 @@ test("preferBuckets shared once per Activate All; prefer-order kept", () => {
 
 test("BUGS 206k–h no longer stale-defer session restore prefer", () => {
   if (bugs) {
-    const k = bugs.slice(bugs.indexOf("## Fixed in tip / 1.0.206k"));
-    const hEnd = k.indexOf("## Fixed in tip / 1.0.206g");
-    const kh = hEnd >= 0 ? k.slice(0, hEnd) : k;
-    assert.doesNotMatch(
-      kh,
-      /Deferred \(still\): session restore prefer visible\/favorites\/first-page/,
-    );
-    assert.match(kh, /session restore prefer landed 206l/);
-  }
+    if (bugs) {
+      const k = bugs.slice(bugs.indexOf("## Fixed in tip / 1.0.206k"));
+      const hEnd = k.indexOf("## Fixed in tip / 1.0.206g");
+      const kh = hEnd >= 0 ? k.slice(0, hEnd) : k;
+      assert.doesNotMatch(
+        kh,
+        /Deferred \(still\): session restore prefer visible\/favorites\/first-page/,
+      );
+      assert.match(kh, /session restore prefer landed 206l/);
+    }
+    }
 });

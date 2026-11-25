@@ -72,7 +72,11 @@ async function reclassifyStoredLocalFonts(cancelled: () => boolean) {
       let otFeatures = font.otFeatures;
       const thinTags = !tags.length || (tags.length === 1 && tags[0] === "uploaded");
       const missingMeta = metrics && metrics.sFamilyClass === undefined && metrics.isFixedPitch === undefined;
-      const needsParse = !font.kerningKey || font.license === "unknown" || thinTags || missingMeta;
+      const needsMeta =
+        !font.kerningKey || font.license === "unknown" || thinTags || Boolean(missingMeta);
+      const needsParse =
+        needsMeta && (!font.metrics || !font.kerningKey || font.license === "unknown");
+      if (!needsMeta) continue;
       if (needsParse) {
         const blob = await idbGet(font.id);
         if (blob) {
@@ -144,15 +148,32 @@ export function useHydrateFonts() {
   useEffect(() => {
     let cancelled = false;
     let stopCatalog = () => {};
+    let idleHandle = 0;
+    let idleTimeout = 0;
     void bindDownloadEvents();
     void (async () => {
+      // Launch persisted store hydration, local IndexedDB font metadata, and Tauri daemon check in parallel.
+      const localMetaPromise = loadLocalFontsMeta().catch(() => null);
+      const desktopProbePromise = inDesktopShell()
+        .then(async (isDesktop) => {
+          if (!isDesktop) return { desktop: false, daemonLive: false };
+          try {
+            const { invoke } = await import("@tauri-apps/api/core");
+            const daemonLive = Boolean(await invoke<boolean>("daemon_status"));
+            return { desktop: true, daemonLive };
+          } catch {
+            return { desktop: true, daemonLive: false };
+          }
+        })
+        .catch(() => ({ desktop: false, daemonLive: false }));
+
       const status = await hydratePersistedStore({
         loadCatalog: loadCachedCatalog,
         rehydrate: () => useFontStore.persist.rehydrate(),
         hasHydrated: () => useFontStore.persist.hasHydrated(),
         cancelled: () => cancelled,
         report: (step, err) => {
-          console.error(`[font-manager] startup ${step} load failed`, err);
+          console.error(`[fonths] startup ${step} load failed`, err);
           if (step !== "library") return;
           // Keep writes off: saving now would put defaults over the saved library.
           blockPersistWrites();
@@ -167,9 +188,9 @@ export function useHydrateFonts() {
       if (status === "cancelled" || cancelled) return;
       try {
         const fromLs = useFontStore.getState().localFonts;
-        const fromIdb = await loadLocalFontsMeta();
+        const fromIdb = await localMetaPromise;
         if (cancelled) return;
-        const locals = pickLocalFontsPersist(fromIdb, fromLs);
+        const locals = pickLocalFontsPersist(fromIdb ?? [], fromLs);
         if (locals !== fromLs) useFontStore.setState({ localFonts: locals });
         if (locals.length) void saveLocalFontsMeta(locals);
         hydrateLiveAxes(useFontStore.getState().previewAxes);
@@ -185,7 +206,7 @@ export function useHydrateFonts() {
         }
       } catch (err) {
         // A restore step threw: still finish hydrate so the library works and saves.
-        console.error("[font-manager] startup restore step failed", err);
+        console.error("[fonths] startup restore step failed", err);
         toast.error("Some saved settings didn't load", {
           id: "hydrate-restore-error",
           description: "Your library still saves. Reload to try the rest again.",
@@ -228,20 +249,14 @@ export function useHydrateFonts() {
           if (sa === 2) return (recentRank.get(a) ?? 0) - (recentRank.get(b) ?? 0);
           return 0;
         });
-      const desktop = await inDesktopShell();
+      const { desktop, daemonLive } = await desktopProbePromise;
+      if (cancelled) return;
       if (desktop) {
         // Keep persisted IDs safe across localStorage writes while startup restore is running.
         setBootRestoringIds(wantIds);
         // Honest startup state: if the headless daemon is already holding the live Win32 Session
         // Table, show remembered active fonts immediately; on a cold boot, mark them pending until
         // Win32 Session Table restore actually confirms each family live.
-        let daemonLive = false;
-        try {
-          const { invoke } = await import("@tauri-apps/api/core");
-          daemonLive = Boolean(await invoke<boolean>("daemon_status"));
-        } catch {
-          daemonLive = false;
-        }
         if (daemonLive) {
           useFontStore.getState().restoreActivation(wantIds, []);
         } else {
@@ -457,20 +472,26 @@ export function useHydrateFonts() {
             // Card 36: no automatic prune at start. Folders not in the catalog stay
             // (uploads, renamed or delisted families); Scan → "Remove extras" moves them to
             // the Recycle Bin only when the user asks.
+            if (!cancelled) void syncManagedDocumentsRoot();
           })
           .catch(() => {
             setBootRestoringIds(null);
+            if (!cancelled) void syncManagedDocumentsRoot();
           });
-        window.setTimeout(() => {
-          if (cancelled) return;
-          void syncManagedDocumentsRoot();
-        }, 1200);
       }
       const liveIds = useFontStore.getState().activated;
       const toLoad = liveIds.slice(0, 12).map((id) => findFont(id, localFonts, google));
       void Promise.all(toLoad.map((font) => (font ? loadFont(font) : Promise.resolve())));
 
-      void reclassifyStoredLocalFonts(() => cancelled);
+      const scheduleIdle = () => {
+        if (cancelled) return;
+        void reclassifyStoredLocalFonts(() => cancelled);
+      };
+      if (typeof requestIdleCallback === "function") {
+        idleHandle = requestIdleCallback(scheduleIdle, { timeout: 2_500 });
+      } else {
+        idleTimeout = window.setTimeout(scheduleIdle, 1_500);
+      }
 
       startWatchPolling();
       window.setTimeout(() => {
@@ -482,6 +503,8 @@ export function useHydrateFonts() {
     return () => {
       cancelled = true;
       stopCatalog();
+      if (idleHandle && typeof cancelIdleCallback === "function") cancelIdleCallback(idleHandle);
+      if (idleTimeout) clearTimeout(idleTimeout);
     };
   }, []);
 }

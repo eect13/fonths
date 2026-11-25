@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { coerceDesktopPrefs, DEFAULT_DESKTOP_PREFS } from "../src/lib/desktop/prefs.ts";
+import { readRustModule, readTsModule } from "./lib/read-source.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
@@ -24,11 +25,11 @@ test("Fast GDI session restore is automatic on fresh install and respects explic
 });
 
 test("Session GDI restore deduplicates families, clamps done <= total <= library count, and never invents phantom IDs", () => {
-  const activateRs = fs.readFileSync(path.join(root, "src-tauri/src/activate.rs"), "utf8");
+  const activateRs = readRustModule(root, "src-tauri/src/activate.rs");
   const hydrateTs = fs.readFileSync(path.join(root, "src/lib/fonts/hydrate.ts"), "utf8");
-  const osActivateTs = fs.readFileSync(path.join(root, "src/lib/fonts/os-activate.ts"), "utf8");
+  const osActivateTs = readTsModule(root, "src/lib/fonts/os-activate.ts");
   const downloadBarTsx = fs.readFileSync(path.join(root, "src/components/font-studio/download-bar.tsx"), "utf8");
-  const storeTs = fs.readFileSync(path.join(root, "src/lib/fonts/store.ts"), "utf8");
+  const storeTs = readTsModule(root, "src/lib/fonts/store.ts");
 
   assert.match(activateRs, /pub fn dedupe_family_names\(/);
   assert.match(activateRs, /p\.done = p\.done\.max\(step_done\)\.min\(want_total\)/);

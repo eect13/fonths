@@ -1,3 +1,4 @@
+import { readRustModule, readTsModule } from "./lib/read-source.mjs";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -18,13 +19,13 @@ const desktopSettings = readFileSync(
   join(root, "src/components/font-studio/desktop-settings.tsx"),
   "utf8",
 );
-const osActivate = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf8");
+const osActivate = readTsModule(root, "src/lib/fonts/os-activate.ts");
 const activateQueueSrc = readFileSync(
   join(root, "src/lib/fonts/activate-queue.mjs"),
   "utf8",
 );
 const gdiMirror = readFileSync(join(root, "src/lib/fonts/gdi-incapable.ts"), "utf8");
-const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
+const activateRs = readRustModule(root, "src-tauri/src/activate.rs");
 const mainRs = readFileSync(join(root, "src-tauri/src/lib.rs"), "utf8");
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
@@ -41,12 +42,12 @@ function familyRow(name) {
 }
 
 test("206u keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.3.0");
-  assert.match(version, /2\.3\.0/);
+  assert.equal(pkg.version, "2.4.0");
+  assert.match(version, /2\.4\.0/);
   const tauri = JSON.parse(
     readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"),
   );
-  assert.equal(tauri.version, "2.3.0");
+  assert.equal(tauri.version, "2.4.0");
 });
 
 test("docs mark 206u Fixed; VF-primary; Refresh Documents; tip-sha; no tip-install/pack", () => {
@@ -57,13 +58,15 @@ test("docs mark 206u Fixed; VF-primary; Refresh Documents; tip-sha; no tip-insta
   assert.match(readme, /No tip-install/);
   if (bugs) assert.match(bugs, /No tip-install/);
   if (bugs) {
-    const uStart = bugs.indexOf("## Fixed in tip / 1.0.206u");
-    assert.ok(uStart >= 0);
-    const uSec = bugs.slice(uStart, bugs.indexOf("## Fixed in tip / 1.0.206t"));
-    assert.doesNotMatch(uSec, /tip-install(?!\/pack)|APPROVE FOR PACK/i);
-    assert.match(uSec, /TIP_SHA|write-tip-sha|provenance/i);
-    assert.match(uSec, /206t|#185|useShallow/i);
-  }
+    if (bugs) {
+      const uStart = bugs.indexOf("## Fixed in tip / 1.0.206u");
+      assert.ok(uStart >= 0);
+      const uSec = bugs.slice(uStart, bugs.indexOf("## Fixed in tip / 1.0.206t"));
+      assert.doesNotMatch(uSec, /tip-install(?!\/pack)|APPROVE FOR PACK/i);
+      assert.match(uSec, /TIP_SHA|write-tip-sha|provenance/i);
+      assert.match(uSec, /206t|#185|useShallow/i);
+    }
+    }
 });
 
 test("A) register VF-only when intact VF; fallback statics; dual-VF + denylist gates", () => {

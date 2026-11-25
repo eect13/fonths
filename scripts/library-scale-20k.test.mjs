@@ -3,9 +3,10 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const store = readFileSync(join(root, "src/lib/fonts/store.ts"), "utf8");
+const store = readTsModule(root, "src/lib/fonts/store.ts");
 const sidebar = readFileSync(join(root, "src/components/font-studio/sidebar.tsx"), "utf8");
 const grid = readFileSync(join(root, "src/components/font-studio/library-grid.tsx"), "utf8");
 const loader = readFileSync(join(root, "src/lib/fonts/loader.ts"), "utf8");

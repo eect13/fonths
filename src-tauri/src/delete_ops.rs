@@ -51,7 +51,7 @@ fn send_to_recycle_bin_windows(path: &Path) -> Result<(), String> {
     const FOF_NOERRORUI: u16 = 0x0400;
 
     #[link(name = "shell32")]
-    extern "system" {
+    unsafe extern "system" {
         fn SHFileOperationW(lp_file_op: *mut ShFileOp) -> i32;
     }
 

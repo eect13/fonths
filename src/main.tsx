@@ -6,7 +6,7 @@ import "./styles.css";
 
 const el = document.getElementById("fm-root");
 if (!el) {
-  throw new Error("Font Manager: #fm-root missing");
+  throw new Error("Fonths: #fm-root missing");
 }
 
 createRoot(el).render(

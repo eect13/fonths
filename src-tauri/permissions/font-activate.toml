@@ -62,6 +62,8 @@ commands.allow = [
   "recycle_leftover_stage_files",
   "cleanup_temp_stage_files",
   "fetch_live_google_catalog",
+  "fetch_live_google_catalog_conditional",
+  "check_google_cdn_updates",
   "sync_google_cdn_updates",
   "dwrite_engine_info",
   "dwrite_inspect_font",

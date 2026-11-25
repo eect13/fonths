@@ -1,14 +1,14 @@
 // Card 20: website Deactivate must confirm Off (review 1 issue 2).
 // Behaviour test: runs the real uninstallFontOnSystem body with stubbed deps.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const os = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf8");
+const os = readTsModule(root, "src/lib/fonts/os-activate.ts");
 const chunk = os.slice(
   os.indexOf("export async function uninstallFontOnSystem"),
   os.indexOf("function invokeError"),

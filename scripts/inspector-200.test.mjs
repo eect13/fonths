@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -30,7 +31,7 @@ test("CSS cache vf3 + pin visible cards; rust folder index", () => {
   const loader = readFileSync(join(root, "src/lib/fonts/loader.ts"), "utf8");
   const card = readFileSync(join(root, "src/components/font-studio/font-card.tsx"), "utf8");
   const rust = readFileSync(join(root, "src-tauri/src/parse.rs"), "utf8");
-  const store = readFileSync(join(root, "src/lib/fonts/store.ts"), "utf8");
+  const store = readTsModule(root, "src/lib/fonts/store.ts");
   const sfnt = readFileSync(join(root, "src/lib/fonts/sfnt.ts"), "utf8");
   assert.match(loader, /css:vf3:/);
   assert.match(loader, /export function pinCss/);

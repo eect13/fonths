@@ -3,6 +3,7 @@
 
 import { metricsFromTables } from "./metrics";
 import { snapAxes } from "./axes";
+import type { SnapshotRow } from "./catalog";
 import type { FontMetrics } from "./types";
 import { CMAP_GLYPH_CAP, shouldUseIpcCmap, shouldUseIpcLayout } from "./wasm-parse";
 
@@ -241,6 +242,32 @@ export type TempStageCleanupResult = {
 
 export async function cleanupTempStageFiles(): Promise<TempStageCleanupResult | null> {
   return invoke<TempStageCleanupResult>("cleanup_temp_stage_files");
+}
+
+export type ConditionalCatalogResult = {
+  unchanged: boolean;
+  rows: SnapshotRow[];
+  etag: string | null;
+  lastModified: string | null;
+};
+
+export async function fetchLiveGoogleCatalogConditional(
+  force = false,
+): Promise<ConditionalCatalogResult | null> {
+  return invoke<ConditionalCatalogResult>("fetch_live_google_catalog_conditional", { force });
+}
+
+export type GoogleCdnCheckResult = {
+  checked: number;
+  outdated: number;
+  incomplete: number;
+  upToDate: number;
+  outdatedFamilies: string[];
+  incompleteFamilies: string[];
+};
+
+export async function checkGoogleCdnUpdates(): Promise<GoogleCdnCheckResult | null> {
+  return invoke<GoogleCdnCheckResult>("check_google_cdn_updates");
 }
 
 export type GoogleCdnSyncResult = {

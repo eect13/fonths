@@ -4,15 +4,16 @@ import { dirname, extname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
+import { readRustModule, readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const mainRs = readFileSync(join(root, "src-tauri/src/lib.rs"), "utf8");
-const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
+const activateRs = readRustModule(root, "src-tauri/src/activate.rs");
 const permission = readFileSync(
   join(root, "src-tauri/permissions/font-activate.toml"),
   "utf8",
 );
-const osActivate = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf8");
+const osActivate = readTsModule(root, "src/lib/fonts/os-activate.ts");
 const readme = readFileSync(join(root, "README.md"), "utf8");
 const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
@@ -76,9 +77,9 @@ function frontendInvokeCommands() {
 }
 
 test("206v keeps ProductVersion 1.0.206 and TIP_SHA path", () => {
-  assert.equal(pkg.version, "2.3.0");
-  assert.equal(tauri.version, "2.3.0");
-  assert.match(version, /2\.3\.0/);
+  assert.equal(pkg.version, "2.4.0");
+  assert.equal(tauri.version, "2.4.0");
+  assert.match(version, /2\.4\.0/);
   assert.match(writeTipSha, /TIP_SHA\.txt/);
   assert.match(beforeBuild, /write-tip-sha\.mjs|TIP_SHA/);
 });

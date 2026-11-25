@@ -14,23 +14,52 @@ export {
   isDocsRefreshJobCurrent,
 } from "./docs-vf-sync-ownership.mjs";
 
-/** Progress owner — download vs on-disk register vs remove must not share one sticky bar. */
-export type ProgressOwner = "idle" | "download" | "register" | "remove";
+import type {
+  CancelDownloadOpts,
+  DiskFamilyInfo,
+  DownloadJobState,
+  FontsourceOfferResult,
+  GdiSessionState,
+  ProgressOwner,
+  RepairResult,
+  SyncDocsResult,
+} from "./activation/types";
+import {
+  clearSessionGdiRefused,
+  getGdiSessionState,
+  listSessionFamilies,
+  rememberSessionFamilies,
+  setSessionBootPollStarter,
+  tauriInvoke,
+  waitSessionBoot,
+} from "./activation/session-bridge";
+import {
+  managedDocumentsRoot,
+  openActivatedFolder,
+  pruneUnknownFolders,
+  scanDiskFamilies,
+} from "./activation/disk-ops";
 
-export type DownloadJobState = {
-  running: boolean;
-  paused: boolean;
-  mode: ProgressOwner;
-  /** Who owns done/total/current — cancel/finish of another owner must not leave Registering… */
-  owner: ProgressOwner;
-  done: number;
-  total: number;
-  failed: number;
-  skipped: number;
-  current: string;
-  failedNames: string[];
-  failedDetails: string[];
-  settledNames?: string[];
+export type {
+  CancelDownloadOpts,
+  DiskFamilyInfo,
+  DownloadJobState,
+  FontsourceOfferResult,
+  GdiSessionState,
+  ProgressOwner,
+  RepairResult,
+  SyncDocsResult,
+};
+export {
+  clearSessionGdiRefused,
+  getGdiSessionState,
+  listSessionFamilies,
+  managedDocumentsRoot,
+  openActivatedFolder,
+  pruneUnknownFolders,
+  rememberSessionFamilies,
+  scanDiskFamilies,
+  waitSessionBoot,
 };
 
 const EMPTY: DownloadJobState = {
@@ -192,13 +221,6 @@ function notifyDownloadResult(
     });
   }
 }
-
-export type FontsourceOfferResult = {
-  family: string;
-  added: number;
-  settled: boolean;
-  message: string;
-};
 
 /** 1.0.188: no-op Settled info — Rust no longer downloads Fontsource for allowlist. */
 export async function tryFontsourceGdiOffer(family: string): Promise<FontsourceOfferResult | null> {
@@ -527,135 +549,6 @@ export async function resumeGoogleFamilies(families: string[]): Promise<void> {
   if (added) startGooglePoll("download");
 }
 
-export async function rememberSessionFamilies(families: string[]): Promise<void> {
-  if (!(await inDesktopShell())) return;
-  try {
-    await tauriInvoke("set_session_families", { families });
-  } catch {
-    /* older installer */
-  }
-}
-
-export type GdiSessionState = {
-  liveFamilies: string[];
-  liveFamilyCount: number;
-  liveFaceCount: number;
-  stagedMapCount: number;
-  gdiObjects: number;
-  gdiObjectsPeak: number;
-  gdiQuota: number;
-  fastResume: boolean;
-  bootRunning: boolean;
-  bootDone: boolean;
-};
-
-/** Query authoritative Rust in-process GDI session state (live families, faces, GDI handles). */
-export async function getGdiSessionState(): Promise<GdiSessionState | null> {
-  if (!(await inDesktopShell())) return null;
-  try {
-    return await tauriInvoke<GdiSessionState>("gdi_session_state");
-  } catch {
-    return null;
-  }
-}
-
-export async function listSessionFamilies(): Promise<string[]> {
-  if (!(await inDesktopShell())) return [];
-  try {
-    return (await tauriInvoke<string[]>("session_families")) ?? [];
-  } catch {
-    return [];
-  }
-}
-
-/** Poll session_begin GDI restore. Live list is this-process Adds, not last-session sidecar.
- * 1.0.190: onReady fires as session_boot.ready grows — do not wait for boot.done (~2099). */
-export async function waitSessionBoot(
-  timeoutMs = 180_000,
-  onReady?: (ready: string[], done: boolean) => void,
-): Promise<{ done: boolean; ready: string[] }> {
-  if (!(await inDesktopShell())) {
-    onReady?.([], true);
-    return { done: true, ready: [] };
-  }
-  const start = Date.now();
-  let startedPoll = false;
-  let lastReadyLen = -1;
-  let latest: string[] = [];
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const s = await tauriInvoke<{ done?: boolean; running?: boolean; ready?: string[] }>(
-        "session_boot_state",
-      );
-      if (s?.running && !startedPoll) {
-        startGooglePoll("download");
-        startedPoll = true;
-      }
-      latest = (s?.ready ?? []).slice();
-      const done = Boolean(s?.done);
-      if (latest.length !== lastReadyLen || done) {
-        lastReadyLen = latest.length;
-        onReady?.(latest, done);
-      }
-      if (done) return { done: true, ready: latest };
-    } catch {
-      onReady?.([], false);
-      return { done: false, ready: [] };
-    }
-    // Slightly slower than 150ms — pairs with Rust emit throttle; keeps webview interactive.
-    await new Promise((r) => window.setTimeout(r, 250));
-  }
-  onReady?.(latest, false);
-  return { done: false, ready: latest };
-}
-
-export type DiskFamilyInfo = {
-  name: string;
-  bytes: number;
-  files: number;
-  corrupt?: number;
-  incomplete?: boolean;
-  /** Known GDI-incapable + intact — calm Settled (not Incomplete, not Activated). */
-  settled?: boolean;
-  has_complete?: boolean;
-  has_variable?: boolean;
-  missing_variable?: boolean;
-  undersized?: boolean;
-};
-
-export async function managedDocumentsRoot(): Promise<string | null> {
-  if (!(await inDesktopShell())) return null;
-  try {
-    return (await tauriInvoke<string>("activation_folder")) ?? null;
-  } catch {
-    return null;
-  }
-}
-
-export async function scanDiskFamilies(): Promise<DiskFamilyInfo[]> {
-  if (!(await inDesktopShell())) return [];
-  try {
-    return (await tauriInvoke<DiskFamilyInfo[]>("scan_disk_families")) ?? [];
-  } catch {
-    return [];
-  }
-}
-
-
-export type SyncDocsResult = {
-  familiesSeen: number;
-  familiesPurged: number;
-  staticsDeleted: number;
-  locked: number;
-  /** Only true when Rust reports cancelled — never OR'd with sticky pending (206aa amend). */
-  cancelled: boolean;
-  /**
-   * Cancel was clicked but Rust already finished (`cancelled: false`).
-   * Callers must toast honest late-cancel copy — never "Documents refresh cancelled".
-   */
-  cancelArrivedLate: boolean;
-};
-
 /** 1.0.206u: Refresh Documents — purge redundant statics when intact VF present. */
 export async function syncDocumentsVfPolicy(): Promise<SyncDocsResult | null> {
   if (!(await inDesktopShell())) return null;
@@ -764,25 +657,6 @@ export async function syncManagedDocumentsRoot(): Promise<DiskFamilyInfo[]> {
   });
   return rows;
 }
-
-export async function pruneUnknownFolders(keep: string[]): Promise<number> {
-  if (!(await inDesktopShell())) return 0;
-  try {
-    return (await tauriInvoke<number>("prune_unknown_folders", { keep })) ?? 0;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err ?? "prune failed");
-    toast.error("Could not prune Documents folders", { description: msg });
-    return 0;
-  }
-}
-
-export type RepairResult = {
-  queued: number;
-  healed: number;
-  locked: number;
-  write_failed: number;
-  var_ensured: number;
-};
 
 function toastNameHealLocked(locked: number, healed = 0) {
   const faces = `${locked.toLocaleString()} face${locked === 1 ? "" : "s"} locked`;
@@ -928,22 +802,6 @@ function slugFamily(family: string) {
     .replace(/^-|-$/g, "");
 }
 
-
-async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<T>(cmd, args);
-}
-
-/** Soft Settled Power Retry: clear Rust this-session Add=0 refuse so Add runs again (1.0.206f). */
-export async function clearSessionGdiRefused(family: string): Promise<void> {
-  const name = family.trim();
-  if (!name) return;
-  try {
-    await tauriInvoke("clear_session_gdi_refused_family", { family: name });
-  } catch {
-    /* web preview / no Tauri */
-  }
-}
 
 type OnDiskProgressSnap = {
   running: boolean;
@@ -1461,11 +1319,6 @@ function replaceDocsRefreshingToastWithCancelling() {
     /* toast unavailable */
   }
 }
-
-export type CancelDownloadOpts = {
-  /** True when bar docs Cancel chrome (button, in-window Escape, or tray) — always docs path. */
-  fromDocsCancelChrome?: boolean;
-};
 
 function emitProgress(force = false) {
   if (force) {
@@ -2736,13 +2589,4 @@ export async function syncFontsOnSystem(fonts: FontRecord[], on: boolean): Promi
   }
 }
 
-export async function openActivatedFolder(sub?: "google" | "uploads"): Promise<string | null> {
-  if (!(await inDesktopShell())) return null;
-  try {
-    const dir = (await tauriInvoke<string>("activation_folder")) ?? null;
-    await tauriInvoke("open_activation_folder", { sub: sub ?? null });
-    return dir;
-  } catch {
-    return null;
-  }
-}
+setSessionBootPollStarter(() => startGooglePoll("download"));

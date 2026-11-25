@@ -9,15 +9,17 @@ use memmap2::Mmap;
 use std::fs::File;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex};
 use tauri::http::{header, Request, Response, StatusCode};
 use tauri::UriSchemeResponder;
 
 const MMAP_CACHE_CAPACITY: usize = 128;
 
 fn mmap_cache() -> &'static Mutex<LruCache<PathBuf, Arc<Mmap>>> {
-    static CACHE: OnceLock<Mutex<LruCache<PathBuf, Arc<Mmap>>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(LruCache::new(NonZeroUsize::new(MMAP_CACHE_CAPACITY).unwrap())))
+    static CACHE: LazyLock<Mutex<LruCache<PathBuf, Arc<Mmap>>>> = LazyLock::new(|| {
+        Mutex::new(LruCache::new(NonZeroUsize::new(MMAP_CACHE_CAPACITY).unwrap()))
+    });
+    &CACHE
 }
 
 /// Percent-decode a URI path segment (UTF-8 safe).

@@ -251,6 +251,22 @@ export default defineConfig(({ command, isPreview }) => {
         rolldownOptions: {
           input: "desktop.html",
           checks: quietRolldownChecks(),
+          output: {
+            codeSplitting: {
+              groups: [
+                {
+                  name: "react-vendor",
+                  test: /[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/,
+                  priority: 20,
+                },
+                {
+                  name: "ui-vendor",
+                  test: /[\\/]node_modules[\\/](@radix-ui|lucide-react|sonner|zustand)[\\/]/,
+                  priority: 15,
+                },
+              ],
+            },
+          },
           onLog(level, log, defaultHandler) {
             const code = String((log as { code?: string }).code ?? "");
             if (code === "INEFFECTIVE_DYNAMIC_IMPORT" || code === "PLUGIN_TIMINGS") return;

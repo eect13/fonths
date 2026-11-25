@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readRustModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel) => readFileSync(join(root, rel), "utf8");
@@ -17,19 +18,19 @@ const scannerRs = read("src-tauri/src/scanner.rs");
 const rendererRs = read("src-tauri/src/renderer.rs");
 const parseRs = read("src-tauri/src/parse.rs");
 const stageRs = read("src-tauri/src/session_stage.rs");
-const activateRs = read("src-tauri/src/activate.rs");
+const activateRs = readRustModule(root, "src-tauri/src/activate.rs");
 const aclToml = read("src-tauri/permissions/font-activate.toml");
 const nativeParseTs = read("src/lib/fonts/native-parse.ts");
 const loaderTs = read("src/lib/fonts/loader.ts");
 const desktopSettingsTsx = read("src/components/font-studio/desktop-settings.tsx");
 
 test("2.0.0 version metadata synced across Cargo, Tauri, npm, and version.ts", () => {
-  assert.equal(pkg.version, "2.3.0");
-  assert.equal(pkgLock.version, "2.3.0");
-  assert.equal(pkgLock.packages[""].version, "2.3.0");
-  assert.equal(tauriConf.version, "2.3.0");
-  assert.match(cargoToml, /version = "2\.3\.0"/);
-  assert.match(versionTs, /export const APP_VERSION = "2\.3\.0";/);
+  assert.equal(pkg.version, "2.4.0");
+  assert.equal(pkgLock.version, "2.4.0");
+  assert.equal(pkgLock.packages[""].version, "2.4.0");
+  assert.equal(tauriConf.version, "2.4.0");
+  assert.match(cargoToml, /version = "2\.4\.0"/);
+  assert.match(versionTs, /export const APP_VERSION = "2\.4\.0";/);
 });
 
 test("Pure-Rust Fontations + HarfRust + font:// engine replaces legacy DirectWrite, ttf-parser, and skia-safe", () => {

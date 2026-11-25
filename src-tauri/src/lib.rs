@@ -242,17 +242,17 @@ mod win_admin {
     use std::os::windows::ffi::OsStrExt;
 
     #[link(name = "shell32")]
-    extern "system" {
+    unsafe extern "system" {
         fn IsUserAnAdmin() -> i32;
     }
 
     #[link(name = "user32")]
-    extern "system" {
+    unsafe extern "system" {
         fn ChangeWindowMessageFilter(message: u32, dw_flag: u32) -> i32;
     }
 
     #[link(name = "advapi32")]
-    extern "system" {
+    unsafe extern "system" {
         fn RegOpenKeyExW(
             h_key: isize,
             lp_sub_key: *const u16,
@@ -311,7 +311,7 @@ mod win_admin {
     }
 
     #[link(name = "kernel32")]
-    extern "system" {
+    unsafe extern "system" {
         fn OpenProcess(dw_desired_access: u32, b_inherit_handle: i32, dw_process_id: u32) -> isize;
         fn WaitForSingleObject(h_handle: isize, dw_milliseconds: u32) -> u32;
         fn CloseHandle(h_object: isize) -> i32;
@@ -347,7 +347,10 @@ mod win_admin {
     }
 
     pub fn prepare_windows_session() {
-        std::env::remove_var("__COMPAT_LAYER");
+        // SAFETY: Runs on single-threaded startup before background workers spawn.
+        unsafe {
+            std::env::remove_var("__COMPAT_LAYER");
+        }
         if let Ok(exe) = std::env::current_exe() {
             clear_runasadmin_layer(&exe);
         }
@@ -358,7 +361,10 @@ mod win_admin {
                     let admin_udf = std::path::PathBuf::from(local)
                         .join("app.fonths.desktop")
                         .join("EBWebView-Admin");
-                    std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", admin_udf);
+                    // SAFETY: Runs before WebView2 initialization on single-threaded startup.
+                    unsafe {
+                        std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", admin_udf);
+                    }
                 }
             }
             unsafe {
@@ -544,6 +550,8 @@ pub fn run() {
             activate::recycle_leftover_stage_files,
             activate::cleanup_temp_stage_files,
             activate::fetch_live_google_catalog,
+            activate::fetch_live_google_catalog_conditional,
+            activate::check_google_cdn_updates,
             activate::sync_google_cdn_updates,
             scanner::dwrite_engine_info,
             scanner::dwrite_inspect_font,

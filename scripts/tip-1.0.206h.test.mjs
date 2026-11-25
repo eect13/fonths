@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readRustModule, readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const activateToggle = readFileSync(
@@ -17,8 +18,8 @@ const downloadBar = readFileSync(
   join(root, "src/components/font-studio/download-bar.tsx"),
   "utf8",
 );
-const osActivate = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf8");
-const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
+const osActivate = readTsModule(root, "src/lib/fonts/os-activate.ts");
+const activateRs = readRustModule(root, "src-tauri/src/activate.rs");
 const grokPwaTest = readFileSync(join(root, "scripts/grok-pwa-plugin.test.mjs"), "utf8");
 const writeAtomicTest = readFileSync(join(root, "scripts/write-atomic.test.mjs"), "utf8");
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
@@ -27,8 +28,8 @@ const readme = readFileSync(join(root, "README.md"), "utf8");
 const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 
 test("206h keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.3.0");
-  assert.match(version, /2\.3\.0/);
+  assert.equal(pkg.version, "2.4.0");
+  assert.match(version, /2\.4\.0/);
 });
 
 test("P1 remaining count uses same filter as activateSet queue", () => {

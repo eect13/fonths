@@ -3,13 +3,14 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readRustModule, readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const card = readFileSync(join(root, "src/components/font-studio/font-card.tsx"), "utf8");
-const osActivate = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf8");
+const osActivate = readTsModule(root, "src/lib/fonts/os-activate.ts");
 const gdiMirror = readFileSync(join(root, "src/lib/fonts/gdi-incapable.ts"), "utf8");
 const googleApi = readFileSync(join(root, "src/lib/fonts/google-api.ts"), "utf8");
-const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
+const activateRs = readRustModule(root, "src-tauri/src/activate.rs");
 const regen = readFileSync(join(root, "scripts/regen-shipped-catalogs.mjs"), "utf8");
 const google = JSON.parse(readFileSync(join(root, "src/lib/fonts/google-catalog.json"), "utf8"));
 const other = JSON.parse(readFileSync(join(root, "src/lib/fonts/fontsource-other.json"), "utf8"));

@@ -5,9 +5,10 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { activateQueueIds } from "../src/lib/fonts/activate-queue.mjs";
 import { isKnownGdiSessionIncapable, KNOWN_GDI_SESSION_INCAPABLE } from "../src/lib/fonts/gdi-incapable.ts";
+import { readRustModule, readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const osActivate = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf8");
+const osActivate = readTsModule(root, "src/lib/fonts/os-activate.ts");
 const activateToggle = readFileSync(
   join(root, "src/components/font-studio/activate-toggle.tsx"),
   "utf8",
@@ -27,15 +28,15 @@ const tipP = readFileSync(join(root, "scripts/tip-1.0.206p.test.mjs"), "utf8");
 const tipL = readFileSync(join(root, "scripts/tip-1.0.206l.test.mjs"), "utf8");
 const tipN = readFileSync(join(root, "scripts/tip-1.0.206n.test.mjs"), "utf8");
 const tipO = readFileSync(join(root, "scripts/tip-1.0.206o.test.mjs"), "utf8");
-const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
+const activateRs = readRustModule(root, "src-tauri/src/activate.rs");
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const readme = readFileSync(join(root, "README.md"), "utf8");
 const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 
 test("206q keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.3.0");
-  assert.match(version, /2\.3\.0/);
+  assert.equal(pkg.version, "2.4.0");
+  assert.match(version, /2\.4\.0/);
 });
 
 test("docs mark 206q; honesty landed; no tip-install; no stale Tip-is-197", () => {
@@ -50,11 +51,13 @@ test("docs mark 206q; honesty landed; no tip-install; no stale Tip-is-197", () =
   if (bugs) assert.match(bugs, /No tip-install/);
   if (bugs) assert.doesNotMatch(bugs, /Tip is 1\.0\.197/);
   if (bugs) {
-    const qStart = bugs.indexOf("## Fixed in tip / 1.0.206q");
-    assert.ok(qStart >= 0);
-    const qSec = bugs.slice(qStart, bugs.indexOf("## Fixed in tip / 1.0.206p"));
-    assert.doesNotMatch(qSec, /tip-install(?!\/pack)|APPROVE FOR PACK/i);
-  }
+    if (bugs) {
+      const qStart = bugs.indexOf("## Fixed in tip / 1.0.206q");
+      assert.ok(qStart >= 0);
+      const qSec = bugs.slice(qStart, bugs.indexOf("## Fixed in tip / 1.0.206p"));
+      assert.doesNotMatch(qSec, /tip-install(?!\/pack)|APPROVE FOR PACK/i);
+    }
+    }
 });
 
 test("1. Pause toast % = done/total only (not max(done, skipped))", () => {
@@ -136,11 +139,13 @@ test("3. Density bar+header CSS vars — Compact differs from Comfortable", () =
   }
   // Docs honesty: not bare "everywhere" as still-true claim in 206q
   if (bugs) {
-    const qStart = bugs.indexOf("## Fixed in tip / 1.0.206q");
-    const qSec = bugs.slice(qStart, bugs.indexOf("## Fixed in tip / 1.0.206p"));
-    assert.match(qSec, /primary chrome|bar\+header|download bar \+ shell header/i);
-    assert.doesNotMatch(qSec, /tightens \*\*everywhere\*\*/i);
-  }
+    if (bugs) {
+      const qStart = bugs.indexOf("## Fixed in tip / 1.0.206q");
+      const qSec = bugs.slice(qStart, bugs.indexOf("## Fixed in tip / 1.0.206p"));
+      assert.match(qSec, /primary chrome|bar\+header|download bar \+ shell header/i);
+      assert.doesNotMatch(qSec, /tightens \*\*everywhere\*\*/i);
+    }
+    }
 });
 
 test("4. ActivateVisibleMenuItem body calls activateQueueIds", () => {

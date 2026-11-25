@@ -1,3 +1,4 @@
+import { readRustModule } from "./lib/read-source.mjs";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -46,15 +47,15 @@ const inspector = readFileSync(
 );
 const rootTsx = readFileSync(join(root, "src/routes/__root.tsx"), "utf8");
 const desktopHtml = readFileSync(join(root, "desktop.html"), "utf8");
-const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
+const activateRs = readRustModule(root, "src-tauri/src/activate.rs");
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const readme = readFileSync(join(root, "README.md"), "utf8");
 const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 
 test("206p keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.3.0");
-  assert.match(version, /2\.3\.0/);
+  assert.equal(pkg.version, "2.4.0");
+  assert.match(version, /2\.4\.0/);
 });
 
 test("docs mark 206p; density landed; Cancel simplify; no tip-install", () => {
@@ -69,11 +70,13 @@ test("docs mark 206p; density landed; Cancel simplify; no tip-install", () => {
   if (bugs) assert.match(bugs, /No tip-install/);
   // Top 206p section must not still defer compact density
   if (bugs) {
-    const pStart = bugs.indexOf("## Fixed in tip / 1.0.206p");
-    assert.ok(pStart >= 0);
-    const pSec = bugs.slice(pStart, bugs.indexOf("## Fixed in tip / 1.0.206o"));
-    assert.doesNotMatch(pSec, /Deferred \(still\):.*compact density/i);
-  }
+    if (bugs) {
+      const pStart = bugs.indexOf("## Fixed in tip / 1.0.206p");
+      assert.ok(pStart >= 0);
+      const pSec = bugs.slice(pStart, bugs.indexOf("## Fixed in tip / 1.0.206o"));
+      assert.doesNotMatch(pSec, /Deferred \(still\):.*compact density/i);
+    }
+    }
 });
 
 test("P1 density setting exists — Comfortable|Compact persist + boot", () => {

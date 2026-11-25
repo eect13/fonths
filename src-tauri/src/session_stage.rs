@@ -298,7 +298,7 @@ pub mod hkcu_session {
     use std::path::Path;
 
     #[link(name = "advapi32")]
-    extern "system" {
+    unsafe extern "system" {
         fn RegCreateKeyExW(
             hKey: isize,
             lpSubKey: *const u16,

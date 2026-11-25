@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readRustModule, readTsModule } from "./lib/read-source.mjs";
 
 import {
   analyzeImportBatch,
@@ -207,7 +208,7 @@ test("Toast Guard: deduplicates repeated messages and coalesces bursts to preven
 });
 
 test("Delete & Reset Library contracts: batched disk cleanup, queue cancellation, and re-entrancy guard", () => {
-  const storeSrc = fs.readFileSync(path.join(ROOT, "src/lib/fonts/store.ts"), "utf8");
+  const storeSrc = readTsModule(ROOT, "src/lib/fonts/store.ts");
   assert.doesNotMatch(
     storeSrc,
     /for\s*\(\s*const\s+font\s+of\s+fonts\s*\)\s*void\s+removeUploadFromDisk/,
@@ -230,7 +231,7 @@ test("Delete & Reset Library contracts: batched disk cleanup, queue cancellation
   assert.match(dialogSrc, /setBusy\("reset"\)/);
   assert.match(dialogSrc, /setBusy\("clear"\)/);
 
-  const osActSrc = fs.readFileSync(path.join(ROOT, "src/lib/fonts/os-activate.ts"), "utf8");
+  const osActSrc = readTsModule(ROOT, "src/lib/fonts/os-activate.ts");
   assert.match(osActSrc, /Permanently deleted/);
   assert.match(osActSrc, /export async function removeUploadsBatchFromDisk/);
 });
@@ -267,11 +268,11 @@ test("Google Download Cancel, Emoji GDI fallback, Fast Reopen & Watch Folder dif
   );
   assert.match(toggleSrc, /getActivateCancelEpoch\(\)/);
 
-  const osActSrc = fs.readFileSync(path.join(ROOT, "src/lib/fonts/os-activate.ts"), "utf8");
+  const osActSrc = readTsModule(ROOT, "src/lib/fonts/os-activate.ts");
   assert.match(osActSrc, /export function getActivateCancelEpoch/);
   assert.match(osActSrc, /if \(myBatch !== batchId\) return;/);
 
-  const actRs = fs.readFileSync(path.join(ROOT, "src-tauri/src/activate.rs"), "utf8");
+  const actRs = readRustModule(ROOT, "src-tauri/src/activate.rs");
   assert.match(actRs, /active_queue:\s*Mutex<Option<Arc<Mutex<VecDeque<String>>>>>/);
   assert.match(actRs, /fetch_google_css_font\(client, "Noto Emoji", UA_DESKTOP_TTF, "wght@400"\)/);
   assert.match(actRs, /clear_session_gdi_refused\(family\);/);
@@ -308,7 +309,7 @@ test("Activate All zero pre-download & Emoji WindowsCompatible priority & scan-i
   assert.match(dlgSrc, /Nothing starts downloading or activating until you confirm below/);
   assert.match(dlgSrc, /if \(!next && req\) resolveActivateConfirm\("abort"\)/);
 
-  const actRs = fs.readFileSync(path.join(ROOT, "src-tauri/src/activate.rs"), "utf8");
+  const actRs = readRustModule(ROOT, "src-tauri/src/activate.rs");
   // Both WindowsCompatible mirrors must come BEFORE CBDT-only NotoColorEmoji.ttf.
   const nceIdx = actRs.indexOf('if slug == "noto-color-emoji"');
   const nceBlock = actRs.slice(nceIdx, nceIdx + 700);

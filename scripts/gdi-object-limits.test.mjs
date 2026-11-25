@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readRustModule, readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
-const osActivate = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf8");
+const activateRs = readRustModule(root, "src-tauri/src/activate.rs");
+const osActivate = readTsModule(root, "src/lib/fonts/os-activate.ts");
 
 test("GDI object quota is documented 10_000 with 8_000 soft warn", () => {
   assert.match(activateRs, /GDI_OBJECT_DEFAULT_QUOTA:\s*u32\s*=\s*10_000/);

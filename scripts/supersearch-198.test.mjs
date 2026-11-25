@@ -12,6 +12,7 @@ import {
   SEARCH_PRESETS,
 } from "../src/lib/fonts/metrics.ts";
 import { parseCollectionSync } from "../src/lib/fonts/collection-sync.ts";
+import { readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -132,7 +133,7 @@ test("collection JSON v1 parse rejects junk and keeps families", () => {
 });
 
 test("store SuperSearch wiring + import metrics + native OS/2", () => {
-  const store = readFileSync(join(root, "src/lib/fonts/store.ts"), "utf8");
+  const store = readTsModule(root, "src/lib/fonts/store.ts");
   assert.match(store, /return fontMatchesSearch\(font, parseSearchQuery\(query\), customTags\)/);
   assert.match(store, /metrics: parsed\.metrics/);
   assert.match(store, /patchFontMetrics/);
@@ -150,5 +151,5 @@ test("store SuperSearch wiring + import metrics + native OS/2", () => {
   assert.match(tree, /exportCollectionJson/);
   assert.match(tree, /importCollectionJson/);
   const version = readFileSync(join(root, "src/version.ts"), "utf8");
-  assert.match(version, /2\.3\.0/);
+  assert.match(version, /2\.4\.0/);
 });

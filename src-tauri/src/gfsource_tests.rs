@@ -71,7 +71,7 @@ fn c258_backoff_and_status() {
         assert!(status_backs_off(c));
     }
     assert!(!status_backs_off(404));
-    assert!(POLITE_UA.contains("github.com/eect13/font-manager") && !POLITE_UA.contains('@'));
+    assert!(POLITE_UA.contains("github.com/eect13/fonths") && !POLITE_UA.contains('@'));
 }
 
 #[test]
@@ -92,8 +92,25 @@ fn c258_pacer_caps_concurrency_and_spacing() {
         h.join().unwrap();
     }
     assert!(peak.load(std::sync::atomic::Ordering::SeqCst) <= MAX_CONCURRENT);
-    // 6 starts, ≥250 ms apart → ≥1.25 s.
-    assert!(start.elapsed() >= Duration::from_millis(1240), "{:?}", start.elapsed());
+    // 6 starts on the metadata lane, ≥100 ms apart → ≥500 ms.
+    assert!(start.elapsed() >= Duration::from_millis(480), "{:?}", start.elapsed());
+
+    // CDN binary lane permits up to CDN_MAX_CONCURRENT concurrent slots with CDN_MIN_SPACING.
+    let cdn_peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let cdn_hs: Vec<_> = (0..8)
+        .map(|_| {
+            let cdn_peak = cdn_peak.clone();
+            std::thread::spawn(move || {
+                let _s = Slot::acquire_cdn();
+                cdn_peak.fetch_max(Slot::cdn_in_use(), std::sync::atomic::Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(20));
+            })
+        })
+        .collect();
+    for h in cdn_hs {
+        h.join().unwrap();
+    }
+    assert!(cdn_peak.load(std::sync::atomic::Ordering::SeqCst) <= CDN_MAX_CONCURRENT);
 }
 
 #[test]
@@ -106,6 +123,12 @@ fn c258_caches() {
     std::fs::write(&p, "x").unwrap();
     assert!(cache_fresh(&p, std::time::SystemTime::now()));
     assert!(!cache_fresh(&p, std::time::SystemTime::now() + MANIFEST_MAX_AGE + Duration::from_secs(1)));
+    std::fs::write(p.with_extension("rev"), "2026-04-01").unwrap();
+    assert!(cache_fresh_for_revision(&p, std::time::SystemTime::now(), Some("2026-04-01")));
+    assert!(!cache_fresh_for_revision(&p, std::time::SystemTime::now(), Some("2026-05-01")));
+    assert!(is_cdn_binary_url("https://fonts.gstatic.com/s/inter/v18/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.ttf"));
+    assert!(is_cdn_binary_url("https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/inter/Inter.ttf"));
+    assert!(!is_cdn_binary_url("https://fonts.google.com/metadata/fonts"));
     record_source_url(&d, "barlow-400-normal.ttf", "https://u/1");
     record_source_url(&d, "barlow-700-normal.ttf", "https://u/2");
     record_source_url(&d, "barlow-400-normal.ttf", "https://u/3");

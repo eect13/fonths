@@ -23,12 +23,14 @@ export interface HydratePersistedStoreOptions {
 export async function hydratePersistedStore(
   opts: HydratePersistedStoreOptions,
 ): Promise<"ok" | "failed" | "cancelled"> {
-  try {
-    await opts.loadCatalog();
-  } catch (err) {
-    opts.report("catalog", err);
-  }
   if (opts.cancelled()) return "cancelled";
+  // Run IndexedDB cached catalog load concurrently with synchronous/async store rehydration.
+  const catalogTask = Promise.resolve()
+    .then(() => opts.loadCatalog())
+    .catch((err) => {
+      opts.report("catalog", err);
+    });
+
   const attempts = 1 + Math.max(0, opts.retries ?? 1);
   let lastErr: unknown = new Error("saved library did not load");
   for (let i = 0; i < attempts; i += 1) {
@@ -40,9 +42,16 @@ export async function hydratePersistedStore(
     } catch (err) {
       lastErr = err;
     }
-    if (opts.cancelled()) return "cancelled";
-    if (opts.hasHydrated()) return "ok";
+    if (opts.cancelled()) {
+      await catalogTask;
+      return "cancelled";
+    }
+    if (opts.hasHydrated()) {
+      await catalogTask;
+      return opts.cancelled() ? "cancelled" : "ok";
+    }
   }
+  await catalogTask;
   opts.report("library", lastErr);
   return "failed";
 }

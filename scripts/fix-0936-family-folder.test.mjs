@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { documentsFamilyFolder, unicodeFamilySlug } from "../src/lib/fonts/family-folder.ts";
+import { readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -27,7 +28,7 @@ test("folder: ASCII names unchanged, any non-ASCII name gets its own u-folder", 
 });
 
 test("writeAndRegister and the glyph-map fallback use the shared folder helper", () => {
-  const os = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf8");
+  const os = readTsModule(root, "src/lib/fonts/os-activate.ts");
   const at = os.indexOf("async function writeAndRegister(");
   const body = os.slice(at, os.indexOf("\n}\n", at));
   assert.match(body, /documentsFamilyFolder\(family\)/);

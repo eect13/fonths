@@ -7,6 +7,7 @@ import { crc32, buildStoreZip } from "../src/lib/fonts/pack-zip.ts";
 import { isWoff2Magic } from "../src/lib/fonts/woff2-decode.ts";
 import { CMAP_GLYPH_CAP } from "../src/lib/fonts/wasm-parse.ts";
 import { coerceDesktopPrefs, DEFAULT_DESKTOP_PREFS } from "../src/lib/desktop/prefs.ts";
+import { readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -44,7 +45,7 @@ test("close-to-tray + startup prefs", () => {
 });
 
 test("watch import skips IDB when originPath; auto-activate uses setActivatedMany", () => {
-  const store = readFileSync(join(root, "src/lib/fonts/store.ts"), "utf8");
+  const store = readTsModule(root, "src/lib/fonts/store.ts");
   assert.match(store, /if \(!originSlice\?\.\[i\]\) \{/);
   assert.match(store, /setActivatedMany\(newIds, true\)/);
   assert.match(store, /where === "recent"/);

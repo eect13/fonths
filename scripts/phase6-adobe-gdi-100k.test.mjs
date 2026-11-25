@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { filterFontsWithIndex, getCachedSearchIndex } from "../src/lib/fonts/search-index.ts";
 import { computeVirtualWindow, MAX_VIRTUAL_SCROLL_HEIGHT } from "../src/lib/fonts/virtual-window.ts";
 import { clampMenuPosition, shouldAllowNativeContextMenu } from "../src/lib/context-menu-bus.ts";
+import { readRustModule, readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -89,7 +90,7 @@ test("100k fonts: computeVirtualWindow scales safely below Chromium 16.7M px lim
 });
 
 test("100k fonts & Duplicates: store uses O(N) family indexing, same-style local dedup, and fast >5k sort", () => {
-  const storeSrc = readFileSync(join(root, "src/lib/fonts/store.ts"), "utf8");
+  const storeSrc = readTsModule(root, "src/lib/fonts/store.ts");
   assert.match(storeSrc, /const localByFamily = new Map<string, FontRecord\[\]>\(\)/);
   assert.ok(
     !storeSrc.includes("const locals = localFonts.filter((f) => f.family.trim().toLowerCase() === name)"),
@@ -139,13 +140,13 @@ test("Fonths 1.0.0 branding and Adobe quit-leftover cleanup contracts", () => {
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
   const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"));
   const versionTs = readFileSync(join(root, "src/version.ts"), "utf8");
-  const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
+  const activateRs = readRustModule(root, "src-tauri/src/activate.rs");
   assert.equal(pkg.name, "fonths");
-  assert.equal(pkg.version, "2.3.0");
+  assert.equal(pkg.version, "2.4.0");
   assert.equal(tauri.productName, "Fonths");
-  assert.equal(tauri.version, "2.3.0");
+  assert.equal(tauri.version, "2.4.0");
   assert.equal(tauri.identifier, "app.fonths.desktop");
   assert.match(versionTs, /APP_NAME = "Fonths"/);
-  assert.match(versionTs, /APP_VERSION = "2\.3\.0"/);
+  assert.match(versionTs, /APP_VERSION = "2\.4\.0"/);
   assert.match(activateRs, /winfont::unload_paths\(extra\.clone\(\), true\)/);
 });

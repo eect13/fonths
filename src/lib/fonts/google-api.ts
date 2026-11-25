@@ -26,9 +26,11 @@ export type CatalogSyncResult = {
   count: number;
   added: number;
   skipped?: boolean;
+  unchanged?: boolean;
   cdnChecked?: number;
   cdnQueued?: number;
   cdnOutdated?: number;
+  cdnIncomplete?: number;
 };
 
 type CatalogCache = {
@@ -162,20 +164,31 @@ function isValidSnapshotRows(raw: unknown): raw is SnapshotRow[] {
   );
 }
 
-/** Google Fonts is the only remote catalog. In desktop mode, fetches live rows via Rust (no browser CORS block). */
+/** Google Fonts is the only remote catalog. In desktop mode, uses `fetch_live_google_catalog_conditional` (ETag/304) via Rust. */
 export async function refreshGoogleCatalog(force = false): Promise<CatalogSyncResult | null> {
-  if (!force && syncedAt > 0 && Date.now() - syncedAt < STALE_MS) {
-    return { count: GOOGLE_FONTS.length, added: 0, skipped: true };
-  }
+  let inTauri = false;
   try {
     const core = await import("@tauri-apps/api/core");
-    if (typeof core.isTauri === "function" && core.isTauri()) {
-      const rows = await core.invoke<SnapshotRow[]>("fetch_live_google_catalog");
-      if (isValidSnapshotRows(rows)) {
+    inTauri = typeof core.isTauri === "function" && core.isTauri();
+  } catch {
+    inTauri = false;
+  }
+  if (!inTauri && !force && syncedAt > 0 && Date.now() - syncedAt < STALE_MS) {
+    return { count: GOOGLE_FONTS.length, added: 0, skipped: true };
+  }
+  if (inTauri) {
+    try {
+      const { fetchLiveGoogleCatalogConditional } = await import("./native-parse");
+      const res = await fetchLiveGoogleCatalogConditional(force);
+      if (res?.unchanged) {
+        markSynced(Date.now());
+        return { count: GOOGLE_FONTS.length, added: 0, unchanged: true };
+      }
+      if (res && isValidSnapshotRows(res.rows)) {
         const prevKeys = new Set(GOOGLE_FONTS.map((f) => familyKey(f.family)));
-        const dirList = rows.map((r) => r[0]);
+        const dirList = res.rows.map((r) => r[0]);
         replaceGoogleDirectory(dirList);
-        const records = rows.map(snapshotToRecord);
+        const records = res.rows.map(snapshotToRecord);
         const liveDir = new Set(dirList.map(familyKey));
         applyLiveCatalog(records, liveDir);
         const added = GOOGLE_FONTS.filter((f) => !prevKeys.has(familyKey(f.family))).length;
@@ -194,9 +207,9 @@ export async function refreshGoogleCatalog(force = false): Promise<CatalogSyncRe
         return { count: GOOGLE_FONTS.length, added };
       }
       if (force) return null;
+    } catch {
+      if (force) return null;
     }
-  } catch {
-    if (force) return null;
   }
   const official = GOOGLE_FONTS.filter(isGoogleCatalog);
   applyLiveCatalog(official);
@@ -207,20 +220,36 @@ export async function refreshGoogleCatalog(force = false): Promise<CatalogSyncRe
 function notifyCatalog(result: CatalogSyncResult, force: boolean) {
   if (result.skipped) return;
   const summary = `Google Fonts ${result.count.toLocaleString()}`;
+  const outdated = result.cdnOutdated ?? 0;
+  const incomplete = result.cdnIncomplete ?? 0;
+  const needCount = outdated + incomplete;
   const cdnNote =
     result.cdnQueued && result.cdnQueued > 0
       ? `Downloading ${result.cdnQueued.toLocaleString()} updated Google famil${result.cdnQueued === 1 ? "y" : "ies"} from CDN.`
-      : result.cdnChecked && result.cdnChecked > 0
-        ? `All ${result.cdnChecked.toLocaleString()} downloaded Google families are current.`
-        : "No downloaded Google families needed updates.";
-  if (result.added > 0) {
-    toast.success(
-      `Catalog updated — ${result.added.toLocaleString()} new typeface${result.added === 1 ? "" : "s"}`,
-      {
-        id: "fm-google-sync",
-        description: `${summary}. ${cdnNote}`,
+      : needCount > 0
+        ? `${outdated} outdated · ${incomplete} incomplete across ${(result.cdnChecked ?? 0).toLocaleString()} downloaded families.`
+        : result.cdnChecked && result.cdnChecked > 0
+          ? `All ${result.cdnChecked.toLocaleString()} downloaded Google families are current.`
+          : "No downloaded Google families need updates.";
+
+  if ((result.cdnQueued ?? 0) === 0 && (result.added > 0 || needCount > 0)) {
+    const title =
+      result.added > 0 && needCount > 0
+        ? `Google Fonts updates ready — ${result.added.toLocaleString()} new, ${needCount.toLocaleString()} local`
+        : result.added > 0
+          ? `Catalog updated — ${result.added.toLocaleString()} new typeface${result.added === 1 ? "" : "s"}`
+          : `${needCount.toLocaleString()} Google font famil${needCount === 1 ? "y" : "ies"} can be updated`;
+    toast.message(title, {
+      id: "fm-google-sync",
+      duration: 18_000,
+      description: `${summary}. ${cdnNote}`,
+      action: {
+        label: "Sync now",
+        onClick: () => {
+          void syncGoogleCdnFiles(false);
+        },
       },
-    );
+    });
     return;
   }
   if (force || (result.cdnQueued && result.cdnQueued > 0)) {
@@ -264,9 +293,11 @@ export async function syncGoogleCdnFiles(force = false) {
 export function syncFontCatalog(opts?: {
   force?: boolean;
   notify?: boolean;
+  syncFiles?: boolean;
 }): Promise<CatalogSyncResult | null> {
   const force = Boolean(opts?.force);
   const notify = Boolean(opts?.notify);
+  const syncFiles = Boolean(opts?.syncFiles);
   if (inflight) return inflight;
   setBusy(true);
   inflight = (async () => {
@@ -280,21 +311,33 @@ export function syncFontCatalog(opts?: {
       }
       return null;
     }
-    // Automatically check downloaded Google Fonts against live CDN revisions and queue updates.
     if (!result.skipped) {
       try {
-        const { syncGoogleCdnUpdates } = await import("./native-parse");
-        const cdn = await syncGoogleCdnUpdates(false);
-        if (cdn) {
-          result.cdnChecked = cdn.checked;
-          result.cdnQueued = cdn.queued;
-          result.cdnOutdated = cdn.outdated;
+        if (syncFiles) {
+          const { syncGoogleCdnUpdates } = await import("./native-parse");
+          const cdn = await syncGoogleCdnUpdates(force);
+          if (cdn) {
+            result.cdnChecked = cdn.checked;
+            result.cdnQueued = cdn.queued;
+            result.cdnOutdated = cdn.outdated;
+            result.cdnIncomplete = cdn.incomplete;
+          }
+        } else {
+          // Ask-Before-Sync: read-only revision diff on startup/refresh, never auto-download.
+          const { checkGoogleCdnUpdates } = await import("./native-parse");
+          const check = await checkGoogleCdnUpdates();
+          if (check) {
+            result.cdnChecked = check.checked;
+            result.cdnOutdated = check.outdated;
+            result.cdnIncomplete = check.incomplete;
+          }
         }
       } catch {
         /* web preview or offline */
       }
     }
-    if (result.added > 0 || (result.cdnQueued && result.cdnQueued > 0) || notify) {
+    const needCount = (result.cdnOutdated ?? 0) + (result.cdnIncomplete ?? 0);
+    if (result.added > 0 || needCount > 0 || (result.cdnQueued && result.cdnQueued > 0) || notify) {
       notifyCatalog(result, notify);
     }
     if (notify) {
@@ -320,17 +363,24 @@ export function scheduleCatalogSync(): () => void {
   let cancelled = false;
   let idleId = 0;
   let timeoutId = 0;
-  const start = () => {
+  const start = async () => {
     if (cancelled) return;
-    if (syncedAt && Date.now() - syncedAt < STALE_MS) return;
+    let inTauri = false;
+    try {
+      const core = await import("@tauri-apps/api/core");
+      inTauri = typeof core.isTauri === "function" && core.isTauri();
+    } catch {
+      inTauri = false;
+    }
+    if (!inTauri && syncedAt && Date.now() - syncedAt < STALE_MS) return;
     void syncFontCatalog({ force: false, notify: false });
   };
   timeoutId = window.setTimeout(() => {
     if (cancelled) return;
     if (typeof requestIdleCallback === "function") {
-      idleId = requestIdleCallback(start, { timeout: IDLE_CAP_MS });
+      idleId = requestIdleCallback(() => void start(), { timeout: IDLE_CAP_MS });
     } else {
-      start();
+      void start();
     }
   }, IDLE_MS);
   return () => {

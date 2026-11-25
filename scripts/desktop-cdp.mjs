@@ -485,6 +485,21 @@ try {
   await p2.keyboard.press("Escape");
   await p2.waitForTimeout(200);
 
+  // Verify v2.4.0 read-only check_google_cdn_updates never auto-queues downloads
+  const cdnCheck = await p2.evaluate(() =>
+    window.__TAURI_INTERNALS__.invoke("check_google_cdn_updates"),
+  );
+  assert.equal(typeof cdnCheck?.checked, "number");
+  assert.equal(typeof cdnCheck?.outdated, "number");
+  assert.equal(typeof cdnCheck?.incomplete, "number");
+  assert.equal(typeof cdnCheck?.upToDate, "number");
+  assert.ok(Array.isArray(cdnCheck?.outdatedFamilies));
+  assert.ok(Array.isArray(cdnCheck?.incompleteFamilies));
+  const dlProgAfterCheck = await p2.evaluate(() =>
+    window.__TAURI_INTERNALS__.invoke("google_download_progress"),
+  );
+  assert.equal(dlProgAfterCheck?.running, false, "Read-only CDN check must never auto-queue downloads");
+
   await p2.evaluate(() =>
     window.__TAURI_INTERNALS__.invoke("set_desktop_prefs", {
       closeToTray: false,

@@ -4,9 +4,15 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readRustModule, readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const read = (rel) => readFileSync(join(root, rel), "utf8");
+const read = (rel) =>
+  rel.endsWith("activate.rs")
+    ? readRustModule(root, rel)
+    : rel.endsWith("store.ts") || rel.endsWith("os-activate.ts")
+      ? readTsModule(root, rel)
+      : readFileSync(join(root, rel), "utf8");
 
 function lin(channel) {
   const c = channel / 255;

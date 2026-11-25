@@ -3,22 +3,23 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readRustModule, readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const hydrate = readFileSync(join(root, "src/lib/fonts/hydrate.ts"), "utf8");
-const store = readFileSync(join(root, "src/lib/fonts/store.ts"), "utf8");
+const store = readTsModule(root, "src/lib/fonts/store.ts");
 const activateToggle = readFileSync(
   join(root, "src/components/font-studio/activate-toggle.tsx"),
   "utf8",
 );
 const gdiMirror = readFileSync(join(root, "src/lib/fonts/gdi-incapable.ts"), "utf8");
-const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
+const activateRs = readRustModule(root, "src-tauri/src/activate.rs");
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 
 test("206b keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "2.3.0");
-  assert.match(version, /2\.3\.0/);
+  assert.equal(pkg.version, "2.4.0");
+  assert.match(version, /2\.4\.0/);
 });
 
 test("hydrate seeds KNOWN_GDI_SESSION_INCAPABLE into settled", () => {

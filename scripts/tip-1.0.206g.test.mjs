@@ -3,11 +3,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readRustModule, readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const store = readFileSync(join(root, "src/lib/fonts/store.ts"), "utf8");
-const osActivate = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf8");
-const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
+const store = readTsModule(root, "src/lib/fonts/store.ts");
+const osActivate = readTsModule(root, "src/lib/fonts/os-activate.ts");
+const activateRs = readRustModule(root, "src-tauri/src/activate.rs");
 const gdiPurge = readFileSync(
   join(root, "scripts/gdi-incapable-no-fs-download-purge.test.mjs"),
   "utf8",
@@ -27,8 +28,8 @@ const readme = readFileSync(join(root, "README.md"), "utf8");
 const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 
 test("206g keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.3.0");
-  assert.match(version, /2\.3\.0/);
+  assert.equal(pkg.version, "2.4.0");
+  assert.match(version, /2\.4\.0/);
 });
 
 test("P2 race: soft Retry sets pending before/with Settled-drop around clearSessionGdiRefused", () => {

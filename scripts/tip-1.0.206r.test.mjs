@@ -1,3 +1,4 @@
+import { readRustModule, readTsModule } from "./lib/read-source.mjs";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -42,7 +43,7 @@ const folderTree = readFileSync(
   "utf8",
 );
 const uiDensity = readFileSync(join(root, "src/lib/ui-density.ts"), "utf8");
-const osActivate = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf8");
+const osActivate = readTsModule(root, "src/lib/fonts/os-activate.ts");
 const activateToggle = readFileSync(
   join(root, "src/components/font-studio/activate-toggle.tsx"),
   "utf8",
@@ -52,7 +53,7 @@ const activateQueueSrc = readFileSync(
   "utf8",
 );
 const gdiMirror = readFileSync(join(root, "src/lib/fonts/gdi-incapable.ts"), "utf8");
-const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
+const activateRs = readRustModule(root, "src-tauri/src/activate.rs");
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const readme = readFileSync(join(root, "README.md"), "utf8");
@@ -80,12 +81,12 @@ function remToNum(v) {
 }
 
 test("206r keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.3.0");
-  assert.match(version, /2\.3\.0/);
+  assert.equal(pkg.version, "2.4.0");
+  assert.match(version, /2\.4\.0/);
   const tauri = JSON.parse(
     readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"),
   );
-  assert.equal(tauri.version, "2.3.0");
+  assert.equal(tauri.version, "2.4.0");
 });
 
 test("docs mark 206r Fixed; primary+secondary; no tip-install; no everywhere overclaim", () => {
@@ -96,14 +97,16 @@ test("docs mark 206r Fixed; primary+secondary; no tip-install; no everywhere ove
   assert.match(readme, /No tip-install/);
   if (bugs) assert.match(bugs, /No tip-install/);
   if (bugs) {
-    const rStart = bugs.indexOf("## Fixed in tip / 1.0.206r");
-    assert.ok(rStart >= 0);
-    const rSec = bugs.slice(rStart, bugs.indexOf("## Fixed in tip / 1.0.206q"));
-    assert.doesNotMatch(rSec, /tip-install(?!\/pack)|APPROVE FOR PACK/i);
-    // No bare "everywhere" as still-true claim in 206r section
-    assert.doesNotMatch(rSec, /tightens \*\*everywhere\*\*|density everywhere/i);
-    assert.match(rSec, /toasts|chips|pickers/i);
-  }
+    if (bugs) {
+      const rStart = bugs.indexOf("## Fixed in tip / 1.0.206r");
+      assert.ok(rStart >= 0);
+      const rSec = bugs.slice(rStart, bugs.indexOf("## Fixed in tip / 1.0.206q"));
+      assert.doesNotMatch(rSec, /tip-install(?!\/pack)|APPROVE FOR PACK/i);
+      // No bare "everywhere" as still-true claim in 206r section
+      assert.doesNotMatch(rSec, /tightens \*\*everywhere\*\*|density everywhere/i);
+      assert.match(rSec, /toasts|chips|pickers/i);
+    }
+    }
 });
 
 test("persist key font-manager:ui-density unchanged", () => {

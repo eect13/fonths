@@ -7,7 +7,155 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use serde::{Deserialize, Serialize};
+
+/// Shared HTTP/2 + keep-alive client pool for official Google catalog/CDN requests.
+pub fn shared_blocking_client() -> &'static reqwest::blocking::Client {
+    static CLIENT: LazyLock<reqwest::blocking::Client> = LazyLock::new(|| {
+        reqwest::blocking::Client::builder()
+            .connect_timeout(Duration::from_secs(12))
+            .timeout(Duration::from_secs(25))
+            .pool_max_idle_per_host(8)
+            .tcp_keepalive(Duration::from_secs(30))
+            .user_agent(crate::gfsource::POLITE_UA)
+            .build()
+            .unwrap_or_else(|_| reqwest::blocking::Client::new())
+    });
+    &CLIENT
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GoogleCdnMeta {
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+    pub checked_at: u64,
+}
+
+pub fn cdn_meta_path(local_app_data: Option<PathBuf>) -> Option<PathBuf> {
+    local_app_data.map(|base| base.join("Fonths").join("google-cdn-meta.json"))
+}
+
+pub fn load_cdn_meta(local_app_data: Option<PathBuf>) -> GoogleCdnMeta {
+    let Some(path) = cdn_meta_path(local_app_data) else {
+        return GoogleCdnMeta::default();
+    };
+    let Ok(text) = fs::read_to_string(path) else {
+        return GoogleCdnMeta::default();
+    };
+    serde_json::from_str::<GoogleCdnMeta>(&text).unwrap_or_default()
+}
+
+pub fn save_cdn_meta(local_app_data: Option<PathBuf>, meta: &GoogleCdnMeta) {
+    let Some(path) = cdn_meta_path(local_app_data) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string(meta) {
+        let _ = fs::write(path, json);
+    }
+}
+
+pub struct ConditionalCatalogFetch {
+    pub unchanged: bool,
+    pub rows: Vec<serde_json::Value>,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+}
+
+fn unix_secs_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Conditional GET against `https://fonts.google.com/metadata/fonts` using `If-None-Match`
+/// and `If-Modified-Since` so unchanged startups cost one tiny 304 roundtrip.
+pub fn fetch_live_catalog_conditional(
+    local_app_data: Option<PathBuf>,
+    force: bool,
+) -> Result<ConditionalCatalogFetch, String> {
+    let cached_revs = load_cached_revisions(local_app_data.clone());
+    let prev_meta = if force || cached_revs.is_empty() {
+        GoogleCdnMeta::default()
+    } else {
+        load_cdn_meta(local_app_data.clone())
+    };
+    let mut req = shared_blocking_client()
+        .get("https://fonts.google.com/metadata/fonts")
+        .header("Cache-Control", "no-cache");
+    if !force && !cached_revs.is_empty() {
+        if let Some(etag) = prev_meta.etag.as_deref().filter(|s| !s.is_empty()) {
+            req = req.header(reqwest::header::IF_NONE_MATCH, etag);
+        }
+        if let Some(lm) = prev_meta.last_modified.as_deref().filter(|s| !s.is_empty()) {
+            req = req.header(reqwest::header::IF_MODIFIED_SINCE, lm);
+        }
+    }
+    let res = req.send().map_err(|e| e.to_string())?;
+    let now = unix_secs_now();
+    if res.status() == reqwest::StatusCode::NOT_MODIFIED {
+        let updated = GoogleCdnMeta {
+            etag: res
+                .headers()
+                .get(reqwest::header::ETAG)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+                .or(prev_meta.etag),
+            last_modified: res
+                .headers()
+                .get(reqwest::header::LAST_MODIFIED)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+                .or(prev_meta.last_modified),
+            checked_at: now,
+        };
+        save_cdn_meta(local_app_data, &updated);
+        register_live_families(cached_revs.keys(), None);
+        return Ok(ConditionalCatalogFetch {
+            unchanged: true,
+            rows: Vec::new(),
+            etag: updated.etag,
+            last_modified: updated.last_modified,
+        });
+    }
+    if !res.status().is_success() {
+        return Err(format!("HTTP {}", res.status().as_u16()));
+    }
+    let etag = res
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let last_modified = res
+        .headers()
+        .get(reqwest::header::LAST_MODIFIED)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let text = res.text().map_err(|e| e.to_string())?;
+    let (rows, revisions) = parse_live_catalog_json(&text)?;
+    register_live_families(rows.iter().filter_map(|r| r.get(0).and_then(|v| v.as_str())), None);
+    save_cached_revisions(local_app_data.clone(), &revisions);
+    save_cdn_meta(
+        local_app_data,
+        &GoogleCdnMeta {
+            etag: etag.clone(),
+            last_modified: last_modified.clone(),
+            checked_at: now,
+        },
+    );
+    Ok(ConditionalCatalogFetch {
+        unchanged: false,
+        rows,
+        etag,
+        last_modified,
+    })
+}
 
 fn slug_family(family: &str) -> String {
     let mut out = String::with_capacity(family.len());
@@ -255,5 +403,16 @@ mod tests {
         register_live_families(["Agrave Pro", "Firjar"], None);
         assert!(is_in_live_directory("Agrave Pro", None));
         assert!(is_in_live_directory("firjar", None));
+
+        let tmp = std::env::temp_dir().join(format!("fonths-cdn-meta-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let meta = GoogleCdnMeta {
+            etag: Some("\"v240-etag\"".to_string()),
+            last_modified: Some("Wed, 25 Nov 2026 12:00:00 GMT".to_string()),
+            checked_at: 1_795_536_000,
+        };
+        save_cdn_meta(Some(tmp.clone()), &meta);
+        assert_eq!(load_cdn_meta(Some(tmp.clone())), meta);
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

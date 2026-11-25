@@ -1,3 +1,4 @@
+import { readTsModule } from "./lib/read-source.mjs";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -10,7 +11,7 @@ import {
 } from "../src/lib/fonts/docs-vf-sync-ownership.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const osActivate = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf8");
+const osActivate = readTsModule(root, "src/lib/fonts/os-activate.ts");
 const ownership = readFileSync(
   join(root, "src/lib/fonts/docs-vf-sync-ownership.mjs"),
   "utf8",
@@ -41,9 +42,9 @@ function cancelFn() {
 }
 
 test("206w keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.3.0");
-  assert.equal(tauri.version, "2.3.0");
-  assert.match(version, /2\.3\.0/);
+  assert.equal(pkg.version, "2.4.0");
+  assert.equal(tauri.version, "2.4.0");
+  assert.match(version, /2\.4\.0/);
 });
 
 test("P0 assert matrix: Scanning Documents is not docs-owned without sticky", () => {

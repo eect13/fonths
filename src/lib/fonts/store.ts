@@ -2,11 +2,10 @@ import { toast } from "sonner";
 import { create } from "zustand";
 import { persist, createJSONStorage, type StateStorage } from "zustand/middleware";
 import { createPersistStorage, storageErrorMessage } from "./persist-storage";
-import { FONT_BY_ID, GOOGLE_FONTS, isGoogleCatalog } from "./catalog";
+import { GOOGLE_FONTS } from "./catalog";
 import { notifyIfUnusual } from "./color-font";
 import { isKnownGdiSessionIncapable, isSoftGdiTryAddFirst, KNOWN_GDI_SESSION_INCAPABLE } from "./gdi-incapable";
-import { bytesNearlySame } from "./binary-diff";
-import { idbDelete, idbGet, idbPutMany } from "./idb";
+import { idbDelete, idbPutMany } from "./idb";
 import { evictFamilyPreview, loadFont, unloadLocalFont } from "./loader";
 import { inferLocalStyle } from "./style-tags";
 import { bindAxesPersist, setLiveAxis } from "./live-axes";
@@ -23,23 +22,65 @@ import {
 import { saveLocalFontsMeta, scheduleSaveLocalFontsMeta } from "./persist-local";
 import type {
   Collection,
-  DuplicateGroup,
   FontLicense,
   FontMetrics,
   FontRecord,
   LibraryFacet,
   LibraryScope,
-  LibrarySort,
   PreviewSettings,
 } from "./types";
 import { DEFAULT_PREVIEW, isFacetScope } from "./types";
-import { fontLicense, refineLicense, coerceLicense } from "./license";
+import { refineLicense, coerceLicense } from "./license";
 import { fontMime } from "./fs-drop";
 import { coerceDesktopPrefs, DEFAULT_DESKTOP_PREFS, type DesktopPrefs } from "@/lib/desktop/prefs";
 import { isDesktopShellSync } from "@/lib/desktop/open-fonts";
-import { fontMatchesSearch, mergeMetrics, parseSearchQuery } from "./metrics";
-import { filterFontsWithIndex } from "./search-index";
+import { mergeMetrics } from "./metrics";
 import { snapAxes } from "./axes";
+import {
+  familyDuplicateHideIds,
+  findDuplicates,
+  hideIdsFromDuplicateGroups,
+} from "./store/duplicate-engine";
+import {
+  collectFolderFontIds,
+  collectFolderTreeIds,
+  collectionIsWatched,
+  folderDeleteImpact,
+  folderFontStats,
+  folderStatsWithAutoHide,
+  folderTree,
+  wouldCreateCycle,
+} from "./store/folder-helpers";
+import {
+  allFonts,
+  filterLibrary,
+  findFont,
+  matchesQuery,
+  poolForScope,
+  setSystemFontProvider,
+  sortLibrary,
+  tagsFor,
+} from "./store/library-query";
+
+export {
+  allFonts,
+  collectionIsWatched,
+  collectFolderFontIds,
+  collectFolderTreeIds,
+  familyDuplicateHideIds,
+  filterLibrary,
+  findDuplicates,
+  findFont,
+  folderDeleteImpact,
+  folderFontStats,
+  folderStatsWithAutoHide,
+  folderTree,
+  hideIdsFromDuplicateGroups,
+  matchesQuery,
+  poolForScope,
+  sortLibrary,
+  tagsFor,
+};
 
 const STORAGE_KEY = "font-manager:v1";
 /** Persist version. v1 key kept so existing libraries don't vanish. v3 adds facet. */
@@ -1958,556 +1999,7 @@ useFontStore.subscribe((s, prev) => {
   if (s.localFonts !== prev.localFonts) scheduleSaveLocalFontsMeta(s.localFonts);
 });
 
-export function allFonts(
-  localFonts: FontRecord[],
-  googleFonts: FontRecord[] = GOOGLE_FONTS,
-): FontRecord[] {
-  if (!localFonts.length) return googleFonts;
-  if (!googleFonts.length) return localFonts;
-  return [...localFonts, ...googleFonts];
-}
+setSystemFontProvider(() => useFontStore.getState().systemFonts);
 
-/** Narrow the array *before* filter/sort so 20k locals are not copied when viewing Google Fonts / Activated. */
-export function poolForScope(
-  scope: LibraryScope,
-  localFonts: FontRecord[],
-  googleFonts: FontRecord[],
-  systemFonts: FontRecord[] = [],
-  liveIds: readonly string[] = [],
-): FontRecord[] {
-  if (scope === "system") return systemFonts;
-  if (scope === "uploaded") return localFonts;
-  if (scope === "gfonts" || scope === "google") return googleFonts;
-  if (scope === "recent") return allFonts(localFonts, googleFonts).concat(systemFonts);
-  // Activated drawer/facet: O(live), never allFonts(~22k) on every GDI tick.
-  if (scope === "activated") {
-    if (!liveIds.length) return [];
-    const googleOnly = liveIds.every((id) => id.startsWith("g:"));
-    const localById = googleOnly ? null : new Map(localFonts.map((f) => [f.id, f]));
-    const googleById = new Map(googleFonts.map((f) => [f.id, f]));
-    const systemById = systemFonts.length ? new Map(systemFonts.map((f) => [f.id, f])) : null;
-    const out: FontRecord[] = [];
-    const seen = new Set<string>();
-    for (const id of liveIds) {
-      if (!id || seen.has(id)) continue;
-      seen.add(id);
-      // Prefer store googleFonts (disk VF honesty) over static FONT_BY_ID (variable:false).
-      const font =
-        localById?.get(id) ??
-        googleById.get(id) ??
-        systemById?.get(id) ??
-        (id.startsWith("g:") ? FONT_BY_ID.get(id) : undefined) ??
-        FONT_BY_ID.get(id);
-      if (font) out.push(font);
-    }
-    return out;
-  }
-  return allFonts(localFonts, googleFonts);
-}
 
-export function findFont(
-  id: string,
-  localFonts: FontRecord[],
-  googleFonts: FontRecord[] = GOOGLE_FONTS,
-): FontRecord | undefined {
-  if (id.startsWith("g:")) {
-    return FONT_BY_ID.get(id) ?? googleFonts.find((f) => f.id === id);
-  }
-  if (id.startsWith("s:")) {
-    return useFontStore.getState().systemFonts.find((f) => f.id === id);
-  }
-  return (
-    localFonts.find((f) => f.id === id) ??
-    googleFonts.find((f) => f.id === id) ??
-    FONT_BY_ID.get(id)
-  );
-}
 
-export function tagsFor(font: FontRecord, customTags: Record<string, string[]>): string[] {
-  const extra = customTags[font.id] ?? [];
-  return Array.from(new Set([...font.tags, ...extra]));
-}
-
-export function familyDuplicateHideIds(
-  localFonts: FontRecord[],
-  googleFonts: FontRecord[],
-  systemFonts: FontRecord[] = [],
-): string[] {
-  const systemSet = new Set(systemFonts.map((f) => f.family.trim().toLowerCase()).filter(Boolean));
-  const googleSet = new Set(googleFonts.map((f) => f.family.trim().toLowerCase()).filter(Boolean));
-  const catalog = new Set([...googleSet, ...systemSet]);
-  const seenFamily = new Set<string>();
-  const seenHash = new Set<string>();
-  const hide = new Set<string>();
-  for (const gf of googleFonts) {
-    const key = gf.family.trim().toLowerCase();
-    if (key && systemSet.has(key)) hide.add(gf.id);
-  }
-  for (const font of localFonts) {
-    const key = font.family.trim().toLowerCase();
-    const hash = font.checksum?.trim();
-    const isHashDup = Boolean(hash && seenHash.has(hash));
-    if (hash) seenHash.add(hash);
-    if (isHashDup || catalog.has(key) || seenFamily.has(key)) hide.add(font.id);
-    else if (key) seenFamily.add(key);
-  }
-  return [...hide];
-}
-
-export function hideIdsFromDuplicateGroups(groups: DuplicateGroup[]): string[] {
-  const hide = new Set<string>();
-  for (const group of groups) {
-    const keep =
-      group.fonts.find((f) => f.source === "system") ??
-      group.fonts.find((f) => f.source === "google") ??
-      [...group.fonts].sort((a, b) => (b.fileSize ?? 0) - (a.fileSize ?? 0))[0];
-    if (!keep) continue;
-    for (const font of group.fonts) {
-      if (font.id !== keep.id && font.source !== "system") hide.add(font.id);
-    }
-  }
-  return [...hide];
-}
-
-function sourceRank(source: FontRecord["source"]) {
-  if (source === "system") return 0;
-  if (source === "google") return 1;
-  return 2;
-}
-
-export async function findDuplicates(
-  localFonts: FontRecord[],
-  googleFonts: FontRecord[] = [],
-  systemFonts: FontRecord[] = [],
-): Promise<DuplicateGroup[]> {
-  const groups: DuplicateGroup[] = [];
-  const grouped = new Set<string>();
-
-  const byHash = new Map<string, FontRecord[]>();
-  for (const font of localFonts) {
-    if (!font.checksum) continue;
-    const list = byHash.get(font.checksum) ?? [];
-    list.push(font);
-    byHash.set(font.checksum, list);
-  }
-  for (const [hash, fonts] of byHash) {
-    if (fonts.length < 2) continue;
-    groups.push({ key: `hash:${hash}`, reason: "checksum", fonts, diffBytes: 0 });
-    fonts.forEach((f) => grouped.add(f.id));
-  }
-
-  const rest = localFonts.filter((f) => !grouped.has(f.id));
-  const bySize = new Map<number, FontRecord[]>();
-  for (const font of rest) {
-    const size = font.fileSize ?? 0;
-    if (size <= 0) continue;
-    const list = bySize.get(size) ?? [];
-    list.push(font);
-    bySize.set(size, list);
-  }
-
-  const toLoad = [...bySize.values()].filter((list) => list.length >= 2).flat();
-  const buffers = new Map<string, Uint8Array>();
-  await Promise.all(
-    toLoad.map(async (font) => {
-      const blob = await idbGet(font.id).catch(() => undefined);
-      if (!blob) return;
-      const buf = new Uint8Array(await blob.arrayBuffer());
-      if (buf.byteLength) buffers.set(font.id, buf);
-    }),
-  );
-
-  let cmp = 0;
-  // Cap per-size-bucket pairwise byte diffs so 100k libraries with identical stub
-  // sizes cannot go O(B^2); checksum grouping above already catches exact matches in O(N).
-  const MAX_BUCKET_PAIRWISE = 32;
-  for (const [size, fonts] of bySize) {
-    if (fonts.length < 2 || fonts.length > MAX_BUCKET_PAIRWISE) continue;
-    const parent = fonts.map((_, i) => i);
-    const diffs = new Map<string, number>();
-    const find = (i: number): number => {
-      let p = i;
-      while (parent[p] !== p) p = parent[p]!;
-      let c = i;
-      while (parent[c] !== p) {
-        const n = parent[c]!;
-        parent[c] = p;
-        c = n;
-      }
-      return p;
-    };
-    const unite = (i: number, j: number) => {
-      const a = find(i);
-      const b = find(j);
-      if (a !== b) parent[a] = b;
-    };
-
-    for (let i = 0; i < fonts.length; i += 1) {
-      const left = buffers.get(fonts[i]!.id);
-      if (!left) continue;
-      for (let j = i + 1; j < fonts.length; j += 1) {
-        const right = buffers.get(fonts[j]!.id);
-        if (!right) continue;
-        cmp += 1;
-        if (cmp % 8 === 0) await new Promise<void>((r) => setTimeout(r, 0));
-        const { near, diffs: n } = bytesNearlySame(left, right);
-        if (!near) continue;
-        unite(i, j);
-        const edge = `${Math.min(i, j)}:${Math.max(i, j)}`;
-        diffs.set(edge, n);
-      }
-    }
-
-    const clusters = new Map<number, FontRecord[]>();
-    for (let i = 0; i < fonts.length; i += 1) {
-      const root = find(i);
-      const list = clusters.get(root) ?? [];
-      list.push(fonts[i]!);
-      clusters.set(root, list);
-    }
-    for (const [root, list] of clusters) {
-      if (list.length < 2) continue;
-      let worst = 0;
-      for (let i = 0; i < fonts.length; i += 1) {
-        if (find(i) !== root) continue;
-        for (let j = i + 1; j < fonts.length; j += 1) {
-          if (find(j) !== root) continue;
-          worst = Math.max(worst, diffs.get(`${i}:${j}`) ?? 0);
-        }
-      }
-      groups.push({
-        key: `bin:${size}:${list.map((f) => f.id).join(",")}`,
-        reason: worst === 0 ? "checksum" : "binary",
-        fonts: list,
-        diffBytes: worst,
-      });
-      list.forEach((f) => grouped.add(f.id));
-    }
-  }
-
-  // O(N) family index (replaces prior O(N^2) localFonts.filter inside names loop).
-  const googleByFamily = new Map<string, FontRecord>();
-  for (const font of googleFonts) {
-    const key = font.family.trim().toLowerCase();
-    if (key && !googleByFamily.has(key)) googleByFamily.set(key, font);
-  }
-  const systemByFamily = new Map<string, FontRecord>();
-  for (const font of systemFonts) {
-    const key = font.family.trim().toLowerCase();
-    if (key && !systemByFamily.has(key)) systemByFamily.set(key, font);
-  }
-  const localByFamily = new Map<string, FontRecord[]>();
-  for (const font of localFonts) {
-    const key = font.family.trim().toLowerCase();
-    if (!key) continue;
-    let bucket = localByFamily.get(key);
-    if (!bucket) {
-      bucket = [font];
-      localByFamily.set(key, bucket);
-    } else {
-      bucket.push(font);
-    }
-  }
-
-  const names = new Set<string>([
-    ...googleByFamily.keys(),
-    ...systemByFamily.keys(),
-    ...localByFamily.keys(),
-  ]);
-  for (const name of names) {
-    const sys = systemByFamily.get(name);
-    const google = googleByFamily.get(name);
-    const locals = localByFamily.get(name) ?? [];
-    const fonts = [sys, google, ...locals].filter((f): f is FontRecord => Boolean(f));
-    const sources = new Set(fonts.map((f) => f.source));
-    if (fonts.length >= 2 && sources.size >= 2) {
-      fonts.sort((a, b) => sourceRank(a.source) - sourceRank(b.source) || a.id.localeCompare(b.id));
-      groups.push({ key: `fam:${name}`, reason: "family-weight", fonts });
-      continue;
-    }
-    // Also detect same-family + same-weight + same-italic duplicate local uploads
-    // (e.g. two copies/versions of a custom font in different folders) without
-    // falsely grouping distinct weights like Regular (400) + Bold (700).
-    if (locals.length >= 2) {
-      const byStyle = new Map<string, FontRecord[]>();
-      for (const f of locals) {
-        if (grouped.has(f.id)) continue;
-        const styleKey = `${f.weights?.[0] ?? 400}:${f.italic ? "i" : "r"}`;
-        const list = byStyle.get(styleKey) ?? [];
-        list.push(f);
-        byStyle.set(styleKey, list);
-      }
-      for (const [styleKey, sameStyle] of byStyle) {
-        if (sameStyle.length < 2) continue;
-        sameStyle.sort((a, b) => (b.fileSize ?? 0) - (a.fileSize ?? 0) || a.id.localeCompare(b.id));
-        groups.push({ key: `local-fam:${name}:${styleKey}`, reason: "family-weight", fonts: sameStyle });
-      }
-    }
-  }
-
-  return groups;
-}
-
-export function matchesQuery(
-  font: FontRecord,
-  query: string,
-  customTags: Record<string, string[]>,
-): boolean {
-  return fontMatchesSearch(font, parseSearchQuery(query), customTags);
-}
-
-export function filterLibrary(
-  fonts: FontRecord[],
-  scope: LibraryScope,
-  query: string,
-  favorites: string[],
-  activated: string[],
-  collections: Collection[],
-  customTags: Record<string, string[]>,
-  facet: LibraryFacet | string = "",
-  recentIds: readonly string[] = [],
-): FontRecord[] {
-  let list = fonts;
-  const where = isFacetScope(scope) ? "all" : scope;
-  if (where === "activated") {
-    const on = new Set(activated);
-    list = list.filter((f) => on.has(f.id));
-  } else if (where === "favorites") {
-    const fav = new Set(favorites);
-    list = list.filter((f) => fav.has(f.id));
-  } else if (where === "uploaded") list = list.filter((f) => f.source === "local");
-  else if (where === "recent") {
-    const byId = new Map(list.map((f) => [f.id, f]));
-    list = recentIds.map((id) => byId.get(id)).filter((f): f is FontRecord => Boolean(f));
-  }
-  else if (where === "google" || where === "gfonts") list = list.filter(isGoogleCatalog);
-  else if (where === "system") {
-    list = list.filter((f) => f.source === "system");
-  }
-  else if (where.startsWith("collection:")) {
-    const ids = collectFolderFontIds(collections, where.slice(11));
-    list = list.filter((f) => ids.has(f.id));
-  }
-  const cut = facet || (isFacetScope(scope) ? scope : "");
-  if (cut.startsWith("category:")) {
-    const cat = cut.slice(9);
-    list = list.filter((f) => f.category === cat);
-  } else if (cut.startsWith("tag:")) {
-    const tag = cut.slice(4).toLowerCase();
-    list = list.filter((f) => tagsFor(f, customTags).some((t) => t.toLowerCase() === tag));
-  } else if (cut.startsWith("license:")) {
-    const license = cut.slice(8) as FontLicense;
-    list = list.filter((f) => fontLicense(f) === license);
-  }
-  if (query.trim()) list = filterFontsWithIndex(list, query, customTags);
-  return list;
-}
-
-const collator = new Intl.Collator(undefined, { sensitivity: "base" });
-
-/**
- * Fast library sort: uses Intl.Collator for standard libraries (<=5k) and switches
- * to a pre-lowercased Schwartzian key sort for massive 10k-100k libraries (~10x faster).
- */
-export function sortLibrary(fonts: FontRecord[], sort: LibrarySort = "name-asc"): FontRecord[] {
-  if (fonts.length <= 1) return [...fonts];
-  if (fonts.length > 5000) {
-    const keyed = fonts.map((font) => ({
-      font,
-      fam: font.family.toLowerCase(),
-      id: font.id,
-      pop: font.popularity,
-      added: font.addedAt ?? 0,
-    }));
-    keyed.sort((a, b) => {
-      switch (sort) {
-        case "name-desc":
-          return (b.fam < a.fam ? -1 : b.fam > a.fam ? 1 : 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-        case "popular":
-          return a.pop - b.pop || (a.fam < b.fam ? -1 : a.fam > b.fam ? 1 : 0);
-        case "recent":
-          return b.added - a.added || (a.fam < b.fam ? -1 : a.fam > b.fam ? 1 : 0);
-        case "name-asc":
-        default:
-          return (a.fam < b.fam ? -1 : a.fam > b.fam ? 1 : 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-      }
-    });
-    return keyed.map((k) => k.font);
-  }
-  const copy = [...fonts];
-  copy.sort((a, b) => {
-    switch (sort) {
-      case "name-desc":
-        return collator.compare(b.family, a.family) || a.id.localeCompare(b.id);
-      case "popular":
-        return a.popularity - b.popularity || collator.compare(a.family, b.family);
-      case "recent":
-        return (b.addedAt ?? 0) - (a.addedAt ?? 0) || collator.compare(a.family, b.family);
-      case "name-asc":
-      default:
-        return collator.compare(a.family, b.family) || a.id.localeCompare(b.id);
-    }
-  });
-  return copy;
-}
-
-export function collectionIsWatched(collections: Collection[], id: string): boolean {
-  const byId = new Map(collections.map((c) => [c.id, c]));
-  let current: string | null = id;
-  while (current) {
-    const node = byId.get(current);
-    if (!node) return false;
-    if (node.watchPath) return true;
-    current = node.parentId;
-  }
-  return false;
-}
-
-export function collectFolderTreeIds(collections: Collection[], id: string): string[] {
-  const ids: string[] = [];
-  const walk = (folderId: string) => {
-    ids.push(folderId);
-    for (const child of collections) {
-      if (child.parentId === folderId) walk(child.id);
-    }
-  };
-  walk(id);
-  return ids;
-}
-
-export function folderDeleteImpact(
-  collections: Collection[],
-  localFonts: FontRecord[],
-  id: string,
-): { folderIds: string[]; localFontIds: string[]; folderName: string } {
-  const folderIds = collections.some((c) => c.id === id) ? collectFolderTreeIds(collections, id) : [];
-  const folderIdSet = new Set(folderIds);
-  const remainingIds = new Set(
-    collections.filter((c) => !folderIdSet.has(c.id)).flatMap((c) => c.fontIds),
-  );
-  const inDeleted = new Set<string>();
-  const deletedWatchRoots: string[] = [];
-  for (const c of collections) {
-    if (folderIdSet.has(c.id)) {
-      c.fontIds.forEach((fontId) => inDeleted.add(fontId));
-      if (c.watchPath) {
-        deletedWatchRoots.push(c.watchPath.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase());
-      }
-    }
-  }
-  const underDeletedWatch = (originPath: string | undefined): boolean => {
-    if (!originPath || !deletedWatchRoots.length) return false;
-    const normOrigin = originPath.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-    return deletedWatchRoots.some((root) => normOrigin === root || normOrigin.startsWith(`${root}/`));
-  };
-  const localSet = new Set(localFonts.map((f) => f.id));
-  const localFontIds = new Set<string>(
-    [...inDeleted].filter((fontId) => localSet.has(fontId) && !remainingIds.has(fontId)),
-  );
-  // Any font linked from a stopped watched folder must be removed completely from Fonths.
-  if (deletedWatchRoots.length) {
-    for (const f of localFonts) {
-      if (underDeletedWatch(f.originPath) || (inDeleted.has(f.id) && deletedWatchRoots.length > 0)) {
-        localFontIds.add(f.id);
-      }
-    }
-  }
-  return {
-    folderIds,
-    localFontIds: [...localFontIds],
-    folderName: collections.find((c) => c.id === id)?.name ?? "Folder",
-  };
-}
-
-export function collectFolderFontIds(collections: Collection[], id: string): Set<string> {
-  return new Set(folderFontStats(collections).get(id)?.ids ?? []);
-}
-
-/** Apply auto-hide duplicate ids to folder/collection badge stats (shared). */
-export function folderStatsWithAutoHide(
-  collections: Collection[],
-  hideDupIds: string[],
-): Map<string, { count: number; ids: string[] }> {
-  const raw = folderFontStats(collections);
-  if (!hideDupIds.length) return raw;
-  const hide = new Set(hideDupIds);
-  const next = new Map<string, { count: number; ids: string[] }>();
-  for (const [id, stat] of raw) {
-    const ids = stat.ids.filter((fid) => !hide.has(fid));
-    next.set(id, { count: ids.length, ids });
-  }
-  return next;
-}
-
-export function folderFontStats(
-  collections: Collection[],
-): Map<string, { count: number; ids: string[] }> {
-  const byParent = new Map<string | null, Collection[]>();
-  const byId = new Map<string, Collection>();
-  for (const c of collections) {
-    byId.set(c.id, c);
-    const parent = c.parentId ?? null;
-    const list = byParent.get(parent) ?? [];
-    list.push(c);
-    byParent.set(parent, list);
-  }
-  const map = new Map<string, { count: number; ids: string[] }>();
-  const walk = (folderId: string): string[] => {
-    const cached = map.get(folderId);
-    if (cached) return cached.ids;
-    const col = byId.get(folderId);
-    if (!col) return [];
-    const ids = new Set(col.fontIds);
-    for (const child of byParent.get(folderId) ?? []) {
-      for (const fontId of walk(child.id)) ids.add(fontId);
-    }
-    const list = [...ids];
-    map.set(folderId, { count: list.length, ids: list });
-    return list;
-  };
-  const known = new Set(collections.map((c) => c.id));
-  for (const c of collections) {
-    if (!c.parentId || !known.has(c.parentId)) walk(c.id);
-  }
-  return map;
-}
-
-export function folderTree(collections: Collection[]): { folder: Collection; depth: number }[] {
-  const byParent = new Map<string | null, Collection[]>();
-  for (const c of collections) {
-    const parent = c.parentId ?? null;
-    const list = byParent.get(parent) ?? [];
-    list.push(c);
-    byParent.set(parent, list);
-  }
-  for (const list of byParent.values()) {
-    list.sort((a, b) => a.name.localeCompare(b.name));
-  }
-  const ids = new Set(collections.map((c) => c.id));
-  const rows: { folder: Collection; depth: number }[] = [];
-  const walk = (parentId: string | null, depth: number) => {
-    for (const folder of byParent.get(parentId) ?? []) {
-      rows.push({ folder, depth });
-      walk(folder.id, depth + 1);
-    }
-  };
-  walk(null, 0);
-  for (const c of collections) {
-    if (c.parentId && !ids.has(c.parentId) && !rows.some((r) => r.folder.id === c.id)) {
-      rows.push({ folder: { ...c, parentId: null }, depth: 0 });
-    }
-  }
-  return rows;
-}
-
-function wouldCreateCycle(collections: Collection[], id: string, parentId: string): boolean {
-  let current: string | null = parentId;
-  const seen = new Set<string>();
-  while (current) {
-    if (current === id) return true;
-    if (seen.has(current)) return true;
-    seen.add(current);
-    current = collections.find((c) => c.id === current)?.parentId ?? null;
-  }
-  return false;
-}

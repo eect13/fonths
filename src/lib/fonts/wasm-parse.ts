@@ -1,5 +1,5 @@
 /**
- * Parse-engine policy for Font Manager.
+ * Parse-engine policy for Fonths.
  *
  * WASM ttf-parser would duplicate desktop `src-tauri` ttf-parser and JS `sfnt.ts`
  * (table directory, no glyf). Cost of a second crate + wasm-bindgen is not the

@@ -1,9 +1,9 @@
 [package]
 name = "fonths"
-version = "2.3.0"
+version = "2.4.0"
 description = "Fonths — high-performance Tauri v2 + Google Fontations (read-fonts + skrifa + harfrust) typeface manager"
-edition = "2021"
-rust-version = "1.87"
+edition = "2024"
+rust-version = "1.88"
 
 [lib]
 name = "fonths_lib"

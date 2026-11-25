@@ -3,12 +3,13 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readRustModule, readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const axes = readFileSync(join(root, "src/lib/fonts/axes.ts"), "utf8");
 const loader = readFileSync(join(root, "src/lib/fonts/loader.ts"), "utf8");
 const card = readFileSync(join(root, "src/components/font-studio/font-card.tsx"), "utf8");
-const os = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf8");
+const os = readTsModule(root, "src/lib/fonts/os-activate.ts");
 const honesty = readFileSync(join(root, "scripts/variable-status-honesty.test.mjs"), "utf8");
 
 function axesForFontHonest(font) {
@@ -125,7 +126,7 @@ test("simultaneous card Activate merges — does not wait sibling idle", () => {
 });
 
 test("rust start_google_downloads still merges pending when already running", () => {
-  const rust = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
+  const rust = readRustModule(root, "src-tauri/src/activate.rs");
   assert.match(rust, /state\.running\.swap\(true, Ordering::SeqCst\)/);
   assert.match(rust, /pending\.extend\(fresh\)/);
 });

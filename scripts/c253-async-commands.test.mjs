@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { readRustModule } from "./lib/read-source.mjs";
 
 // C253 #2: Tauri runs non-async commands on the main (UI) thread. Scans, downloads,
 // Repair and Retry blocked the window for seconds (IsHungAppWindow, Alt-Tab ghost).
 // Every heavy command must be `async` and run its work on the blocking pool.
-const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
+const read = (p) =>
+  p.endsWith("activate.rs")
+    ? readRustModule(new URL(`../${p}`, import.meta.url))
+    : readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
 const HEAVY = {
   "src-tauri/src/activate.rs": [
     "scan_disk_families",

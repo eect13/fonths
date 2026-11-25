@@ -3,10 +3,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readRustModule, readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
-const osActivate = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf8");
+const activateRs = readRustModule(root, "src-tauri/src/activate.rs");
+const osActivate = readTsModule(root, "src/lib/fonts/os-activate.ts");
 const downloadBar = readFileSync(
   join(root, "src/components/font-studio/download-bar.tsx"),
   "utf8",
@@ -30,9 +31,9 @@ const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206aa keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "2.3.0");
-  assert.equal(tauri.version, "2.3.0");
-  assert.match(version, /2\.3\.0/);
+  assert.equal(pkg.version, "2.4.0");
+  assert.equal(tauri.version, "2.4.0");
+  assert.match(version, /2\.4\.0/);
 });
 
 test("P0-1: sync_documents_vf_policy and cancel_google_downloads are async commands", () => {

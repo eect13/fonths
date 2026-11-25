@@ -3,17 +3,18 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readRustModule, readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const storeTs = readFileSync(join(root, "src/lib/fonts/store.ts"), "utf8");
-const osActivate = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf8");
+const storeTs = readTsModule(root, "src/lib/fonts/store.ts");
+const osActivate = readTsModule(root, "src/lib/fonts/os-activate.ts");
 const downloadBar = readFileSync(join(root, "src/components/font-studio/download-bar.tsx"), "utf8");
 const hydrateTs = readFileSync(join(root, "src/lib/fonts/hydrate.ts"), "utf8");
 const sidebar = readFileSync(join(root, "src/components/font-studio/sidebar.tsx"), "utf8");
 const activateToggle = readFileSync(join(root, "src/components/font-studio/activate-toggle.tsx"), "utf8");
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
+const activateRs = readRustModule(root, "src-tauri/src/activate.rs");
 
 /**
  * Mirror pickExclusiveActivate (1.0.204): catalog preferred among non-live;
@@ -174,8 +175,8 @@ function countLanes({ live, settled, google, fontsource, disk }) {
 }
 
 test("1.0.206 version bump (204 feel kept)", () => {
-  assert.equal(pkg.version, "2.3.0");
-  assert.match(version, /2\.3\.0/);
+  assert.equal(pkg.version, "2.4.0");
+  assert.match(version, /2\.4\.0/);
 });
 
 test("exclusive Activate: no GDI evict / no Remove→Add chain", () => {

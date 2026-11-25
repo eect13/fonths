@@ -123,7 +123,7 @@ mod win_daemon {
     }
 
     #[link(name = "kernel32")]
-    extern "system" {
+    unsafe extern "system" {
         fn CreateMutexW(attrs: *const core::ffi::c_void, initial_owner: i32, name: *const u16) -> isize;
         fn OpenMutexW(access: u32, inherit: i32, name: *const u16) -> isize;
         fn CreateEventW(attrs: *const core::ffi::c_void, manual_reset: i32, initial_state: i32, name: *const u16) -> isize;
@@ -137,7 +137,7 @@ mod win_daemon {
     }
 
     #[link(name = "user32")]
-    extern "system" {
+    unsafe extern "system" {
         fn RegisterClassExW(wc: *const WNDCLASSEXW) -> u16;
         fn CreateWindowExW(
             ex_style: u32,
@@ -172,7 +172,7 @@ mod win_daemon {
     }
 
     #[link(name = "shell32")]
-    extern "system" {
+    unsafe extern "system" {
         fn Shell_NotifyIconW(message: u32, data: *const NOTIFYICONDATAW) -> i32;
         fn ExtractIconExW(
             lpsz_file: *const u16,
@@ -320,7 +320,10 @@ mod win_daemon {
         if tb_msg != 0 && msg == tb_msg && !DAEMON_QUITTING.load(Ordering::SeqCst) {
             let icon = TRAY_ICON_HANDLE.load(Ordering::Relaxed);
             let nid = make_nid(hwnd, icon, "Fonths — running in background");
-            let _ = Shell_NotifyIconW(NIM_ADD, &nid);
+            // SAFETY: Win32 window callback with valid initialized HWND and NOTIFYICONDATAW.
+            unsafe {
+                let _ = Shell_NotifyIconW(NIM_ADD, &nid);
+            }
             return 0;
         }
         match msg {
@@ -331,34 +334,40 @@ mod win_daemon {
                     return 0;
                 }
                 if ev == WM_RBUTTONUP {
-                    let menu = CreatePopupMenu();
-                    if menu != 0 {
-                        let show_w = wide_z("Show Fonths");
-                        let folder_w = wide_z("Open Documents folder");
-                        let quit_w = wide_z("Quit Fonths (unload fonts)");
-                        let _ = AppendMenuW(menu, MF_STRING, CMD_SHOW, show_w.as_ptr());
-                        let _ = AppendMenuW(menu, MF_STRING, CMD_FOLDER, folder_w.as_ptr());
-                        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-                        let _ = AppendMenuW(menu, MF_STRING, CMD_QUIT, quit_w.as_ptr());
-                        let mut pt = POINT { x: 0, y: 0 };
-                        let _ = GetCursorPos(&mut pt);
-                        let _ = SetForegroundWindow(hwnd);
-                        let chosen = TrackPopupMenu(
-                            menu,
-                            TPM_RIGHTBUTTON | TPM_NONOTIFY | TPM_RETURNCMD,
-                            pt.x,
-                            pt.y,
-                            0,
-                            hwnd,
-                            std::ptr::null(),
-                        ) as usize;
-                        let _ = DestroyMenu(menu);
-                        match chosen {
-                            CMD_SHOW => launch_ui_process(),
-                            CMD_FOLDER => open_documents_folder(),
-                            CMD_QUIT => trigger_quit(hwnd, true),
-                            _ => {}
+                    // SAFETY: Win32 message thread creates, displays, and destroys transient popup menu.
+                    let chosen = unsafe {
+                        let menu = CreatePopupMenu();
+                        if menu == 0 {
+                            0usize
+                        } else {
+                            let show_w = wide_z("Show Fonths");
+                            let folder_w = wide_z("Open Documents folder");
+                            let quit_w = wide_z("Quit Fonths (unload fonts)");
+                            let _ = AppendMenuW(menu, MF_STRING, CMD_SHOW, show_w.as_ptr());
+                            let _ = AppendMenuW(menu, MF_STRING, CMD_FOLDER, folder_w.as_ptr());
+                            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+                            let _ = AppendMenuW(menu, MF_STRING, CMD_QUIT, quit_w.as_ptr());
+                            let mut pt = POINT { x: 0, y: 0 };
+                            let _ = GetCursorPos(&mut pt);
+                            let _ = SetForegroundWindow(hwnd);
+                            let id = TrackPopupMenu(
+                                menu,
+                                TPM_RIGHTBUTTON | TPM_NONOTIFY | TPM_RETURNCMD,
+                                pt.x,
+                                pt.y,
+                                0,
+                                hwnd,
+                                std::ptr::null(),
+                            ) as usize;
+                            let _ = DestroyMenu(menu);
+                            id
                         }
+                    };
+                    match chosen {
+                        CMD_SHOW => launch_ui_process(),
+                        CMD_FOLDER => open_documents_folder(),
+                        CMD_QUIT => trigger_quit(hwnd, true),
+                        _ => {}
                     }
                     return 0;
                 }
@@ -388,10 +397,12 @@ mod win_daemon {
                 0
             }
             WM_DESTROY => {
-                PostQuitMessage(0);
+                // SAFETY: Terminates daemon message loop cleanly on window destruction.
+                unsafe { PostQuitMessage(0) };
                 0
             }
-            _ => DefWindowProcW(hwnd, msg, wp, lp),
+            // SAFETY: Forwards unhandled Win32 messages on valid daemon HWND.
+            _ => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
         }
     }
 

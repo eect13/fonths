@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readTsModule } from "./lib/read-source.mjs";
 
 /**
  * Variable/status honesty mirrors:
@@ -346,7 +347,7 @@ test("1.0.191: Activated pool prefers store googleFonts for disk VF badge honest
   const { fileURLToPath } = await import("node:url");
   const { dirname, join } = await import("node:path");
   const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-  const store = readFileSync(join(root, "src/lib/fonts/store.ts"), "utf8");
+  const store = readTsModule(root, "src/lib/fonts/store.ts");
   assert.match(store, /Prefer store googleFonts \(disk VF honesty\)/);
   assert.match(store, /fontMatchesSearch\(font, parseSearchQuery\(query\)/);
   const metrics = readFileSync(join(root, "src/lib/fonts/metrics.ts"), "utf8");

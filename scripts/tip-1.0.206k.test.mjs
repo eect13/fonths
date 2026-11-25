@@ -3,10 +3,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readRustModule, readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const osActivate = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf8");
-const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
+const osActivate = readTsModule(root, "src/lib/fonts/os-activate.ts");
+const activateRs = readRustModule(root, "src-tauri/src/activate.rs");
 const activateToggle = readFileSync(
   join(root, "src/components/font-studio/activate-toggle.tsx"),
   "utf8",
@@ -56,8 +57,8 @@ function settleCancelRemoveWithKeepFailed(activated, pendingDeactivate, batchIds
 }
 
 test("206k keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.3.0");
-  assert.match(version, /2\.3\.0/);
+  assert.equal(pkg.version, "2.4.0");
+  assert.match(version, /2\.4\.0/);
 });
 
 test("P0 beginOwnedJob(remove) clears lastFailedNames", () => {

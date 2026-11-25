@@ -3,13 +3,14 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readRustModule, readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const gfsourceRs = readFileSync(join(root, "src-tauri/src/gfsource.rs"), "utf8");
-const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
-const osActivateTs = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf8");
+const activateRs = readRustModule(root, "src-tauri/src/activate.rs");
+const osActivateTs = readTsModule(root, "src/lib/fonts/os-activate.ts");
 const loaderTs = readFileSync(join(root, "src/lib/fonts/loader.ts"), "utf8");
-const storeTs = readFileSync(join(root, "src/lib/fonts/store.ts"), "utf8");
+const storeTs = readTsModule(root, "src/lib/fonts/store.ts");
 const exportCollectionTs = readFileSync(join(root, "src/lib/fonts/export-collection.ts"), "utf8");
 const desktopSettingsTsx = readFileSync(
   join(root, "src/components/font-studio/desktop-settings.tsx"),

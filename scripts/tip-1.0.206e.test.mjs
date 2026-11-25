@@ -3,9 +3,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readRustModule, readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
+const activateRs = readRustModule(root, "src-tauri/src/activate.rs");
 const activateToggle = readFileSync(
   join(root, "src/components/font-studio/activate-toggle.tsx"),
   "utf8",
@@ -15,7 +16,7 @@ const confirmDlg = readFileSync(
   join(root, "src/components/font-studio/activate-confirm-dialog.tsx"),
   "utf8",
 );
-const store = readFileSync(join(root, "src/lib/fonts/store.ts"), "utf8");
+const store = readTsModule(root, "src/lib/fonts/store.ts");
 const fontCard = readFileSync(join(root, "src/components/font-studio/font-card.tsx"), "utf8");
 const appShell = readFileSync(join(root, "src/components/font-studio/app-shell.tsx"), "utf8");
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
@@ -24,8 +25,8 @@ const readme = readFileSync(join(root, "README.md"), "utf8");
 const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 
 test("206e keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.3.0");
-  assert.match(version, /2\.3\.0/);
+  assert.equal(pkg.version, "2.4.0");
+  assert.match(version, /2\.4\.0/);
 });
 
 test("P1 soft Settled requires .settled-add-zero provenance", () => {

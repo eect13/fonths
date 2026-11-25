@@ -1,3 +1,4 @@
+import { readTsModule } from "./lib/read-source.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -61,7 +62,7 @@ test("requestImportCollisionChoice resolves prefer-local / keep-both / skip-coll
 
 test("ImportCollisionDialog and lock-holder reporting are wired", () => {
   const shell = fs.readFileSync(path.join(root, "src/components/font-studio/app-shell.tsx"), "utf8");
-  const osAct = fs.readFileSync(path.join(root, "src/lib/fonts/os-activate.ts"), "utf8");
+  const osAct = readTsModule(root, "src/lib/fonts/os-activate.ts");
   assert.match(shell, /<ImportCollisionDialog \/>/);
   assert.match(osAct, /held by \$\{holders\.join/);
 });

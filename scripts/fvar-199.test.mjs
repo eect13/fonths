@@ -5,6 +5,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { FVAR_UNITS, formatFvar, snapFvar, instanceMatches } from "../src/lib/fonts/axes.ts";
 import { countSearchPresets, fontMatchesSearch, parseSearchQuery } from "../src/lib/fonts/metrics.ts";
+import { readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -60,7 +61,7 @@ test("inspector overlays — left sidebar does not reflow", () => {
 });
 
 test("20k import waves + IDB chunks; no harfbuzz-wasm", () => {
-  const store = readFileSync(join(root, "src/lib/fonts/store.ts"), "utf8");
+  const store = readTsModule(root, "src/lib/fonts/store.ts");
   const pool = readFileSync(join(root, "src/lib/fonts/parse-pool.ts"), "utf8");
   const idb = readFileSync(join(root, "src/lib/fonts/idb.ts"), "utf8");
   assert.match(pool, /export const PARSE_WAVE = 256/);

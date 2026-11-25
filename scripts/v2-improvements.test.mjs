@@ -18,6 +18,7 @@ import { fontMatchesSearch, metricsFromTables, parseSearchQuery, tokenizeSearchQ
 import { fontFormatForFile, formatInspectorCss, formatLocalFontFace, tailwindFontVarKey } from "../src/lib/fonts/css-format.ts";
 import { FONTHS_BACKUP_VERSION, buildLibraryBackup, mergeLibraryBackupState, parseLibraryBackup } from "../src/lib/fonts/backup-schema.ts";
 import { coerceDesktopPrefs, DEFAULT_DESKTOP_PREFS } from "../src/lib/desktop/prefs.ts";
+import { readRustModule, readTsModule } from "./lib/read-source.mjs";
 
 function makeFont(overrides = {}) {
   return {
@@ -279,7 +280,7 @@ test("8. OpenType metadata (isFixedPitch, sFamilyClass, PANOSE, widthClass, axes
 });
 
 test("9. Session & UI state persistence across exit/reopen and Playground fixes", () => {
-  const storeTs = readFileSync(join(process.cwd(), "src/lib/fonts/store.ts"), "utf8");
+  const storeTs = readTsModule(process.cwd(), "src/lib/fonts/store.ts");
   const hydrateTs = readFileSync(join(process.cwd(), "src/lib/fonts/hydrate.ts"), "utf8");
   const playgroundTsx = readFileSync(join(process.cwd(), "src/components/font-studio/playground.tsx"), "utf8");
   const pickerTsx = readFileSync(join(process.cwd(), "src/components/font-studio/font-picker.tsx"), "utf8");
@@ -301,12 +302,12 @@ test("9. Session & UI state persistence across exit/reopen and Playground fixes"
 });
 
 test("10. Live Google Fonts command, upload Pause/Resume/Cancel, and cleaned remnants", () => {
-  const activateRs = readFileSync(join(process.cwd(), "src-tauri/src/activate.rs"), "utf8");
+  const activateRs = readRustModule(process.cwd(), "src-tauri/src/activate.rs");
   const mainRs = readFileSync(join(process.cwd(), "src-tauri/src/lib.rs"), "utf8");
   const perms = readFileSync(join(process.cwd(), "src-tauri/permissions/font-activate.toml"), "utf8");
   const googleApi = readFileSync(join(process.cwd(), "src/lib/fonts/google-api.ts"), "utf8");
-  const storeTs = readFileSync(join(process.cwd(), "src/lib/fonts/store.ts"), "utf8");
-  const osActivate = readFileSync(join(process.cwd(), "src/lib/fonts/os-activate.ts"), "utf8");
+  const storeTs = readTsModule(process.cwd(), "src/lib/fonts/store.ts");
+  const osActivate = readTsModule(process.cwd(), "src/lib/fonts/os-activate.ts");
   const dropzone = readFileSync(join(process.cwd(), "src/components/font-studio/upload-dropzone.tsx"), "utf8");
 
   assert.match(activateRs, /pub async fn fetch_live_google_catalog/);
@@ -420,7 +421,7 @@ test("13. Fonths 2.0.0 Skia + Fontations + Windows Activator replaces DirectWrit
   const inspectorTsx = readFileSync(join(process.cwd(), "src/components/font-studio/font-inspector.tsx"), "utf8");
   const appShellTsx = readFileSync(join(process.cwd(), "src/components/font-studio/app-shell.tsx"), "utf8");
 
-  assert.match(cargoToml, /version = "2\.3\.0"/);
+  assert.match(cargoToml, /version = "2\.4\.0"/);
   assert.doesNotMatch(cargoToml, /skia-safe/);
   assert.match(cargoToml, /read-fonts/);
   assert.match(cargoToml, /skrifa/);
@@ -474,7 +475,7 @@ test("13. Fonths 2.0.0 Skia + Fontations + Windows Activator replaces DirectWrit
 
 test("14. Live Skia Inspector (italic/weight/auto-height/scroll), watched dedupe+collision, and lock combat/tray prefs", () => {
   const rendererRs = readFileSync(join(process.cwd(), "src-tauri/src/renderer.rs"), "utf8");
-  const activateRs = readFileSync(join(process.cwd(), "src-tauri/src/activate.rs"), "utf8");
+  const activateRs = readRustModule(process.cwd(), "src-tauri/src/activate.rs");
   const libRs = readFileSync(join(process.cwd(), "src-tauri/src/lib.rs"), "utf8");
   const canvasTsx = readFileSync(join(process.cwd(), "src/components/font-studio/skia-font-canvas.tsx"), "utf8");
   const inspectorTsx = readFileSync(join(process.cwd(), "src/components/font-studio/font-inspector.tsx"), "utf8");
@@ -521,7 +522,7 @@ test("15. Fonths 2.2.2 headless daemon, state honesty, live sliders, and SuperSe
   const libRs = readFileSync(join(process.cwd(), "src-tauri/src/lib.rs"), "utf8");
   const sliderTsx = readFileSync(join(process.cwd(), "src/components/ui/slider.tsx"), "utf8");
   const inspectorTsx = readFileSync(join(process.cwd(), "src/components/font-studio/font-inspector.tsx"), "utf8");
-  const osActivateTs = readFileSync(join(process.cwd(), "src/lib/fonts/os-activate.ts"), "utf8");
+  const osActivateTs = readTsModule(process.cwd(), "src/lib/fonts/os-activate.ts");
   const hydrateTs = readFileSync(join(process.cwd(), "src/lib/fonts/hydrate.ts"), "utf8");
   const chipsTsx = readFileSync(join(process.cwd(), "src/components/font-studio/search-chips.tsx"), "utf8");
 
@@ -561,11 +562,11 @@ test("15. Fonths 2.2.2 headless daemon, state honesty, live sliders, and SuperSe
 });
 
 test("16. Fonths 2.2.2 pure-Rust Fontations/HarfRust/font:// stack, NTFS hardlink staging, daemon adoption, and honest counts", () => {
-  const activateRs = readFileSync(join(process.cwd(), "src-tauri/src/activate.rs"), "utf8");
+  const activateRs = readRustModule(process.cwd(), "src-tauri/src/activate.rs");
   const sessionStageRs = readFileSync(join(process.cwd(), "src-tauri/src/session_stage.rs"), "utf8");
   const fontProtoRs = readFileSync(join(process.cwd(), "src-tauri/src/font_protocol.rs"), "utf8");
   const loaderTs = readFileSync(join(process.cwd(), "src/lib/fonts/loader.ts"), "utf8");
-  const osActivateTs = readFileSync(join(process.cwd(), "src/lib/fonts/os-activate.ts"), "utf8");
+  const osActivateTs = readTsModule(process.cwd(), "src/lib/fonts/os-activate.ts");
   const tauriConf = readFileSync(join(process.cwd(), "src-tauri/tauri.conf.json"), "utf8");
 
   // Zero-copy font:// protocol wired end-to-end
@@ -588,7 +589,7 @@ test("16. Fonths 2.2.2 pure-Rust Fontations/HarfRust/font:// stack, NTFS hardlin
 
 test("17. Fonths 2.2.2 watched-folder duplicate toast fix, mmap eviction on delete, zero stale GDI/Skia UI copy, and SuperSearch polish", () => {
   const watchTs = readFileSync(join(process.cwd(), "src/lib/fonts/watch-folder.ts"), "utf8");
-  const activateRs = readFileSync(join(process.cwd(), "src-tauri/src/activate.rs"), "utf8");
+  const activateRs = readRustModule(process.cwd(), "src-tauri/src/activate.rs");
   const activatorRs = readFileSync(join(process.cwd(), "src-tauri/src/activator.rs"), "utf8");
   const fontProtoRs = readFileSync(join(process.cwd(), "src-tauri/src/font_protocol.rs"), "utf8");
   const confirmTsx = readFileSync(join(process.cwd(), "src/components/font-studio/activate-confirm-dialog.tsx"), "utf8");
@@ -713,4 +714,78 @@ test("18. Fonths 2.3.0 daemon hardening, RTL/fallback/color Fontations renderer,
   assert.doesNotMatch(watchTs, /deploy\.bat/);
   assert.match(exportColTs, /Fonths collection/);
   assert.doesNotMatch(exportColTs, /# Font Manager collection export/);
+});
+
+
+test("19. Fonths 2.4.0 instant two-wave startup, ETag/304 Ask-Before-Sync Google CDN, dual-lane pacing, Rust 2024, modular backend/frontend, and Vite 8 chunking", () => {
+  const cargoToml = readFileSync(join(process.cwd(), "src-tauri/Cargo.toml"), "utf8");
+  const pkgJson = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8"));
+  const viteCfg = readFileSync(join(process.cwd(), "vite.config.ts"), "utf8");
+  const perms = readFileSync(join(process.cwd(), "src-tauri/permissions/font-activate.toml"), "utf8");
+  const libRs = readFileSync(join(process.cwd(), "src-tauri/src/lib.rs"), "utf8");
+  const googleCdnRs = readFileSync(join(process.cwd(), "src-tauri/src/google_cdn.rs"), "utf8");
+  const gfsourceRs = readFileSync(join(process.cwd(), "src-tauri/src/gfsource.rs"), "utf8");
+  const winfontRs = readFileSync(join(process.cwd(), "src-tauri/src/activate/winfont.rs"), "utf8");
+  const sessionRs = readFileSync(join(process.cwd(), "src-tauri/src/activate/session.rs"), "utf8");
+  const cdnSyncRs = readFileSync(join(process.cwd(), "src-tauri/src/activate/cdn_sync.rs"), "utf8");
+  const googleApiTs = readFileSync(join(process.cwd(), "src/lib/fonts/google-api.ts"), "utf8");
+  const hydrateTs = readFileSync(join(process.cwd(), "src/lib/fonts/hydrate.ts"), "utf8");
+  const hydrateStepsTs = readFileSync(join(process.cwd(), "src/lib/fonts/hydrate-steps.ts"), "utf8");
+
+  // 1. Rust 2024 edition & modular backend/frontend files
+  assert.match(cargoToml, /edition\s*=\s*"2024"/);
+  assert.match(cargoToml, /version\s*=\s*"2\.4\.0"/);
+  for (const rel of [
+    "src-tauri/src/activate/mod.rs",
+    "src-tauri/src/activate/winfont.rs",
+    "src-tauri/src/activate/session.rs",
+    "src-tauri/src/activate/cdn_sync.rs",
+    "src-tauri/src/activate/disk_scan.rs",
+    "src-tauri/src/activate/downloads.rs",
+    "src-tauri/src/activate/tests.rs",
+    "src/lib/fonts/store/duplicate-engine.ts",
+    "src/lib/fonts/store/folder-helpers.ts",
+    "src/lib/fonts/store/library-query.ts",
+    "src/lib/fonts/activation/types.ts",
+    "src/lib/fonts/activation/session-bridge.ts",
+    "src/lib/fonts/activation/disk-ops.ts",
+  ]) {
+    assert.ok(readFileSync(join(process.cwd(), rel), "utf8").length > 0, `expected module ${rel}`);
+  }
+  assert.throws(() => readFileSync(join(process.cwd(), "src-tauri/src/activate.rs"), "utf8"));
+
+  // 2. Two-wave instant startup + parallel hydration + deferred idle reclassification
+  assert.match(winfontRs, /pub fn register_prestaged_stage_path/);
+  assert.match(sessionRs, /WAVE0_SIZE/);
+  assert.match(sessionRs, /partition_prestaged_targets/);
+  assert.match(hydrateStepsTs, /const catalogTask = Promise\.resolve\(\)/);
+  assert.match(hydrateStepsTs, /opts\.loadCatalog\(\)/);
+  assert.match(hydrateTs, /requestIdleCallback/);
+  assert.match(hydrateTs, /syncManagedDocumentsRoot/);
+
+  // 3. Official Google CDN ETag/304 + Ask-Before-Sync + Dual-Lane HTTP/2 Pacing
+  assert.match(googleCdnRs, /shared_blocking_client/);
+  assert.match(googleCdnRs, /IF_NONE_MATCH/);
+  assert.match(googleCdnRs, /NOT_MODIFIED/);
+  assert.match(cdnSyncRs, /pub async fn fetch_live_google_catalog_conditional/);
+  assert.match(cdnSyncRs, /pub async fn check_google_cdn_updates/);
+  assert.match(libRs, /activate::fetch_live_google_catalog_conditional/);
+  assert.match(libRs, /activate::check_google_cdn_updates/);
+  assert.match(perms, /"fetch_live_google_catalog_conditional"/);
+  assert.match(perms, /"check_google_cdn_updates"/);
+  assert.match(gfsourceRs, /CDN_MAX_CONCURRENT/);
+  assert.match(gfsourceRs, /CDN_MIN_SPACING/);
+  assert.match(gfsourceRs, /is_cdn_binary_url/);
+  assert.match(gfsourceRs, /cache_fresh_for_revision/);
+  assert.match(gfsourceRs, /Fonths\/2\.4/);
+  assert.match(googleApiTs, /checkGoogleCdnUpdates/);
+  assert.match(googleApiTs, /label:\s*"Sync now"/);
+  assert.match(googleApiTs, /if \(syncFiles\)/);
+
+  // 4. Pruned unused deps & Vite 8 Rolldown chunking
+  assert.equal("react-day-picker" in pkgJson.dependencies, false);
+  assert.equal("cmdk" in pkgJson.dependencies, false);
+  assert.match(viteCfg, /codeSplitting/);
+  assert.match(viteCfg, /react-vendor/);
+  assert.match(viteCfg, /ui-vendor/);
 });

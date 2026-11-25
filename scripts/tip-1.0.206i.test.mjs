@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readRustModule, readTsModule } from "./lib/read-source.mjs";
 import {
   activateQueueIds,
   catalogMenuRemaining,
@@ -21,8 +22,8 @@ const downloadBar = readFileSync(
   join(root, "src/components/font-studio/download-bar.tsx"),
   "utf8",
 );
-const osActivate = readFileSync(join(root, "src/lib/fonts/os-activate.ts"), "utf8");
-const activateRs = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
+const osActivate = readTsModule(root, "src/lib/fonts/os-activate.ts");
+const activateRs = readRustModule(root, "src-tauri/src/activate.rs");
 const activateQueueSrc = readFileSync(
   join(root, "src/lib/fonts/activate-queue.mjs"),
   "utf8",
@@ -49,8 +50,8 @@ function emptyState(over = {}) {
 }
 
 test("206i keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.3.0");
-  assert.match(version, /2\.3\.0/);
+  assert.equal(pkg.version, "2.4.0");
+  assert.match(version, /2\.4\.0/);
 });
 
 test("P1 unload_now wires Pause+Cancel (not soft-lie / not hide-only)", () => {

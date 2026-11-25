@@ -5,10 +5,11 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readRustModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const hydrate = readFileSync(join(root, "src/lib/fonts/hydrate.ts"), "utf8");
-const rust = readFileSync(join(root, "src-tauri/src/activate.rs"), "utf8");
+const rust = readRustModule(root, "src-tauri/src/activate.rs");
 
 function fnBody(src, sig) {
   const at = src.indexOf(sig);

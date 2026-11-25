@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { CATALOG_CACHE_VERSION, healCachedCatalogFont } from "../src/lib/fonts/heal-catalog.ts";
+import { readTsModule } from "./lib/read-source.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -51,7 +52,7 @@ test("IDB localFonts persist prefers larger catalog (20k)", () => {
 });
 
 test("source: localFonts out of localStorage; Activated skips 20k map when google-only", () => {
-  const store = readFileSync(join(root, "src/lib/fonts/store.ts"), "utf8");
+  const store = readTsModule(root, "src/lib/fonts/store.ts");
   assert.match(store, /version: 6/);
   assert.match(store, /localFonts: \[\]/);
   assert.match(store, /const googleOnly = liveIds\.every/);

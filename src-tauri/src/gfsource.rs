@@ -18,9 +18,13 @@ use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 /// Honest UA: app name + repo URL. No invented contact address.
-pub const POLITE_UA: &str = "FontManager/1.0 (+https://github.com/eect13/font-manager)";
-pub const MAX_CONCURRENT: usize = 2;
-pub const MIN_SPACING: Duration = Duration::from_millis(250);
+pub const POLITE_UA: &str = "Fonths/2.4 (+https://github.com/eect13/fonths)";
+/// Metadata / manifest / API lane: polite burst-free concurrency and spacing.
+pub const MAX_CONCURRENT: usize = 3;
+pub const MIN_SPACING: Duration = Duration::from_millis(100);
+/// Immutable font-binary CDN lane (`fonts.gstatic.com`, `cdn.jsdelivr.net`, `raw.githubusercontent.com`).
+pub const CDN_MAX_CONCURRENT: usize = 6;
+pub const CDN_MIN_SPACING: Duration = Duration::from_millis(35);
 pub const MANIFEST_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_ATTEMPTS: u32 = 4;
@@ -431,6 +435,12 @@ pub fn shape_not_worse(candidate: &FaceShape, reference: &FaceShape) -> bool {
 
 // ---------------------------------------------------------------- politeness
 
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum PacerLane {
+    Metadata,
+    CdnBinary,
+}
+
 struct Pacer {
     state: Mutex<(usize, Option<Instant>)>,
     cv: Condvar,
@@ -441,35 +451,63 @@ fn pacer() -> &'static Pacer {
     P.get_or_init(|| Pacer { state: Mutex::new((0, None)), cv: Condvar::new() })
 }
 
-/// RAII slot: at most `MAX_CONCURRENT` holders, request starts ≥250 ms apart.
-pub struct Slot;
+fn cdn_pacer() -> &'static Pacer {
+    static P: OnceLock<Pacer> = OnceLock::new();
+    P.get_or_init(|| Pacer { state: Mutex::new((0, None)), cv: Condvar::new() })
+}
+
+fn acquire_from(p: &'static Pacer, lane: PacerLane, max_conc: usize, min_spacing: Duration) -> Slot {
+    let mut g = p.state.lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        if g.0 < max_conc {
+            let wait = g.1.map(|t| min_spacing.saturating_sub(t.elapsed())).unwrap_or_default();
+            if wait.is_zero() {
+                g.0 += 1;
+                g.1 = Some(Instant::now());
+                return Slot { lane };
+            }
+            g = p.cv.wait_timeout(g, wait).unwrap_or_else(|e| e.into_inner()).0;
+        } else {
+            g = p.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+}
+
+/// True when `url` points at an immutable font CDN host that handles higher concurrency.
+pub fn is_cdn_binary_url(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    (lower.starts_with("https://fonts.gstatic.com/")
+        || lower.starts_with("https://cdn.jsdelivr.net/")
+        || lower.starts_with("https://raw.githubusercontent.com/"))
+        && !lower.contains("metadata")
+}
+
+/// RAII slot: dual-lane limiter (Metadata `MAX_CONCURRENT`/`MIN_SPACING` vs CDN binary `CDN_MAX_CONCURRENT`/`CDN_MIN_SPACING`).
+pub struct Slot {
+    lane: PacerLane,
+}
 
 impl Slot {
     pub fn acquire() -> Slot {
-        let p = pacer();
-        let mut g = p.state.lock().unwrap_or_else(|e| e.into_inner());
-        loop {
-            if g.0 < MAX_CONCURRENT {
-                let wait = g.1.map(|t| MIN_SPACING.saturating_sub(t.elapsed())).unwrap_or_default();
-                if wait.is_zero() {
-                    g.0 += 1;
-                    g.1 = Some(Instant::now());
-                    return Slot;
-                }
-                g = p.cv.wait_timeout(g, wait).unwrap_or_else(|e| e.into_inner()).0;
-            } else {
-                g = p.cv.wait(g).unwrap_or_else(|e| e.into_inner());
-            }
-        }
+        acquire_from(pacer(), PacerLane::Metadata, MAX_CONCURRENT, MIN_SPACING)
+    }
+    pub fn acquire_cdn() -> Slot {
+        acquire_from(cdn_pacer(), PacerLane::CdnBinary, CDN_MAX_CONCURRENT, CDN_MIN_SPACING)
     }
     pub fn in_use() -> usize {
         pacer().state.lock().map(|g| g.0).unwrap_or(0)
+    }
+    pub fn cdn_in_use() -> usize {
+        cdn_pacer().state.lock().map(|g| g.0).unwrap_or(0)
     }
 }
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        let p = pacer();
+        let p = match self.lane {
+            PacerLane::Metadata => pacer(),
+            PacerLane::CdnBinary => cdn_pacer(),
+        };
         if let Ok(mut g) = p.state.lock() {
             g.0 = g.0.saturating_sub(1);
         }
@@ -512,6 +550,8 @@ pub struct PoliteOpts<'a> {
     /// Override the honest UA (css2 needs `Mozilla/5.0` to serve TTF).
     pub ua: Option<&'a str>,
     pub timeout: Option<Duration>,
+    /// Route through the higher-throughput CDN binary lane.
+    pub cdn_lane: bool,
 }
 
 /// Bytes of a 2xx body through the limiter (slot held through the body read).
@@ -548,7 +588,11 @@ pub fn polite_response(
         if cancel() {
             return Err(last);
         }
-        let slot = Slot::acquire();
+        let slot = if opts.cdn_lane || is_cdn_binary_url(url) {
+            Slot::acquire_cdn()
+        } else {
+            Slot::acquire()
+        };
         let mut req = client.get(url).header(reqwest::header::USER_AGENT, opts.ua.unwrap_or(POLITE_UA));
         if let Some(t) = opts.timeout {
             req = req.timeout(t);
@@ -681,6 +725,22 @@ pub fn cache_fresh(path: &Path, now: SystemTime) -> bool {
         .unwrap_or(false)
 }
 
+/// Revision-aware manifest cache freshness: rejects cached manifests whose `.rev`
+/// sidecar differs from the live Google catalog `lastModified` revision.
+pub fn cache_fresh_for_revision(path: &Path, now: SystemTime, live_revision: Option<&str>) -> bool {
+    if !cache_fresh(path, now) {
+        return false;
+    }
+    let Some(live_rev) = live_revision.map(str::trim).filter(|s| !s.is_empty()) else {
+        return true;
+    };
+    let rev_path = path.with_extension("rev");
+    match std::fs::read_to_string(&rev_path) {
+        Ok(stored) => stored.trim() == live_rev,
+        Err(_) => false,
+    }
+}
+
 /// Manifest for `family`: cached text in `cache_dir` (≤7 days), else fetched
 /// with the 20s probe timeout, session negative-cache, and circuit breaker.
 /// A failed refetch falls back to a stale cache rather than nothing.
@@ -690,9 +750,20 @@ pub fn fetch_manifest_cached(
     cache_dir: Option<&Path>,
     cancel: &dyn Fn() -> bool,
 ) -> Option<Manifest> {
+    fetch_manifest_cached_with_rev(client, family, cache_dir, None, cancel)
+}
+
+/// Manifest fetch with optional live `lastModified` revision cache invalidation.
+pub fn fetch_manifest_cached_with_rev(
+    client: &reqwest::blocking::Client,
+    family: &str,
+    cache_dir: Option<&Path>,
+    live_revision: Option<&str>,
+    cancel: &dyn Fn() -> bool,
+) -> Option<Manifest> {
     let cache = cache_dir.map(|d| d.join(format!("{}.json", cache_key(family))));
     if let Some(p) = &cache {
-        if cache_fresh(p, SystemTime::now()) {
+        if cache_fresh_for_revision(p, SystemTime::now(), live_revision) {
             if let Some(m) = std::fs::read_to_string(p).ok().and_then(|t| parse_manifest(&t)) {
                 return Some(m);
             }
@@ -707,6 +778,7 @@ pub fn fetch_manifest_cached(
     let opts = PoliteOpts {
         ua: None,
         timeout: Some(PROBE_TIMEOUT),
+        cdn_lane: false,
     };
     let fetched = polite_fetch(client, &download_list_url(family), &opts, cancel)
         .ok()
@@ -720,6 +792,9 @@ pub fn fetch_manifest_cached(
                     let _ = std::fs::create_dir_all(d);
                 }
                 let _ = std::fs::write(p, text.as_bytes());
+                if let Some(rev) = live_revision.map(str::trim).filter(|s| !s.is_empty()) {
+                    let _ = std::fs::write(p.with_extension("rev"), rev.as_bytes());
+                }
             }
             Some(m)
         }
