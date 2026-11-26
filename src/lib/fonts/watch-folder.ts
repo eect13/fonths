@@ -110,11 +110,17 @@ export async function addWatchedFolder(): Promise<void> {
       return;
     }
     const store = useFontStore.getState();
+    const ignoredSet = new Set((store.ignoredWatchedPaths ?? []).map(norm));
     const existing = store.collections.find((c) => c.watchPath && norm(c.watchPath) === norm(picked.path));
     const initialPaths = picked.originPaths.slice();
     const initialSizes = (picked.originSizes ?? []).slice();
-    let originPaths = initialPaths.slice();
-    let originSizes = initialSizes.slice();
+    let originPaths: string[] = [];
+    let originSizes: number[] = [];
+    for (let i = 0; i < initialPaths.length; i += 1) {
+      if (ignoredSet.has(norm(initialPaths[i]!))) continue;
+      originPaths.push(initialPaths[i]!);
+      originSizes.push(initialSizes[i] ?? 0);
+    }
     let autoActivate = existing?.autoActivate ?? true;
     let importFilter: SavedImportRule | undefined = existing?.importFilter;
     let skippedByRule = 0;
@@ -250,7 +256,8 @@ export async function refreshWatchedFolders(): Promise<void> {
   if (!(await inDesktopShell())) return;
   inflight = true;
   try {
-    const { collections, localFonts, importOriginPaths, removeLocalFont } = useFontStore.getState();
+    const { collections, localFonts, ignoredWatchedPaths, importOriginPaths, removeLocalFont } = useFontStore.getState();
+    const ignoredSet = new Set((ignoredWatchedPaths ?? []).map(norm));
     const watched = collections.filter((c) => c.watchPath);
     if (!watched.length) return;
     const allOrigins: string[] = [];
@@ -290,6 +297,10 @@ export async function refreshWatchedFolders(): Promise<void> {
         const origin = listed.paths[i]!;
         const key = norm(origin);
         const curSig = fileSig(listed.sizes[i], listed.mtimes[i]);
+        if (ignoredSet.has(key)) {
+          handledWatchedSigs.set(key, curSig);
+          continue;
+        }
         const prev = knownByPath.get(key) ?? [];
         if (prev.length && (prev[0]!.fileSize ?? 0) === listed.sizes[i]) {
           handledWatchedSigs.set(key, curSig);

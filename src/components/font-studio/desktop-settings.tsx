@@ -414,7 +414,9 @@ export function DesktopSettings() {
             <div>
               <p className="font-medium">Start minimized in background</p>
               <p className="text-xs text-muted-foreground">
-                Launch the pure-Rust headless daemon (`--daemon`) at Windows login to activate your saved fonts immediately without opening WebView2.
+                {zeroRamLocked
+                  ? "Start silently at Windows login without opening the window. In Zero-RAM Instant mode, active HKCU fonts are already live at login."
+                  : "Launch the pure-Rust headless daemon (`--daemon`) at Windows login to activate your saved fonts immediately without opening WebView2."}
               </p>
             </div>
             <Switch
@@ -641,9 +643,6 @@ export function DesktopSettings() {
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
               Google: {googleCount.toLocaleString()} catalog · Watched: {uploadCount.toLocaleString()} · On disk: {diskCount.toLocaleString()} · Active: {liveCount.toLocaleString()}
-              {gdiState
-                ? ` · Win32 Session Table: ${gdiState.liveFaceCount.toLocaleString()} faces (${gdiState.gdiObjects.toLocaleString()} / ${gdiState.gdiQuota.toLocaleString()} handles)`
-                : ""}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">

@@ -60,10 +60,6 @@ function GroupTree({
   const [overId, setOverId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Collection | null>(null);
   const [deleteFromDisk, setDeleteFromDisk] = useState(false);
-  const [pendingFolderActivate, setPendingFolderActivate] = useState<{
-    name: string;
-    ids: string[];
-  } | null>(null);
   const isFolder = kind === "folder";
 
   const rows = useMemo(() => {
@@ -274,7 +270,6 @@ function GroupTree({
             count={stat?.count ?? 0}
             fontIds={stat?.ids ?? EMPTY_IDS}
             onToggle={onToggle}
-            onRequestBulkActivate={(name, ids) => setPendingFolderActivate({ name, ids })}
             onStartRename={onStartRename}
             onCancelRename={onCancelRename}
             onNewSubfolder={onNewSubfolder}
@@ -319,43 +314,6 @@ function GroupTree({
           </div>
         </DialogContent>
       </Dialog>
-
-      <Dialog
-        open={Boolean(pendingFolderActivate)}
-        onOpenChange={(open) => !open && setPendingFolderActivate(null)}
-      >
-        <DialogContent data-testid="folder-bulk-activate-dialog">
-          <DialogHeader>
-            <DialogTitle>
-              Activate {pendingFolderActivate?.ids.length.toLocaleString() ?? 0} fonts in{" "}
-              {pendingFolderActivate?.name ?? "folder"}?
-            </DialogTitle>
-            <DialogDescription>
-              This watched folder contains more than 100 fonts. Activating all of them registers them for your design and office apps.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="fm-dialog-footer">
-            <Button type="button" variant="ghost" onClick={() => setPendingFolderActivate(null)}>
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              data-testid="folder-bulk-activate-confirm"
-              onClick={() => {
-                if (pendingFolderActivate?.ids.length) {
-                  useFontStore.getState().setActivatedMany(pendingFolderActivate.ids, true);
-                  toast.success(
-                    `Activating ${pendingFolderActivate.ids.length.toLocaleString()} fonts from ${pendingFolderActivate.name}`,
-                  );
-                }
-                setPendingFolderActivate(null);
-              }}
-            >
-              Activate all {pendingFolderActivate?.ids.length.toLocaleString() ?? 0}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
     </section>
   );
 }
@@ -371,7 +329,6 @@ const GroupRow = memo(function GroupRow({
   count,
   fontIds,
   onToggle,
-  onRequestBulkActivate,
   onStartRename,
   onCancelRename,
   onNewSubfolder,
@@ -390,7 +347,6 @@ const GroupRow = memo(function GroupRow({
   count: number;
   fontIds: string[];
   onToggle: (id: string) => void;
-  onRequestBulkActivate: (name: string, ids: string[]) => void;
   onStartRename: (id: string) => void;
   onCancelRename: () => void;
   onNewSubfolder: (parentId: string) => void;
@@ -400,20 +356,10 @@ const GroupRow = memo(function GroupRow({
   onDrop: (id: string, e: DragEvent) => void;
 }) {
   const active = useFontStore((s) => s.scope === `collection:${folder.id}`);
-  const activatedSet = useFontStore((s) => s.activatedSet);
-  const pendingSet = useFontStore((s) => s.pendingSet);
   const [draft, setDraft] = useState(folder.name);
   const [menuOpen, setMenuOpen] = useState(false);
   const skipBlur = useRef(false);
   const isFolder = kind === "folder";
-
-  const activeInFolder = useMemo(() => {
-    if (!isFolder || !fontIds.length) return [];
-    return fontIds.filter((id) => activatedSet.has(id) || pendingSet.has(id));
-  }, [isFolder, fontIds, activatedSet, pendingSet]);
-  const folderAllOn = isFolder && fontIds.length > 0 && activeInFolder.length === fontIds.length;
-  const folderPartialOn =
-    isFolder && activeInFolder.length > 0 && activeInFolder.length < fontIds.length;
 
   useEffect(() => {
     if (renaming) setDraft(folder.name);
@@ -483,51 +429,6 @@ const GroupRow = memo(function GroupRow({
           <span className="min-w-0 flex-1 truncate">{folder.name}</span>
           {folder.watchPath ? <Eye className="size-3 shrink-0 text-muted-foreground" aria-hidden /> : null}
           <SidebarCount value={count} fadeOnHover hidden={menuOpen} />
-        </button>
-      )}
-      {isFolder && !renaming && (
-        <button
-          type="button"
-          data-testid={`folder-toggle-${folder.id}`}
-          disabled={fontIds.length === 0}
-          aria-pressed={activeInFolder.length > 0}
-          aria-label={
-            activeInFolder.length > 0
-              ? `Deactivate all fonts in ${folder.name}`
-              : `Activate ${fontIds.length} fonts in ${folder.name}`
-          }
-          title={
-            fontIds.length === 0
-              ? "No fonts in folder yet"
-              : activeInFolder.length > 0
-                ? `Deactivate ${activeInFolder.length} active font${activeInFolder.length === 1 ? "" : "s"} in ${folder.name}`
-                : `Activate ${fontIds.length} font${fontIds.length === 1 ? "" : "s"} in ${folder.name}`
-          }
-          onClick={(e) => {
-            e.stopPropagation();
-            if (!fontIds.length) return;
-            if (activeInFolder.length > 0) {
-              useFontStore.getState().setActivatedMany(activeInFolder, false);
-              toast.message(`Deactivating ${activeInFolder.length.toLocaleString()} fonts from ${folder.name}`);
-              return;
-            }
-            if (fontIds.length > 100) {
-              onRequestBulkActivate(folder.name, fontIds);
-              return;
-            }
-            useFontStore.getState().setActivatedMany(fontIds, true);
-            toast.success(`Activating ${fontIds.length.toLocaleString()} fonts from ${folder.name}`);
-          }}
-          className={cn(
-            "mr-0.5 flex size-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-accent disabled:opacity-30",
-            folderAllOn
-              ? "text-primary"
-              : folderPartialOn
-                ? "text-amber-500"
-                : "text-muted-foreground",
-          )}
-        >
-          <Power className="size-3.5" />
         </button>
       )}
       {hasChildren && !renaming && (

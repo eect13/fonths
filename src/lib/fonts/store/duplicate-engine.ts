@@ -2,47 +2,13 @@ import { bytesNearlySame } from "../binary-diff";
 import { idbGet } from "../idb";
 import { diffFontPaths, nativeHashFontPaths } from "../native-parse";
 import type { DuplicateGroup, FontRecord } from "../types";
+import {
+  familyDuplicateHideIds,
+  hideIdsFromDuplicateGroups,
+  pickKeepFont,
+} from "./duplicate-pure";
 
-export function familyDuplicateHideIds(
-  localFonts: FontRecord[],
-  googleFonts: FontRecord[],
-  systemFonts: FontRecord[] = [],
-): string[] {
-  const systemSet = new Set(systemFonts.map((f) => f.family.trim().toLowerCase()).filter(Boolean));
-  const googleSet = new Set(googleFonts.map((f) => f.family.trim().toLowerCase()).filter(Boolean));
-  const catalog = new Set([...googleSet, ...systemSet]);
-  const seenFamily = new Set<string>();
-  const seenHash = new Set<string>();
-  const hide = new Set<string>();
-  for (const gf of googleFonts) {
-    const key = gf.family.trim().toLowerCase();
-    if (key && systemSet.has(key)) hide.add(gf.id);
-  }
-  for (const font of localFonts) {
-    const key = font.family.trim().toLowerCase();
-    const hash = font.checksum?.trim();
-    const isHashDup = Boolean(hash && seenHash.has(hash));
-    if (hash) seenHash.add(hash);
-    if (isHashDup || catalog.has(key) || seenFamily.has(key)) hide.add(font.id);
-    else if (key) seenFamily.add(key);
-  }
-  return [...hide];
-}
-
-export function hideIdsFromDuplicateGroups(groups: DuplicateGroup[]): string[] {
-  const hide = new Set<string>();
-  for (const group of groups) {
-    const keep =
-      group.fonts.find((f) => f.source === "system") ??
-      group.fonts.find((f) => f.source === "google") ??
-      [...group.fonts].sort((a, b) => (b.fileSize ?? 0) - (a.fileSize ?? 0))[0];
-    if (!keep) continue;
-    for (const font of group.fonts) {
-      if (font.id !== keep.id && font.source !== "system") hide.add(font.id);
-    }
-  }
-  return [...hide];
-}
+export { familyDuplicateHideIds, hideIdsFromDuplicateGroups, pickKeepFont };
 
 function sourceRank(source: FontRecord["source"]) {
   if (source === "system") return 0;
@@ -199,7 +165,7 @@ export async function findDuplicates(
     if (key && !systemByFamily.has(key)) systemByFamily.set(key, font);
   }
   const localByFamily = new Map<string, FontRecord[]>();
-  for (const font of localFonts) {
+  for (const font of hashedLocalFonts) {
     const key = font.family.trim().toLowerCase();
     if (!key) continue;
     let bucket = localByFamily.get(key);

@@ -141,9 +141,15 @@ fn pick_primary_face_file(dir: &Path) -> Option<PathBuf> {
             .unwrap_or("")
             .to_ascii_lowercase();
         let is_vf = u8::from(name.contains("variable") || (name.contains('[') && name.contains(']')));
+        let is_roman = u8::from(!name.contains("italic") && !name.contains("oblique"));
+        let regular_score = if is_vf == 1 {
+            u16::MAX
+        } else {
+            u16::MAX.saturating_sub(activate::static_regular_rank(p))
+        };
         let is_ttf = u8::from(name.ends_with(".ttf") || name.ends_with(".otf"));
         let size = fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-        (is_vf, is_ttf, size)
+        (is_vf, is_roman, regular_score, is_ttf, size)
     })
 }
 

@@ -1,7 +1,15 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent, type ReactNode, type RefObject } from "react";
-import { Code2, Copy, Eye, FolderOpen, GripVertical, Heart, Italic, Layers, Power, Trash2 } from "lucide-react";
+import { Code2, Copy, Eye, EyeOff, FolderOpen, GripVertical, Heart, Italic, Layers, Power, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Slider } from "@/components/ui/slider";
 import { cssFamilyStack, evictFamilyPreview, loadFont, loadItalicFace, pinCss, unpinCss } from "@/lib/fonts/loader";
 import { isDesktopShellSync } from "@/lib/desktop/open-fonts";
@@ -187,6 +195,7 @@ export const FontCard = memo(function FontCard({
   const [loaded, setLoaded] = useState(false);
   const [italicOn, setItalicOn] = useState(isItalicOnlyFace(font) || Boolean(preview.italic));
   const [axisHeld, setAxisHeld] = useState(false);
+  const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false);
   const vfPrimed = useRef(false);
   const activated = useFontStore((s) => s.activatedSet.has(font.id));
   const settledDisk = useFontStore((s) => s.settledFamilySet.has(font.family.trim().toLowerCase()));
@@ -606,21 +615,19 @@ export const FontCard = memo(function FontCard({
 
     if (font.source === "local") {
       const permanent = state.desktopPrefs.deleteMode === "permanent";
+      const watched = Boolean(font.originPath);
       items.push(
         { kind: "separator" },
         {
           kind: "item",
-          label: permanent ? "Delete Permanently" : "Move to Recycle Bin",
-          icon: <Trash2 className="size-3.5" />,
+          label: watched
+            ? "Hide / Ignore from Library"
+            : permanent
+              ? "Delete Permanently"
+              : "Move to Recycle Bin",
+          icon: watched ? <EyeOff className="size-3.5" /> : <Trash2 className="size-3.5" />,
           destructive: true,
-          onSelect: () => {
-            const prompt = permanent
-              ? `Permanently delete "${font.fullName || font.family}"? This cannot be undone.`
-              : `Move "${font.fullName || font.family}" to Recycle Bin?`;
-            if (!window.confirm(prompt)) return;
-            evictFamilyPreview(font.family);
-            void useFontStore.getState().removeLocalFont(font.id);
-          },
+          onSelect: () => setRemoveConfirmOpen(true),
         },
       );
     }
@@ -629,8 +636,9 @@ export const FontCard = memo(function FontCard({
   }
 
   return (
-    <article
-      ref={ref}
+    <>
+      <article
+        ref={ref}
       data-font-card-family={font.family}
       // Pointer clicks anywhere on the card (specimen included) bubble here; inner
       // controls isolate(). Keyboard and screen readers use the Open button below.
@@ -694,11 +702,6 @@ export const FontCard = memo(function FontCard({
             <span className="min-w-0 truncate text-sm font-medium">{font.fullName || font.family}</span>
             {italicBtn}
             <span className="ml-auto flex min-w-0 items-center gap-1.5">
-              {wghtAxis ? (
-                <span className="font-mono text-[10px] tabular-nums opacity-0 transition-opacity group-hover:opacity-55">
-                  {Math.round(cardWeight)}
-                </span>
-              ) : null}
               {settled ? (
                 <Badge
                   variant="outline"
@@ -778,6 +781,53 @@ export const FontCard = memo(function FontCard({
         </button>
         )}
       </div>
-    </article>
+      </article>
+      {font.source === "local" ? (
+        <Dialog open={removeConfirmOpen} onOpenChange={setRemoveConfirmOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>
+                {font.originPath
+                  ? "Hide / ignore font from library?"
+                  : useFontStore.getState().desktopPrefs.deleteMode === "permanent"
+                    ? "Permanently delete font?"
+                    : "Move font to Recycle Bin?"}
+              </DialogTitle>
+              <DialogDescription>
+                {font.originPath
+                  ? `"${font.fullName || font.family}" lives in a watched folder (${font.originPath}). Hiding it removes it from Fonths and skips it on watch polls — the file on disk is never deleted.`
+                  : useFontStore.getState().desktopPrefs.deleteMode === "permanent"
+                    ? `This will permanently delete "${font.fullName || font.family}" from disk and remove it from your library. This cannot be undone.`
+                    : `This will move "${font.fullName || font.family}" to the Windows Recycle Bin and remove it from your library.`}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="fm-dialog-footer">
+              <Button type="button" variant="ghost" onClick={() => setRemoveConfirmOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={() => {
+                  setRemoveConfirmOpen(false);
+                  evictFamilyPreview(font.family);
+                  if (font.originPath) {
+                    void useFontStore.getState().ignoreWatchedFont(font.id);
+                  } else {
+                    void useFontStore.getState().removeLocalFont(font.id);
+                  }
+                }}
+              >
+                {font.originPath
+                  ? "Hide / Ignore"
+                  : useFontStore.getState().desktopPrefs.deleteMode === "permanent"
+                    ? "Delete permanently"
+                    : "Move to Recycle Bin"}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      ) : null}
+    </>
   );
 });

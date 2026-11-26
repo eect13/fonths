@@ -1070,6 +1070,80 @@ pub fn plan_google_activation_blocking(app: AppHandle, families: Vec<String>) ->
     })
 }
 
+/// Rank static face candidates by closeness to Regular (400) so multi-weight static
+/// folders never pick `100` (Thin) or `200` (ExtraLight) purely from alphabetical sort.
+/// Lower rank = better candidate for Regular preview.
+pub(crate) fn static_regular_rank_from_filename(name_lower: &str) -> Option<u16> {
+    let stem = name_lower
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(name_lower);
+    for (w, pat) in [
+        (400u16, "400"),
+        (300, "300"),
+        (500, "500"),
+        (200, "200"),
+        (600, "600"),
+        (700, "700"),
+        (100, "100"),
+        (800, "800"),
+        (900, "900"),
+    ] {
+        for delim in [
+            format!("-{pat}-"),
+            format!("_{pat}_"),
+            format!("-{pat}"),
+            format!("_{pat}"),
+            format!("{pat}-"),
+            format!("{pat}_"),
+        ] {
+            if stem.contains(&delim) {
+                return Some(w.abs_diff(400));
+            }
+        }
+    }
+    // Check compound tokens before simple tokens (`extralight` before `light`, `semibold` before `bold`).
+    const TOKENS: &[(&str, u16)] = &[
+        ("regular", 0),
+        ("normal", 1),
+        ("book", 20),
+        ("roman", 20),
+        ("medium", 100),
+        ("extralight", 200),
+        ("ultralight", 200),
+        ("semibold", 200),
+        ("demibold", 200),
+        ("extrabold", 400),
+        ("ultrabold", 400),
+        ("light", 100),
+        ("thin", 300),
+        ("hairline", 300),
+        ("bold", 300),
+        ("black", 500),
+        ("heavy", 500),
+    ];
+    for (token, rank) in TOKENS {
+        if stem.contains(token) {
+            return Some(*rank);
+        }
+    }
+    None
+}
+
+pub(crate) fn static_regular_rank(path: &Path) -> u16 {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if let Some(rank) = static_regular_rank_from_filename(&name) {
+        return rank;
+    }
+    crate::parse::read_os2_weight_class(path)
+        .map(|w| w.abs_diff(400))
+        .unwrap_or(50)
+}
+
 #[tauri::command]
 pub async fn read_family_font(app: AppHandle, family: String, italic: Option<bool>) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || read_family_font_blocking(app, family, italic))
@@ -1079,10 +1153,10 @@ pub async fn read_family_font(app: AppHandle, family: String, italic: Option<boo
 
 pub fn read_family_font_blocking(app: AppHandle, family: String, italic: Option<bool>) -> Result<String, String> {
     let want_italic = italic.unwrap_or(false);
-    // Prefer variable faces when present (axes), then static instances as backup.
+    // Prefer variable faces when present (axes), then Regular-closest static instances as backup.
     let mut var_hit: Option<PathBuf> = None;
-    let mut static_hit: Option<PathBuf> = None;
-    let mut roman = None;
+    let mut static_hit: Option<(u16, PathBuf)> = None;
+    let mut roman: Option<(u16, PathBuf)> = None;
     for dir in family_locations(&app, &family) {
         let mut files = Vec::new();
         walk_font_files(&dir, &mut files);
@@ -1099,21 +1173,26 @@ pub fn read_family_font_blocking(app: AppHandle, family: String, italic: Option<
             let is_var = is_variable_face_filename(&name);
             let is_italic = name.contains("italic") || name.contains("oblique");
             let style_ok = if want_italic { is_italic } else { !is_italic };
+            let rank = if is_var { 0 } else { static_regular_rank(&path) };
             if style_ok {
                 if is_var && var_hit.is_none() {
                     var_hit = Some(path.clone());
-                } else if !is_var && static_hit.is_none() {
-                    static_hit = Some(path.clone());
+                } else if !is_var
+                    && static_hit.as_ref().is_none_or(|(best, _)| rank < *best)
+                {
+                    static_hit = Some((rank, path.clone()));
                 }
             }
-            if roman.is_none() {
-                roman = Some(path);
+            if !is_var && roman.as_ref().is_none_or(|(best, _)| rank < *best) {
+                roman = Some((rank, path));
+            } else if is_var && roman.as_ref().is_none_or(|(best, _)| *best > 0) {
+                roman = Some((0, path));
             }
         }
     }
     var_hit
-        .or(static_hit)
-        .or(roman)
+        .or_else(|| static_hit.map(|(_, p)| p))
+        .or_else(|| roman.map(|(_, p)| p))
         .map(|p| p.to_string_lossy().into_owned())
         .ok_or_else(|| "no font file on disk".into())
 }
@@ -1992,5 +2071,29 @@ pub fn google_download_progress() -> GoogleDlProgress {
             settled_names: Vec::new(),
             kind: String::new(),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::static_regular_rank_from_filename;
+
+    #[test]
+    fn static_regular_rank_prefers_regular_400_over_thin_and_black() {
+        let rank_400 = static_regular_rank_from_filename("roboto-400-normal.ttf").unwrap();
+        let rank_regular = static_regular_rank_from_filename("roboto-regular.ttf").unwrap();
+        let rank_100 = static_regular_rank_from_filename("roboto-100-normal.ttf").unwrap();
+        let rank_thin = static_regular_rank_from_filename("roboto-thin.ttf").unwrap();
+        let rank_extralight = static_regular_rank_from_filename("roboto-extralight.ttf").unwrap();
+        let rank_light = static_regular_rank_from_filename("roboto-light.ttf").unwrap();
+        let rank_black = static_regular_rank_from_filename("roboto-black.ttf").unwrap();
+
+        assert_eq!(rank_400, 0);
+        assert_eq!(rank_regular, 0);
+        assert!(rank_400 < rank_light);
+        assert!(rank_light < rank_extralight);
+        assert!(rank_extralight < rank_thin);
+        assert!(rank_100 > rank_400);
+        assert!(rank_black > rank_400);
+    }
 }
 

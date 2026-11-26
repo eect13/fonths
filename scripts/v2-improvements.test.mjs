@@ -734,7 +734,7 @@ test("19. Fonths 2.4.0 instant two-wave startup, ETag/304 Ask-Before-Sync Google
 
   // 1. Rust 2024 edition & modular backend/frontend files
   assert.match(cargoToml, /edition\s*=\s*"2024"/);
-  assert.match(cargoToml, /version\s*=\s*"2\.(4|5|6)\.0"/);
+  assert.match(cargoToml, /version\s*=\s*"2\.\d+\.\d+"/);
   for (const rel of [
     "src-tauri/src/activate/mod.rs",
     "src-tauri/src/activate/winfont.rs",
@@ -816,7 +816,7 @@ test("20. Fonths 2.5.0 Rust 1.100, Zero-RAM persistent HKCU activation, WebView2
   const watchTs = readFileSync(join(process.cwd(), "src/lib/fonts/watch-folder.ts"), "utf8");
 
   // A1. Rust 1.100 + unused_dependencies + std::mem::DropGuard
-  assert.match(cargoToml, /version\s*=\s*"2\.(5|6)\.0"/);
+  assert.match(cargoToml, /version\s*=\s*"2\.\d+\.\d+"/);
   assert.match(cargoToml, /rust-version\s*=\s*"1\.100"/);
   assert.match(cargoToml, /unused_dependencies\s*=\s*"warn"/);
   assert.match(modRs, /std::mem::DropGuard/);
@@ -880,9 +880,9 @@ test("21. Fonths 2.6.0 audit hardening, universal modular font cache cleanup, di
   const pkgJson = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8"));
   const tauriConf = JSON.parse(readFileSync(join(process.cwd(), "src-tauri/tauri.conf.json"), "utf8"));
   const cargoToml = readFileSync(join(process.cwd(), "src-tauri/Cargo.toml"), "utf8");
-  assert.equal(pkgJson.version, "2.6.0");
-  assert.equal(tauriConf.version, "2.6.0");
-  assert.match(cargoToml, /version\s*=\s*"2\.6\.0"/);
+  assert.equal(pkgJson.version, tauriConf.version);
+  assert.match(pkgJson.version, /^2\.\d+\.\d+$/);
+  assert.ok(cargoToml.includes(`version = "${pkgJson.version}"`));
 
   const libRs = readFileSync(join(process.cwd(), "src-tauri/src/lib.rs"), "utf8");
   const fontProtoRs = readFileSync(join(process.cwd(), "src-tauri/src/font_protocol.rs"), "utf8");
@@ -950,8 +950,105 @@ test("21. Fonths 2.6.0 audit hardening, universal modular font cache cleanup, di
   assert.match(dupEngineTs, /diffFontPaths/);
   assert.match(dupFinderTsx, /patchLocalChecksums/);
   assert.match(dupFinderTsx, /st\.activatedSet\?\.has\(id\) \|\| st\.pendingSet\?\.has\(id\)/);
-  assert.match(folderTreeTsx, /data-testid=\{`folder-toggle-\$\{folder\.id\}`\}/);
-  assert.match(folderTreeTsx, /fontIds\.length > 100/);
+  assert.doesNotMatch(folderTreeTsx, /data-testid=\{`folder-toggle-\$\{folder\.id\}`\}/);
+  assert.match(folderTreeTsx, /ActivateMenuItem/);
+  assert.match(folderTreeTsx, /DeactivateMenuItem/);
   assert.match(activeGuardTsx, /GUARD_DISMISSED_KEY/);
   assert.match(notifTsx, /30_000/);
+});
+
+test("v2.7.0 thin-preview defaults, multi-weight duplicates, and UI polish contracts", async () => {
+  const { defaultWeightForFont, defaultAxisValues } = await import("../src/lib/fonts/axes.ts");
+  const { familyDuplicateHideIds, pickKeepFont } = await import(
+    "../src/lib/fonts/store/duplicate-pure.ts"
+  );
+  const readLocal = (rel) => readFileSync(join(process.cwd(), rel), "utf8");
+  const pkgJson = JSON.parse(readLocal("package.json"));
+  const tauriConf = JSON.parse(readLocal("src-tauri/tauri.conf.json"));
+  const cargoToml = readLocal("src-tauri/Cargo.toml");
+  assert.equal(pkgJson.version, "2.7.0");
+  assert.equal(tauriConf.version, "2.7.0");
+  assert.match(cargoToml, /version\s*=\s*"2\.7\.0"/);
+
+  // Thin-origin VF (fvar def=100, span 100..900) must default preview to 400 (Regular).
+  const thinVf = {
+    weights: [100],
+    variable: true,
+    italic: false,
+    axes: [{ tag: "wght", name: "Weight", min: 100, max: 900, def: 100 }],
+    instances: undefined,
+  };
+  assert.equal(defaultWeightForFont(thinVf), 400);
+  assert.equal(defaultAxisValues(thinVf.axes).wght, 400);
+
+  // Static multi-weight missing 400 picks weight closest to 400 (300 beats 100).
+  assert.equal(
+    defaultWeightForFont({ weights: [100, 300, 700], variable: false, italic: false }),
+    300,
+  );
+
+  // Multi-weight local families must NEVER have Bold/Italic cuts hidden by familyDuplicateHideIds.
+  const localRegular = {
+    id: "l:reg",
+    family: "MyBrand",
+    source: "local",
+    weights: [400],
+    italic: false,
+    checksum: "aaa",
+    fileSize: 50000,
+  };
+  const localBold = {
+    id: "l:bold",
+    family: "MyBrand",
+    source: "local",
+    weights: [700],
+    italic: false,
+    checksum: "bbb",
+    fileSize: 52000,
+  };
+  const localItalic = {
+    id: "l:ital",
+    family: "MyBrand",
+    source: "local",
+    weights: [400],
+    italic: true,
+    checksum: "ccc",
+    fileSize: 51000,
+  };
+  const localDupReg = {
+    id: "l:reg-dup",
+    family: "MyBrand",
+    source: "local",
+    weights: [400],
+    italic: false,
+    checksum: "ddd",
+    fileSize: 48000,
+  };
+  const hidden = familyDuplicateHideIds([localRegular, localBold, localItalic, localDupReg], [], []);
+  assert.deepEqual(hidden, ["l:reg-dup"]);
+
+  assert.equal(
+    pickKeepFont({ key: "k", reason: "family-weight", fonts: [localDupReg, localRegular] })?.id,
+    "l:reg",
+  );
+
+  // Contract checks for v2.7.0 UI polish & Duplicates features.
+  const dupFinderTsx = readLocal("src/components/font-studio/duplicate-finder.tsx");
+  const cardTsx = readLocal("src/components/font-studio/font-card.tsx");
+  const toolbarTsx = readLocal("src/components/font-studio/preview-toolbar.tsx");
+  const gridTsx = readLocal("src/components/font-studio/library-grid.tsx");
+  const settingsTsx = readLocal("src/components/font-studio/desktop-settings.tsx");
+  const storeTs = readTsModule(process.cwd(), "src/lib/fonts/store.ts");
+  const watchTs = readLocal("src/lib/fonts/watch-folder.ts");
+
+  assert.match(dupFinderTsx, /data-testid="bulk-clean-duplicates-dialog"/);
+  assert.match(dupFinderTsx, /swapActivateFont/);
+  assert.match(dupFinderTsx, /ignoreWatchedFont/);
+  assert.match(dupFinderTsx, /scanKey/);
+  assert.match(storeTs, /ignoredWatchedPaths/);
+  assert.match(watchTs, /ignoredWatchedPaths/);
+  assert.doesNotMatch(cardTsx, /window\.confirm/);
+  assert.match(toolbarTsx, /More surfaces/);
+  assert.match(gridTsx, /data-testid="manage-uploads-btn"/);
+  assert.match(settingsTsx, /Zero-RAM Instant mode, active HKCU fonts are already live at login/);
 });

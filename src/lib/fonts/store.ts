@@ -6,7 +6,7 @@ import { GOOGLE_FONTS } from "./catalog";
 import { notifyIfUnusual } from "./color-font";
 import { isKnownGdiSessionIncapable, isSoftGdiTryAddFirst, KNOWN_GDI_SESSION_INCAPABLE } from "./gdi-incapable";
 import { idbDelete, idbPutMany } from "./idb";
-import { evictFamilyPreview, loadFont, unloadLocalFont } from "./loader";
+import { evictFamilyPreview, loadFont, setActivatedFamilyProvider, unloadLocalFont } from "./loader";
 import { inferLocalStyle } from "./style-tags";
 import { bindAxesPersist, setLiveAxis } from "./live-axes";
 import {
@@ -41,6 +41,7 @@ import {
   familyDuplicateHideIds,
   findDuplicates,
   hideIdsFromDuplicateGroups,
+  pickKeepFont,
 } from "./store/duplicate-engine";
 import {
   collectFolderFontIds,
@@ -78,6 +79,7 @@ export {
   folderTree,
   hideIdsFromDuplicateGroups,
   matchesQuery,
+  pickKeepFont,
   poolForScope,
   sortLibrary,
   tagsFor,
@@ -134,6 +136,7 @@ interface PersistedSlice {
   inspectorOpen: boolean;
   previewAxes: Record<string, Record<string, number>>;
   autoHideDuplicates: boolean;
+  ignoredWatchedPaths: string[];
   recentIds: string[];
   featurePrefs: Record<string, Record<string, boolean>>;
   desktopPrefs: DesktopPrefs;
@@ -204,6 +207,7 @@ interface FontState extends PersistedSlice {
   toggleActivated: (id: string) => void;
   setActivatedMany: (ids: string[], on: boolean) => void;
   toggleActivateSet: (ids: string[]) => boolean;
+  swapActivateFont: (id: string) => void;
   markLiveActivated: (ids: string[]) => void;
   queuePendingActivate: (ids: string[]) => void;
   clearPendingActivate: (ids?: string[]) => void;
@@ -264,6 +268,9 @@ interface FontState extends PersistedSlice {
   ) => Promise<{ added: number; duplicates: number; failed: number; collectionId?: string }>;
   removeLocalFont: (id: string) => Promise<void>;
   removeLocalFontsBatch: (ids: string[], opts?: { deleteFromDisk?: boolean }) => Promise<number>;
+  ignoreWatchedFont: (id: string) => Promise<void>;
+  ignoreWatchedFontsBatch: (ids: string[]) => Promise<number>;
+  restoreIgnoredWatchedPaths: () => void;
   clearLocalFonts: () => Promise<number>;
   resetLibrary: () => Promise<number>;
   pauseUpload: () => void;
@@ -608,6 +615,7 @@ export const useFontStore = create<FontState>()(
       systemBusy: false,
       autoHideDuplicates: false,
       duplicateHideIds: [],
+      ignoredWatchedPaths: [],
       recentIds: [],
       featurePrefs: {},
       desktopPrefs: { ...DEFAULT_DESKTOP_PREFS },
@@ -958,6 +966,37 @@ export const useFontStore = create<FontState>()(
         get().setActivatedMany(ids, !allOn);
         return !allOn;
       },
+      swapActivateFont: (id) => {
+        const s = get();
+        const font = findFont(id, s.localFonts, s.googleFonts);
+        if (!font || font.source === "system") return;
+        const rivals = liveRivalFonts(
+          font,
+          s.localFonts,
+          s.googleFonts,
+          s.activatedSet,
+          s.pendingSet,
+        );
+        if (!rivals.length) {
+          s.toggleActivated(id);
+          return;
+        }
+        const rivalIdSet = new Set(rivals.map((r) => r.id));
+        set((cur) => ({
+          ...withActivated(cur.activated.filter((x) => !rivalIdSet.has(x))),
+          ...withPending(
+            Array.from(new Set([...cur.pendingActivate.filter((x) => !rivalIdSet.has(x)), id])),
+          ),
+          ...withPendingDeactivate(cur.pendingDeactivate.filter((x) => x !== id)),
+        }));
+        void (async () => {
+          await syncFontsOnSystem(rivals, false).catch(() => undefined);
+          if (!get().pendingSet.has(id)) return;
+          notifyIfUnusual(font, "activate");
+          await syncFontOnSystem(font, true);
+          toast.success(`Swapped active copy to ${font.fullName || font.family}`);
+        })();
+      },
       markLiveActivated: (ids) => {
         if (!ids.length) return;
         const pendingDeact = get().pendingDeactivateSet;
@@ -1183,15 +1222,22 @@ export const useFontStore = create<FontState>()(
         const s = get();
         const hide = familyDuplicateHideIds(s.localFonts, s.googleFonts, s.systemFonts);
         set({ autoHideDuplicates: true, duplicateHideIds: hide });
-        if (hide.length) get().setActivatedMany(hide, false);
+        if (hide.length) {
+          const activeInitial = hide.filter((id) => s.activatedSet.has(id) || s.pendingSet.has(id));
+          if (activeInitial.length) get().setActivatedMany(activeInitial, false);
+        }
         void findDuplicates(s.localFonts, s.googleFonts, s.systemFonts)
           .then((groups) => {
             if (!get().autoHideDuplicates) return;
-            const merged = Array.from(
-              new Set([...get().duplicateHideIds, ...hideIdsFromDuplicateGroups(groups)]),
-            );
-            set({ duplicateHideIds: merged });
-            if (merged.length) get().setActivatedMany(merged, false);
+            const exact = hideIdsFromDuplicateGroups(groups);
+            set({ duplicateHideIds: exact });
+            if (exact.length) {
+              const st = get();
+              const activeExact = exact.filter(
+                (id) => st.activatedSet.has(id) || st.pendingSet.has(id),
+              );
+              if (activeExact.length) st.setActivatedMany(activeExact, false);
+            }
           })
           .catch(() => undefined);
       },
@@ -1698,13 +1744,20 @@ export const useFontStore = create<FontState>()(
                 (row.variable || row.axes.length > 0) && !style.tags.includes("variable")
                   ? [...style.tags, "variable"]
                   : style.tags;
+              const wghtAxis = row.axes.find((a) => a.tag === "wght" && a.max > a.min);
+              const vfStops = wghtAxis
+                ? [100, 200, 300, 400, 500, 600, 700, 800, 900].filter(
+                    (w) => w >= wghtAxis.min && w <= wghtAxis.max,
+                  )
+                : [];
+              const weights = vfStops.length ? vfStops : [row.weight || 400];
               waveRecords.push({
                 id,
                 family: row.family,
                 fullName: row.fullName && row.fullName !== row.family ? row.fullName : undefined,
                 source: "local",
                 category: style.category,
-                weights: [row.weight || 400],
+                weights,
                 italic: row.italic,
                 variable: row.variable,
                 axes: row.axes.length ? row.axes : undefined,
@@ -1881,6 +1934,72 @@ export const useFontStore = create<FontState>()(
         }
         return doomed.length;
       },
+      ignoreWatchedFont: async (id) => {
+        const font = get().localFonts.find((f) => f.id === id);
+        if (!font) return;
+        if (!font.originPath) {
+          await get().removeLocalFont(id);
+          return;
+        }
+        const normPath = font.originPath.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+        const hasSiblingFaces = get().localFonts.some(
+          (f) => f.id !== id && f.family.toLowerCase() === font.family.toLowerCase(),
+        );
+        if (!hasSiblingFaces) evictFamilyPreview(font.family);
+        await unloadLocalFont(id).catch(() => undefined);
+        await uninstallFontOnSystem(font).catch(() => undefined);
+        await idbDelete(id).catch(() => undefined);
+        set((s) => ({
+          ignoredWatchedPaths: Array.from(new Set([...s.ignoredWatchedPaths, normPath])),
+          localFonts: s.localFonts.filter((f) => f.id !== id),
+          favorites: s.favorites.filter((x) => x !== id),
+          ...withActivated(s.activated.filter((x) => x !== id)),
+          ...withPending(s.pendingActivate.filter((x) => x !== id)),
+          selectedId: s.selectedId === id ? null : s.selectedId,
+          inspectorOpen: s.selectedId === id ? false : s.inspectorOpen,
+          collections: s.collections.map((c) => ({
+            ...c,
+            fontIds: c.fontIds.filter((fid) => fid !== id),
+          })),
+        }));
+        await saveLocalFontsMeta(get().localFonts).catch(() => undefined);
+      },
+      ignoreWatchedFontsBatch: async (ids) => {
+        const remove = new Set(ids);
+        if (!remove.size) return 0;
+        const s0 = get();
+        const doomed = s0.localFonts.filter((f) => remove.has(f.id) && Boolean(f.originPath));
+        if (!doomed.length) return 0;
+        const remaining = s0.localFonts.filter((f) => !remove.has(f.id));
+        const keepFamilies = new Set(remaining.map((f) => f.family.toLowerCase()));
+        await cleanupLocalFacesChunked(doomed, keepFamilies);
+        await syncFontsOnSystem(doomed, false).catch(() => undefined);
+        const ignored = doomed
+          .map((f) => f.originPath!.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase())
+          .filter(Boolean);
+        set((s) => ({
+          ignoredWatchedPaths: Array.from(new Set([...s.ignoredWatchedPaths, ...ignored])),
+          localFonts: s.localFonts.filter((f) => !remove.has(f.id)),
+          favorites: s.favorites.filter((id) => !remove.has(id)),
+          ...withActivated(s.activated.filter((id) => !remove.has(id))),
+          ...withPending(s.pendingActivate.filter((id) => !remove.has(id))),
+          selectedId: s.selectedId && remove.has(s.selectedId) ? null : s.selectedId,
+          inspectorOpen: s.selectedId && remove.has(s.selectedId) ? false : s.inspectorOpen,
+          collections: s.collections.map((c) => ({
+            ...c,
+            fontIds: c.fontIds.filter((id) => !remove.has(id)),
+          })),
+        }));
+        await saveLocalFontsMeta(get().localFonts).catch(() => undefined);
+        return doomed.length;
+      },
+      restoreIgnoredWatchedPaths: () => {
+        set({ ignoredWatchedPaths: [] });
+        void import("./watch-folder").then((m) => {
+          m.clearWatchedFileMemory();
+          return m.refreshWatchedFolders();
+        });
+      },
       clearLocalFonts: async () => {
         if (get().uploadBusy) get().cancelUpload();
         cancelDownloadQueue();
@@ -1970,6 +2089,9 @@ export const useFontStore = create<FontState>()(
           selectedId: p.selectedId === null || typeof p.selectedId === "string" ? p.selectedId : null,
           inspectorOpen: Boolean(p.inspectorOpen),
           autoHideDuplicates: Boolean(p.autoHideDuplicates),
+          ignoredWatchedPaths: Array.isArray(p.ignoredWatchedPaths)
+            ? p.ignoredWatchedPaths.filter((x): x is string => typeof x === "string")
+            : [],
           recentIds: Array.isArray(p.recentIds) ? p.recentIds.filter((id) => typeof id === "string").slice(0, 40) : [],
           featurePrefs:
             p.featurePrefs && typeof p.featurePrefs === "object" ? p.featurePrefs : {},
@@ -2047,6 +2169,9 @@ export const useFontStore = create<FontState>()(
                 ? (p.scope as LibraryFacet)
                 : "",
           autoHideDuplicates: Boolean(p.autoHideDuplicates),
+          ignoredWatchedPaths: Array.isArray(p.ignoredWatchedPaths)
+            ? p.ignoredWatchedPaths
+            : current.ignoredWatchedPaths,
           duplicateHideIds: p.autoHideDuplicates
             ? familyDuplicateHideIds(p.localFonts ?? current.localFonts, current.googleFonts, current.systemFonts)
             : [],
@@ -2076,6 +2201,7 @@ export const useFontStore = create<FontState>()(
         selectedId: s.selectedId,
         inspectorOpen: s.inspectorOpen,
         autoHideDuplicates: s.autoHideDuplicates,
+        ignoredWatchedPaths: s.ignoredWatchedPaths,
         recentIds: s.recentIds,
         featurePrefs: s.featurePrefs,
         desktopPrefs: s.desktopPrefs,
@@ -2093,6 +2219,30 @@ useFontStore.subscribe((s, prev) => {
 });
 
 setSystemFontProvider(() => useFontStore.getState().systemFonts);
+
+let cachedActKey: string[] | null = null;
+let cachedActLocalsLen = -1;
+let cachedActFamilies = new Set<string>();
+setActivatedFamilyProvider(() => {
+  const s = useFontStore.getState();
+  if (s.activated === cachedActKey && s.localFonts.length === cachedActLocalsLen) {
+    return cachedActFamilies;
+  }
+  const out = new Set<string>();
+  for (const id of s.activated) {
+    if (id.startsWith("g:")) {
+      const fam = id.slice(2).trim().toLowerCase();
+      if (fam) out.add(fam);
+      continue;
+    }
+    const f = findFont(id, s.localFonts, s.googleFonts);
+    if (f?.family) out.add(f.family.trim().toLowerCase());
+  }
+  cachedActKey = s.activated;
+  cachedActLocalsLen = s.localFonts.length;
+  cachedActFamilies = out;
+  return out;
+});
 
 
 

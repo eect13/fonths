@@ -712,10 +712,44 @@ function injectGoogleCss(href: string, key: string, family?: string): Promise<vo
   });
 }
 
+let activatedFamilyProvider: () => Set<string> = () => new Set();
+
+export function setActivatedFamilyProvider(provider: () => Set<string>) {
+  activatedFamilyProvider = provider;
+}
+
+function normFontFaceFamily(family: string) {
+  return family.replace(/^["']|["']$/g, "").trim().toLowerCase();
+}
+
+function hasCssFaceEntry(family: string, opts: { requireLoaded?: boolean; requireRange?: boolean } = {}) {
+  if (typeof document === "undefined" || !document.fonts) return false;
+  const want = normFontFaceFamily(family);
+  if (!want) return false;
+  try {
+    for (const face of document.fonts) {
+      if (normFontFaceFamily(face.family) !== want) continue;
+      if (opts.requireLoaded && face.status !== "loaded") continue;
+      if (opts.requireRange && !/\s/.test(String(face.weight ?? "").trim())) continue;
+      return true;
+    }
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+function hasLoadedCssFace(family: string, requireRange = false) {
+  return hasCssFaceEntry(family, { requireLoaded: true, requireRange });
+}
+
 function familyLoaded(family: string, probe: string) {
   if (typeof document === "undefined" || !document.fonts?.check) return false;
   try {
-    return document.fonts.check(`24px "${family}"`, probe);
+    if (hasCssFaceEntry(family)) {
+      return document.fonts.check(`24px "${family}"`, probe);
+    }
+    return activatedFamilyProvider().has(normFontFaceFamily(family));
   } catch {
     return false;
   }
@@ -841,9 +875,12 @@ export function primeGooglePreviewAllows(font: FontRecord) {
 async function loadGooglePreviewFromLocal(font: FontRecord): Promise<boolean> {
   if (!googlePreviewMayUseLocalDisk(font)) return false;
   if (typeof document === "undefined") return false;
-  // GDI-live families already resolve in WebView2 — do not FontFace.load the
-  // same TTF (that hung Fontsource browsing at ~98 Live).
-  if (familyLoaded(font.family, scriptProbe(font))) return true;
+  const isVf = Boolean(font.variable || font.catalogVariable);
+  // GDI-live static families already resolve in WebView2; variable fonts still need an
+  // explicit weight-range FontFace so Thin-origin VFs don't lock at wght.def (100).
+  if (isVf ? hasLoadedCssFace(font.family, true) : familyLoaded(font.family, scriptProbe(font))) {
+    return true;
+  }
   if (!(await inTauri()) || !likelyOnDisk(font)) return false;
   try {
     const { invoke, convertFileSrc } = await import("@tauri-apps/api/core");
@@ -852,7 +889,6 @@ async function loadGooglePreviewFromLocal(font: FontRecord): Promise<boolean> {
       return false;
     }
     const url = convertFileSrc(path, "font");
-    const isVf = Boolean(font.variable || font.catalogVariable);
     const face = new FontFace(font.family, `url(${JSON.stringify(url)})`, {
       display: "swap",
       style: isVf ? vfStyleDescriptor(font) : "normal",
@@ -860,6 +896,7 @@ async function loadGooglePreviewFromLocal(font: FontRecord): Promise<boolean> {
       ...(isVf ? { stretch: "50% 200%" } : {}),
     });
     await face.load();
+    replaceStaticIfVariable(font.family, isVf, isVf ? vfStyleDescriptor(font) : "normal");
     document.fonts.add(face);
     rememberFace(font.family, face);
     return true;
@@ -920,7 +957,7 @@ export function loadGoogleFont(font: FontRecord, mode: FontLoadMode = "preview")
     // Card preview: CSS only (static + VF range). Do not fetch VF woff2 / parse
     // axes / convertFileSrc a CJK TTF — that hangs Google Fonts scrolling.
     if (googlePreviewIsCssOnly(mode, special)) {
-      if (familyLoaded(font.family, probe)) {
+      if (wantVf ? hasLoadedCssFace(font.family, true) : familyLoaded(font.family, probe)) {
         loadedGoogle.set(font.id, "preview");
         return;
       }
@@ -1033,7 +1070,7 @@ export async function loadLocalFont(font: FontRecord): Promise<void> {
 
   const promise = (async () => {
     const family = font.cssFamily || font.family;
-    const isVf = font.variable;
+    const isVf = Boolean(font.variable || font.axes?.length);
     const weight = isVf ? vfWeight(font) : String(font.weights[0] ?? 400);
     const style = isVf ? vfStyleDescriptor(font) : font.italic ? "italic" : "normal";
     const opts: FontFaceDescriptors = {
@@ -1130,7 +1167,7 @@ async function loadPathFont(font: FontRecord): Promise<void> {
     const { convertFileSrc } = await import("@tauri-apps/api/core");
     const url = convertFileSrc(font.originPath!, "font");
     const family = font.cssFamily || font.family;
-    const isVf = font.variable;
+    const isVf = Boolean(font.variable || font.axes?.length);
     const face = new FontFace(family, `url(${JSON.stringify(url)})`, {
       display: isSpecialPreviewFont(font) ? "block" : "swap",
       style: isVf ? vfStyleDescriptor(font) : font.italic ? "italic" : "normal",

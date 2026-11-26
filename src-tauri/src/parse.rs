@@ -573,6 +573,26 @@ pub fn parse_layout_for_path_cached(path: &Path) -> Result<FontLayout, String> {
     Ok(layout)
 }
 
+/// Fast zero-copy read of `OS/2 usWeightClass` for a single font file (defaults to 400 if absent).
+pub(crate) fn read_os2_weight_class(path: &Path) -> Option<u16> {
+    let file = crate::fast_parse::open_shared_read(path).ok()?;
+    if let Ok(mmap) = unsafe { Mmap::map(&file) } {
+        let fref = FileRef::new(&mmap).ok()?;
+        let face = match fref {
+            FileRef::Font(f) => f,
+            FileRef::Collection(c) => c.get(0).ok()?,
+        };
+        return face.os2().ok().map(|o| o.us_weight_class()).filter(|&w| w > 0);
+    }
+    let compact = crate::fast_parse::read_metadata_sfnt_bytes(path).ok()??;
+    let fref = FileRef::new(&compact).ok()?;
+    let face = match fref {
+        FileRef::Font(f) => f,
+        FileRef::Collection(c) => c.get(0).ok()?,
+    };
+    face.os2().ok().map(|o| o.us_weight_class()).filter(|&w| w > 0)
+}
+
 #[tauri::command]
 pub async fn parse_family_cmap(app: AppHandle, family: String) -> Result<Vec<CmapGlyph>, String> {
     tauri::async_runtime::spawn_blocking(move || parse_family_cmap_blocking(app, family))

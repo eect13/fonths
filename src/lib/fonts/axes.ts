@@ -138,17 +138,23 @@ export function previewWghtAxis(
   return { tag: "wght", name: "Weight", min, max, def };
 }
 
-/** fvar default, else Regular (400) if the family has it, else the first listed weight. */
+/** fvar default, preferring Regular (400) on Thin-origin VFs whose wght axis spans 400, else closest weight to 400. */
 export function defaultWeightForFont(font: Pick<FontRecord, "weights" | "variable" | "italic" | "axes" | "instances">): number {
   const regular = instancesForFont(font).find((inst) => /^(regular|normal|book|roman)$/i.test(inst.name));
   if (typeof regular?.coords.wght === "number") return Math.round(regular.coords.wght);
   const wght = axesForFont(font).find((a) => a.tag === "wght");
-  if (wght) return Math.round(wght.def);
+  if (wght) {
+    if (wght.min <= 400 && wght.max >= 400 && wght.def < 350) return 400;
+    return Math.round(wght.def);
+  }
   if (font.weights.includes(400)) return 400;
-  return font.weights[0] ?? 400;
+  if (font.weights.length) {
+    return [...font.weights].sort((a, b) => Math.abs(a - 400) - Math.abs(b - 400) || a - b)[0]!;
+  }
+  return 400;
 }
 
-/** Axis defaults from the file (fvar defaultValue / Regular instance). Never force 400 or opsz = preview size. */
+/** Axis defaults from the file (fvar defaultValue / Regular instance). Never force opsz = preview size. */
 export function defaultAxisValues(axes: FontAxis[], instances: NamedInstance[] = []): Record<string, number> {
   const out: Record<string, number> = {};
   for (const axis of axes) out[axis.tag] = axis.def;
@@ -156,6 +162,11 @@ export function defaultAxisValues(axes: FontAxis[], instances: NamedInstance[] =
   if (regular) {
     for (const [tag, n] of Object.entries(regular.coords)) {
       if (Number.isFinite(n)) out[tag] = snapFvar(n);
+    }
+  } else {
+    const wght = axes.find((a) => a.tag === "wght");
+    if (wght && wght.min <= 400 && wght.max >= 400 && wght.def < 350) {
+      out.wght = 400;
     }
   }
   return out;

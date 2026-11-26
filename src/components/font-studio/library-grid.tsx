@@ -1,5 +1,5 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { RotateCcw, Trash2 } from "lucide-react";
+import { RotateCcw } from "lucide-react";
 import { FontCard } from "./font-card";
 import { ActiveSetGuard } from "./active-set-guard";
 import { UploadsResetDialog } from "./uploads-reset-dialog";
@@ -184,23 +184,13 @@ export function LibraryGrid() {
           <Button
             type="button"
             size="sm"
-            variant="secondary"
+            variant="outline"
             className="h-7 px-2.5"
+            data-testid="manage-uploads-btn"
             onClick={() => setUploadsOpen(true)}
           >
-            <RotateCcw />
-            Reset library
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="destructive"
-            className="h-7 px-2.5"
-            disabled={!localFonts.length}
-            onClick={() => setUploadsOpen(true)}
-          >
-            <Trash2 />
-            Clear uploads
+            <RotateCcw className="size-3.5" />
+            Manage uploads…
           </Button>
         </div>
       </div>

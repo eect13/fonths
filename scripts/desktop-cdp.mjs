@@ -536,7 +536,7 @@ try {
 
   // Verify v2.5.0 Glyphs tab inspects library/local/system fonts without requiring prior activation
   await p2.getByRole("link", { name: "Glyphs" }).click();
-  await p2.waitForSelector('[data-testid="glyphs-grid"]', { timeout: 10_000 });
+  await p2.waitForSelector('[data-testid="glyphs-grid"] button', { timeout: 10_000 });
   const glyphButtons = await p2.locator('[data-testid="glyphs-grid"] button').count();
   assert.ok(glyphButtons > 10 && glyphButtons < 300, `Expected virtualized glyph slice (>10 & <300), got ${glyphButtons}`);
 

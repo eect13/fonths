@@ -22,8 +22,6 @@ const PRIMARY_THEMES: { id: PreviewTheme; label: string; hint: string }[] = [
 ];
 
 const EXTRA_THEMES: { id: PreviewTheme; label: string }[] = [
-  { id: "paper", label: "Paper (Light)" },
-  { id: "ink", label: "Ink (Dark)" },
   { id: "newsprint", label: "Newsprint proof" },
   { id: "blueprint", label: "Blueprint proof" },
 ];
@@ -163,23 +161,25 @@ export function PreviewToolbar() {
                   aria-label="Line height"
                 />
               </div>
-              <DropdownMenuLabel className="flex items-center justify-between">
-                <span>Letter spacing</span>
-                <span className="font-mono text-xs tabular-nums text-muted-foreground">
-                  {preview.letterSpacing.toFixed(2)}em
-                </span>
-              </DropdownMenuLabel>
-              <div className="px-2 py-1.5" onPointerDown={(e) => e.stopPropagation()}>
-                <Slider
-                  min={-0.06}
-                  max={0.25}
-                  step={0.005}
-                  value={[preview.letterSpacing]}
-                  onValueChange={([letterSpacing]) => {
-                    if (typeof letterSpacing === "number") setPreview({ letterSpacing });
-                  }}
-                  aria-label="Letter spacing"
-                />
+              <div className="lg:hidden">
+                <DropdownMenuLabel className="flex items-center justify-between">
+                  <span>Letter spacing</span>
+                  <span className="font-mono text-xs tabular-nums text-muted-foreground">
+                    {preview.letterSpacing.toFixed(2)}em
+                  </span>
+                </DropdownMenuLabel>
+                <div className="px-2 py-1.5" onPointerDown={(e) => e.stopPropagation()}>
+                  <Slider
+                    min={-0.06}
+                    max={0.25}
+                    step={0.005}
+                    value={[preview.letterSpacing]}
+                    onValueChange={([letterSpacing]) => {
+                      if (typeof letterSpacing === "number") setPreview({ letterSpacing });
+                    }}
+                    aria-label="Letter spacing"
+                  />
+                </div>
               </div>
               {preview.fontSize !== 36 || preview.lineHeight !== 1.3 || preview.letterSpacing !== 0 ? (
                 <div className="px-2 pb-1">
@@ -195,7 +195,7 @@ export function PreviewToolbar() {
                 </div>
               ) : null}
               <DropdownMenuSeparator />
-              <DropdownMenuLabel>Surface proof</DropdownMenuLabel>
+              <DropdownMenuLabel>More surfaces</DropdownMenuLabel>
               {EXTRA_THEMES.map((t) => (
                 <DropdownMenuItem key={t.id} onSelect={() => setPreview({ theme: t.id })}>
                   <span className="flex-1">{t.label}</span>
