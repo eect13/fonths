@@ -1,5 +1,20 @@
-import { Cpu, Download, Eraser, FolderOpen, RefreshCw, Settings, ShieldCheck, Trash2, Upload, Zap } from "lucide-react";
-import { useEffect, useState } from "react";
+import {
+  Activity,
+  AlertTriangle,
+  Cpu,
+  Download,
+  Eraser,
+  FolderOpen,
+  Lock,
+  RefreshCw,
+  Settings,
+  ShieldCheck,
+  Sparkles,
+  Trash2,
+  Upload,
+  Zap,
+} from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -10,13 +25,22 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
-import { applyDesktopPrefs, type ActivationMode, type DeleteMode } from "@/lib/desktop/prefs";
+import {
+  applyDesktopPrefs,
+  type ActivationMode,
+  type CacheCleanScope,
+  type DeleteMode,
+} from "@/lib/desktop/prefs";
 import { syncGoogleCdnFiles } from "@/lib/fonts/google-api";
 import {
-  cleanupTempStageFiles,
+  cleanFontCaches,
+  getDiagnosticsSnapshot,
   getDWriteEngineInfo,
   purgeNonGoogleFonts,
+  scanFontCaches,
+  type DiagnosticsSnapshot,
   type DWriteEngineInfo,
+  type FontCacheScanResult,
   type PurgeNonGoogleResult,
 } from "@/lib/fonts/native-parse";
 import {
@@ -32,6 +56,7 @@ import {
 } from "@/lib/fonts/os-activate";
 import { docsCancelToastAction } from "@/lib/fonts/docs-cancel-toast-action";
 import { exportLibraryBackup, importLibraryBackup } from "@/lib/fonts/backup";
+import { formatBytes } from "@/lib/fonts/hash";
 import { useFontStore } from "@/lib/fonts/store";
 import { toast } from "sonner";
 import { useUiDensity, type UiDensity } from "@/lib/ui-density";
@@ -47,7 +72,10 @@ export function DesktopSettings() {
   const [open, setOpen] = useState(false);
   const [engineInfo, setEngineInfo] = useState<DWriteEngineInfo | null>(null);
   const [gdiState, setGdiState] = useState<GdiSessionState | null>(null);
+  const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot | null>(null);
+  const [refreshingDiag, setRefreshingDiag] = useState(false);
   const [cleaningTemp, setCleaningTemp] = useState(false);
+  const [cachePreview, setCachePreview] = useState<FontCacheScanResult | null>(null);
   const [syncingCdn, setSyncingCdn] = useState(false);
   const [purgingNonGoogle, setPurgingNonGoogle] = useState(false);
   const [purgePreview, setPurgePreview] = useState<PurgeNonGoogleResult | null>(null);
@@ -60,7 +88,11 @@ export function DesktopSettings() {
     fastSessionResume,
     deleteMode = "recycle",
     hkcuRegistrySync = true,
+    activationMode = "instant-zero-ram",
+    cacheCleanScope = "standard",
   } = prefs;
+  const zeroRamLocked = activationMode === "instant-zero-ram";
+  const effectiveHkcu = zeroRamLocked ? true : hkcuRegistrySync !== false;
 
   useEffect(() => {
     void applyDesktopPrefs({
@@ -70,24 +102,57 @@ export function DesktopSettings() {
       preferStaticFaces,
       fastSessionResume,
       deleteMode,
-      hkcuRegistrySync,
+      hkcuRegistrySync: effectiveHkcu,
+      activationMode,
+      cacheCleanScope,
     });
-  }, [closeToTray, startWithWindows, startMinimized, preferStaticFaces, fastSessionResume, deleteMode, hkcuRegistrySync]);
+  }, [
+    closeToTray,
+    startWithWindows,
+    startMinimized,
+    preferStaticFaces,
+    fastSessionResume,
+    deleteMode,
+    effectiveHkcu,
+    activationMode,
+    cacheCleanScope,
+  ]);
+
+  const refreshDiagnostics = useCallback(async (scope: CacheCleanScope = cacheCleanScope) => {
+    setRefreshingDiag(true);
+    try {
+      const [info, gdi, snap] = await Promise.all([
+        getDWriteEngineInfo(),
+        getGdiSessionState(),
+        getDiagnosticsSnapshot(scope),
+      ]);
+      if (info) setEngineInfo(info);
+      if (gdi) setGdiState(gdi);
+      setDiagnostics(snap);
+    } finally {
+      setRefreshingDiag(false);
+    }
+  }, [cacheCleanScope]);
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     void (async () => {
-      const [info, gdi] = await Promise.all([getDWriteEngineInfo(), getGdiSessionState()]);
+      const [info, gdi, snap] = await Promise.all([
+        getDWriteEngineInfo(),
+        getGdiSessionState(),
+        getDiagnosticsSnapshot(cacheCleanScope),
+      ]);
       if (!cancelled) {
         if (info) setEngineInfo(info);
         if (gdi) setGdiState(gdi);
+        setDiagnostics(snap);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, cacheCleanScope]);
 
   const densityOpts: { id: UiDensity; label: string; hint: string }[] = [
     { id: "comfortable", label: "Comfortable", hint: "Roomy cards and rows" },
@@ -97,6 +162,24 @@ export function DesktopSettings() {
   const deleteModeOpts: { id: DeleteMode; label: string; hint: string }[] = [
     { id: "recycle", label: "Recycle Bin", hint: "Move deleted library fonts to Windows Recycle Bin" },
     { id: "permanent", label: "Permanent Delete", hint: "Permanently remove deleted library fonts immediately" },
+  ];
+
+  const cacheScopeOpts: { id: CacheCleanScope; label: string; hint: string }[] = [
+    {
+      id: "minimal",
+      label: "Minimal",
+      hint: "Orphaned gdi-maps stage files, stale HKCU entries, and AdobeFnt*.lst indexes only.",
+    },
+    {
+      id: "standard",
+      label: "Standard",
+      hint: "Recommended: Minimal + Adobe CoolType, Figma, Affinity temp, Corel & Office font caches + Windows FontCache flush.",
+    },
+    {
+      id: "deep",
+      label: "Deep Safe",
+      hint: "Standard + rebuildable Adobe CoreSync/Typekit indexes (never deletes real font binaries, presets, or brushes).",
+    },
   ];
 
   const activationModeOpts: { id: ActivationMode; label: string; hint: string }[] = [
@@ -116,28 +199,61 @@ export function DesktopSettings() {
       hint: "Unload all active fonts and remove temporary HKCU entries whenever the window closes.",
     },
   ];
-  const activationMode: ActivationMode = prefs.activationMode ?? "instant-zero-ram";
   const activeModeHint = activationModeOpts.find((o) => o.id === activationMode)?.hint ?? "";
+  const activeCacheScopeHint = cacheScopeOpts.find((o) => o.id === cacheCleanScope)?.hint ?? "";
 
-  const handleCleanTempCache = async () => {
+  const handleScanFontCaches = async () => {
     setCleaningTemp(true);
     try {
-      const res = await cleanupTempStageFiles();
-      if (!res) {
-        toast.error("Temp cache cleanup is only available in the Windows desktop app.");
+      const scan = await scanFontCaches(cacheCleanScope);
+      if (!scan) {
+        toast.error("Font cache hygiene is only available in the Windows desktop app.");
         return;
       }
-      if (res.scanned === 0) {
-        toast.success("Temp cache is already clean.", { id: "fm-temp-clean" });
-      } else if (res.failed > 0) {
-        toast.error(`Permanently removed ${res.deleted} of ${res.scanned} temp files (${res.failed} locked)`, {
-          id: "fm-temp-clean",
-        });
-      } else {
-        toast.success(`Permanently removed ${res.deleted} temporary font file${res.deleted === 1 ? "" : "s"}.`, {
-          id: "fm-temp-clean",
-        });
+      if (scan.totalFiles === 0 && scan.staleHkcuCount === 0) {
+        toast.success("Font caches are already clean.", { id: "fm-temp-clean" });
+        await refreshDiagnostics(cacheCleanScope);
+        return;
       }
+      setCachePreview(scan);
+    } finally {
+      setCleaningTemp(false);
+    }
+  };
+
+  const handleConfirmCleanCaches = async () => {
+    setCleaningTemp(true);
+    setCachePreview(null);
+    try {
+      const res = await cleanFontCaches(cacheCleanScope);
+      if (!res) return;
+      const freed = formatBytes(res.freedBytes);
+      const hkcuNote =
+        res.prunedHkcu > 0 ? ` · ${res.prunedHkcu} stale HKCU key${res.prunedHkcu === 1 ? "" : "s"}` : "";
+      const skippedNote = res.skippedRunningProviders.length
+        ? `Skipped while open: ${res.skippedRunningProviders.join(", ")}.`
+        : undefined;
+      if (res.failedFiles > 0) {
+        toast.error(
+          `Tidied ${res.deletedFiles} cache file${res.deletedFiles === 1 ? "" : "s"} (${freed}${hkcuNote}; ${res.failedFiles} locked)`,
+          { id: "fm-temp-clean", description: skippedNote },
+        );
+      } else {
+        toast.success(
+          `Tidied ${res.deletedFiles} font cache file${res.deletedFiles === 1 ? "" : "s"} (${freed}${hkcuNote}).`,
+          {
+            id: "fm-temp-clean",
+            description:
+              skippedNote ??
+              (res.restartedWindowsFontCache
+                ? "Refreshed Windows Font Cache service & notified running apps."
+                : res.broadcastSent
+                  ? "Notified running design and office apps."
+                  : undefined),
+          },
+        );
+      }
+      await refreshDiagnostics(cacheCleanScope);
     } finally {
       setCleaningTemp(false);
     }
@@ -251,11 +367,11 @@ export function DesktopSettings() {
           </div>
         </div>
 
-        {/* Group 2: Background & Startup (separate from GDI restore) */}
+        {/* Group 2: Activation Mode & Startup */}
         <div className="space-y-2" data-testid="background-mode-card">
           <div className="fm-settings-group rounded-md bg-secondary/70 p-2.5 text-sm space-y-2">
             <div>
-              <p className="font-medium">Activation Mode</p>
+              <p className="font-medium">Activation Mode &amp; Window Close</p>
               <p className="text-xs text-muted-foreground">{activeModeHint}</p>
             </div>
             <div className="fm-settings-opts flex flex-wrap" role="group" aria-label="Activation mode" data-testid="activation-mode-group">
@@ -269,26 +385,19 @@ export function DesktopSettings() {
                   aria-pressed={activationMode === opt.id}
                   title={opt.hint}
                   data-testid={`activation-mode-${opt.id}`}
-                  onClick={() => setDesktopPrefs({ activationMode: opt.id })}
+                  onClick={() =>
+                    setDesktopPrefs({
+                      activationMode: opt.id,
+                      closeToTray: opt.id !== "session-only",
+                      ...(opt.id === "instant-zero-ram" ? { hkcuRegistrySync: true } : {}),
+                    })
+                  }
                 >
                   {opt.label}
                 </Button>
               ))}
             </div>
           </div>
-          <label className="fm-settings-row flex items-center justify-between gap-3 rounded-md bg-secondary text-sm">
-            <div>
-              <p className="font-medium">Keep fonts active when closing window</p>
-              <p className="text-xs text-muted-foreground">
-                Follows your Activation Mode above on close (Zero-RAM Instant or Tray Daemon). Turn OFF to always unload active fonts when closing Fonths.
-              </p>
-            </div>
-            <Switch
-              data-testid="run-in-background-switch"
-              checked={prefs.closeToTray}
-              onCheckedChange={(on) => setDesktopPrefs({ closeToTray: on })}
-            />
-          </label>
           <label className="fm-settings-row flex items-center justify-between gap-3 rounded-md bg-secondary text-sm">
             <div>
               <p className="font-medium">Start with Windows</p>
@@ -349,20 +458,33 @@ export function DesktopSettings() {
           </label>
           <label className="fm-settings-row flex items-center justify-between gap-3 rounded-md bg-secondary text-sm">
             <div>
-              <p className="font-medium">Adobe / Office HKCU registry sync</p>
+              <p className="font-medium flex items-center gap-1.5">
+                HKCU per-user font registry sync
+                {zeroRamLocked ? (
+                  <span className="inline-flex items-center gap-1 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                    <Lock className="size-2.5" />
+                    Locked ON
+                  </span>
+                ) : null}
+              </p>
               <p className="text-xs text-muted-foreground">
-                Mirror temporary session fonts under HKCU\...\Fonts so Photoshop, Illustrator, and Office detect them instantly. Turn OFF for maximum activation speed if your apps already read Win32 session tables.
+                {zeroRamLocked
+                  ? "Required and locked ON in Zero-RAM Instant mode so active fonts stay live across Creative, Office, and Browser apps at 0 MB RAM."
+                  : "Mirror temporary session fonts under HKCU\\...\\Fonts so Photoshop, Illustrator, Figma, Affinity, Corel, and Office detect them instantly."}
               </p>
             </div>
             <Switch
               data-testid="hkcu-registry-sync-switch"
-              checked={prefs.hkcuRegistrySync !== false}
-              onCheckedChange={(on) => setDesktopPrefs({ hkcuRegistrySync: on })}
+              disabled={zeroRamLocked}
+              checked={effectiveHkcu}
+              onCheckedChange={(on) => {
+                if (!zeroRamLocked) setDesktopPrefs({ hkcuRegistrySync: on });
+              }}
             />
           </label>
         </div>
 
-        {/* Group 3: Smart Deletion & Temporary Fonts */}
+        {/* Group 4: Smart Deletion */}
         <div className="fm-settings-stack fm-settings-row rounded-md bg-secondary" data-testid="delete-mode-card">
           <div className="min-w-0">
             <p className="text-sm font-medium flex items-center gap-1.5">
@@ -373,18 +495,45 @@ export function DesktopSettings() {
               Choose whether deleting library fonts moves them to the Recycle Bin or permanently removes them. Temporary/preview fonts are always permanently deleted automatically.
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="fm-settings-opts flex flex-wrap" role="group" aria-label="Delete behavior">
-              {deleteModeOpts.map((opt) => (
+          <div className="fm-settings-opts flex flex-wrap" role="group" aria-label="Delete behavior">
+            {deleteModeOpts.map((opt) => (
+              <Button
+                key={opt.id}
+                type="button"
+                size="sm"
+                variant={deleteMode === opt.id ? (opt.id === "permanent" ? "destructive" : "default") : "outline"}
+                aria-pressed={deleteMode === opt.id}
+                title={opt.hint}
+                data-testid={`delete-mode-${opt.id}`}
+                onClick={() => setDesktopPrefs({ deleteMode: opt.id })}
+              >
+                {opt.label}
+              </Button>
+            ))}
+          </div>
+        </div>
+
+        {/* Group 5: Universal Font Cache Hygiene */}
+        <div className="fm-settings-stack fm-settings-row rounded-md bg-secondary" data-testid="font-cache-hygiene-card">
+          <div className="min-w-0">
+            <p className="text-sm font-medium flex items-center gap-1.5">
+              <Sparkles className="size-3.5" />
+              Font Cache Hygiene (Universal)
+            </p>
+            <p className="text-xs text-muted-foreground">{activeCacheScopeHint}</p>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="fm-settings-opts flex flex-wrap" role="group" aria-label="Cache cleanup scope">
+              {cacheScopeOpts.map((opt) => (
                 <Button
                   key={opt.id}
                   type="button"
                   size="sm"
-                  variant={deleteMode === opt.id ? (opt.id === "permanent" ? "destructive" : "default") : "outline"}
-                  aria-pressed={deleteMode === opt.id}
+                  variant={cacheCleanScope === opt.id ? "default" : "outline"}
+                  aria-pressed={cacheCleanScope === opt.id}
                   title={opt.hint}
-                  data-testid={`delete-mode-${opt.id}`}
-                  onClick={() => setDesktopPrefs({ deleteMode: opt.id })}
+                  data-testid={`cache-scope-${opt.id}`}
+                  onClick={() => setDesktopPrefs({ cacheCleanScope: opt.id })}
                 >
                   {opt.label}
                 </Button>
@@ -396,11 +545,79 @@ export function DesktopSettings() {
               variant="outline"
               disabled={cleaningTemp}
               data-testid="clean-temp-cache-btn"
-              onClick={() => void handleCleanTempCache()}
+              onClick={() => void handleScanFontCaches()}
             >
               <Trash2 className="size-3.5 mr-1" />
-              {cleaningTemp ? "Cleaning…" : "Clean temp cache"}
+              {cleaningTemp ? "Scanning…" : "Tidy Font Caches"}
             </Button>
+          </div>
+        </div>
+
+        {/* Group 6: Live Diagnostics & Health */}
+        <div className="fm-settings-stack fm-settings-row rounded-md bg-secondary" data-testid="diagnostics-health-card">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-medium flex items-center gap-1.5">
+              <Activity className="size-3.5" />
+              Diagnostics &amp; Health
+            </p>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-xs"
+              disabled={refreshingDiag}
+              data-testid="diagnostics-refresh-btn"
+              onClick={() => void refreshDiagnostics(cacheCleanScope)}
+            >
+              <RefreshCw className={`size-3 mr-1 ${refreshingDiag ? "animate-spin" : ""}`} />
+              Refresh
+            </Button>
+          </div>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground sm:grid-cols-3">
+            <div>
+              Mode:{" "}
+              <span className="font-mono text-foreground">
+                {diagnostics?.activationMode ?? activationMode}
+              </span>
+            </div>
+            <div>
+              HKCU entries:{" "}
+              <span className="font-mono text-foreground tabular-nums">
+                {(diagnostics?.hkcuEntryCount ?? 0).toLocaleString()}
+              </span>
+            </div>
+            <div>
+              Session faces:{" "}
+              <span className="font-mono text-foreground tabular-nums">
+                {(diagnostics?.liveFaceCount ?? gdiState?.liveFaceCount ?? 0).toLocaleString()}
+              </span>
+            </div>
+            <div>
+              GDI handles:{" "}
+              <span className="font-mono text-foreground tabular-nums">
+                {(diagnostics?.gdiObjects ?? gdiState?.gdiObjects ?? 0).toLocaleString()} /{" "}
+                {(diagnostics?.gdiQuota ?? gdiState?.gdiQuota ?? 10000).toLocaleString()}
+              </span>
+            </div>
+            <div>
+              Stage (gdi-maps):{" "}
+              <span className="font-mono text-foreground tabular-nums">
+                {(diagnostics?.gdiMapsFileCount ?? 0).toLocaleString()} ({formatBytes(diagnostics?.gdiMapsBytes ?? 0)})
+              </span>
+            </div>
+            <div>
+              mmap caches:{" "}
+              <span className="font-mono text-foreground tabular-nums">
+                font:// {diagnostics?.protocolCacheEntries ?? 0} · Fontations {diagnostics?.rendererCacheEntries ?? 0}
+              </span>
+            </div>
+            <div className="col-span-2 sm:col-span-3">
+              Cleanable app &amp; stage caches ({cacheCleanScope}):{" "}
+              <span className="font-mono text-foreground tabular-nums">
+                {(diagnostics?.detectedCacheFiles ?? 0).toLocaleString()} files (
+                {formatBytes(diagnostics?.detectedCacheBytes ?? 0)})
+              </span>
+            </div>
           </div>
         </div>
 
@@ -609,6 +826,65 @@ export function DesktopSettings() {
           </div>
         </div>
       </DialogContent>
+
+      <Dialog open={Boolean(cachePreview)} onOpenChange={(next) => !next && setCachePreview(null)}>
+        <DialogContent data-testid="font-cache-preview-dialog">
+          <DialogHeader>
+            <DialogTitle>
+              Tidy {cachePreview?.cleanableFiles.toLocaleString() ?? 0} font cache file
+              {(cachePreview?.cleanableFiles ?? 0) === 1 ? "" : "s"}
+              {cachePreview?.staleHkcuCount
+                ? ` + ${cachePreview.staleHkcuCount} stale HKCU key${cachePreview.staleHkcuCount === 1 ? "" : "s"}`
+                : ""}
+              ?
+            </DialogTitle>
+            <DialogDescription>
+              Scope: {cachePreview?.scope ?? cacheCleanScope}. Only rebuildable cache indexes and orphaned stage files are removed; active fonts, presets, brushes, and plugins are never touched.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="fm-scroll max-h-56 space-y-1.5 overflow-y-auto rounded-md border border-border bg-secondary/40 p-2.5 text-xs">
+            {cachePreview?.providers
+              .filter((p) => p.fileCount > 0 || p.staleHkcuCount > 0)
+              .map((p) => (
+                <div
+                  key={p.id}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded bg-background/60 px-2 py-1.5"
+                >
+                  <div className="min-w-0">
+                    <p className="font-medium text-foreground">{p.label}</p>
+                    <p className="text-muted-foreground">
+                      {p.fileCount.toLocaleString()} file{p.fileCount === 1 ? "" : "s"} ({formatBytes(p.bytes)})
+                      {p.staleHkcuCount > 0 ? ` · ${p.staleHkcuCount} stale HKCU` : ""}
+                    </p>
+                  </div>
+                  {p.blockedByRunningApp ? (
+                    <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-500">
+                      <AlertTriangle className="size-3" />
+                      Open: {p.runningProcesses.join(", ")} (will skip)
+                    </span>
+                  ) : null}
+                </div>
+              ))}
+          </div>
+          <div className="fm-dialog-footer">
+            <Button type="button" variant="ghost" onClick={() => setCachePreview(null)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              data-testid="font-cache-confirm-btn"
+              disabled={
+                !cachePreview ||
+                (cachePreview.cleanableFiles === 0 && cachePreview.staleHkcuCount === 0)
+              }
+              onClick={() => void handleConfirmCleanCaches()}
+            >
+              Tidy cleanable caches ({formatBytes(cachePreview?.cleanableBytes ?? 0)})
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={Boolean(purgePreview)} onOpenChange={(next) => !next && setPurgePreview(null)}>
         <DialogContent data-testid="purge-non-google-dialog">

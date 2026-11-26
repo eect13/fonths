@@ -6,18 +6,27 @@ import { deactivateSet } from "./activate-toggle";
 import { useFontStore } from "@/lib/fonts/store";
 
 const HIGH_ACTIVE_THRESHOLD = 300;
+const GUARD_DISMISSED_KEY = "fm.activeSetGuardDismissed";
+
+function readDismissedFlag(): boolean {
+  try {
+    return typeof localStorage !== "undefined" && localStorage.getItem(GUARD_DISMISSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Active-Set Performance Guard:
- * Windows serializes cross-app `AddFontResourceExW(0)` at ~200ms/font. Keeping 1,500+
- * Google Fonts active at once slows app startup/quit and Word/Adobe font menus.
+ * Zero-RAM Instant mode keeps fonts active with 0 MB Fonths RAM, while hundreds
+ * of active fonts still add startup/menu overhead in third-party apps (Word/Adobe/Figma).
  * Offers one-click cleanup to keep only Uploads & Favorites active without deleting any files.
  */
 export function ActiveSetGuard() {
   const activated = useFontStore((s) => s.activated);
   const favorites = useFontStore((s) => s.favorites);
   const scope = useFontStore((s) => s.scope);
-  const [dismissed, setDismissed] = useState(false);
+  const [dismissed, setDismissed] = useState(readDismissedFlag);
 
   if (dismissed || activated.length <= HIGH_ACTIVE_THRESHOLD) return null;
   if (scope !== "activated" && scope !== "all") return null;
@@ -40,7 +49,7 @@ export function ActiveSetGuard() {
             {activated.length.toLocaleString()} fonts active
           </span>{" "}
           <span className="text-muted-foreground">
-            — keeping hundreds of Google Fonts loaded slows Windows startup, quit, and app font menus. Downloaded files stay on disk when deactivated.
+            — Zero-RAM mode holds these with 0 MB background RAM, though huge active sets still slow Word/Adobe/Figma font menus. Downloaded files stay on disk when deactivated.
           </span>
         </p>
       </div>
@@ -78,7 +87,14 @@ export function ActiveSetGuard() {
         <button
           type="button"
           aria-label="Dismiss active fonts tip"
-          onClick={() => setDismissed(true)}
+          onClick={() => {
+            setDismissed(true);
+            try {
+              localStorage.setItem(GUARD_DISMISSED_KEY, "1");
+            } catch {
+              /* ignore */
+            }
+          }}
           className="inline-flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-secondary hover:text-foreground"
         >
           <X className="size-3.5" />

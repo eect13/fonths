@@ -339,6 +339,25 @@ export async function refreshWatchedFolders(): Promise<void> {
           collectionId: folder.id,
           collectionName: folder.name,
         });
+        if (result.added > 0) {
+          const addedSet = new Set(filteredFresh.map(norm));
+          const extras: [string, string][] = [];
+          const seenFam = new Set<string>();
+          for (const f of useFontStore.getState().localFonts) {
+            if (!f.originPath || !addedSet.has(norm(f.originPath))) continue;
+            const famKey = f.family.trim().toLowerCase();
+            if (!famKey || seenFam.has(famKey)) continue;
+            seenFam.add(famKey);
+            extras.push([f.family, f.originPath]);
+          }
+          if (extras.length) {
+            void import("./native-parse").then(({ indexDownloadedMetadata }) =>
+              indexDownloadedMetadata(extras).then((rows) => {
+                if (rows?.length) useFontStore.getState().applyBulkMetadataIndex(rows);
+              }),
+            );
+          }
+        }
         if (result.duplicates > 0 && !latest.autoHideDuplicates) {
           toast.message(
             `${result.duplicates} duplicate file${result.duplicates === 1 ? "" : "s"} skipped in ${folder.name}`,

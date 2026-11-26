@@ -1,6 +1,6 @@
 import { bytesNearlySame } from "../binary-diff";
 import { idbGet } from "../idb";
-import { nativeHashFontPaths } from "../native-parse";
+import { diffFontPaths, nativeHashFontPaths } from "../native-parse";
 import type { DuplicateGroup, FontRecord } from "../types";
 
 export function familyDuplicateHideIds(
@@ -54,6 +54,7 @@ export async function findDuplicates(
   localFonts: FontRecord[],
   googleFonts: FontRecord[] = [],
   systemFonts: FontRecord[] = [],
+  onChecksumsComputed?: (updates: Record<string, string>) => void,
 ): Promise<DuplicateGroup[]> {
   const missingOriginPaths = localFonts
     .filter((f) => !f.checksum && Boolean(f.originPath))
@@ -62,11 +63,17 @@ export async function findDuplicates(
   if (missingOriginPaths.length > 0) {
     const rustHashes = await nativeHashFontPaths(missingOriginPaths).catch(() => null);
     if (rustHashes) {
-      hashedLocalFonts = localFonts.map((f) =>
-        !f.checksum && f.originPath && rustHashes[f.originPath]
-          ? { ...f, checksum: rustHashes[f.originPath] }
-          : f,
-      );
+      const updates: Record<string, string> = {};
+      hashedLocalFonts = localFonts.map((f) => {
+        if (!f.checksum && f.originPath && rustHashes[f.originPath]) {
+          updates[f.id] = rustHashes[f.originPath]!;
+          return { ...f, checksum: rustHashes[f.originPath] };
+        }
+        return f;
+      });
+      if (Object.keys(updates).length > 0) {
+        onChecksumsComputed?.(updates);
+      }
     }
   }
 
@@ -133,18 +140,24 @@ export async function findDuplicates(
     };
 
     for (let i = 0; i < fonts.length; i += 1) {
-      const left = buffers.get(fonts[i]!.id);
-      if (!left) continue;
+      const leftFont = fonts[i]!;
+      const left = buffers.get(leftFont.id);
+      if (!left && !leftFont.originPath) continue;
       for (let j = i + 1; j < fonts.length; j += 1) {
-        const right = buffers.get(fonts[j]!.id);
-        if (!right) continue;
+        const rightFont = fonts[j]!;
+        const right = buffers.get(rightFont.id);
         cmp += 1;
         if (cmp % 8 === 0) await new Promise<void>((r) => setTimeout(r, 0));
-        const { near, diffs: n } = bytesNearlySame(left, right);
-        if (!near) continue;
+        let res: { near: boolean; diffs: number } | null = null;
+        if (left && right) {
+          res = bytesNearlySame(left, right);
+        } else if (leftFont.originPath && rightFont.originPath) {
+          res = await diffFontPaths(leftFont.originPath, rightFont.originPath).catch(() => null);
+        }
+        if (!res?.near) continue;
         unite(i, j);
         const edge = `${Math.min(i, j)}:${Math.max(i, j)}`;
-        diffs.set(edge, n);
+        diffs.set(edge, res.diffs);
       }
     }
     const clusters = new Map<number, FontRecord[]>();

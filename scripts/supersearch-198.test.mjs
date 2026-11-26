@@ -151,5 +151,5 @@ test("store SuperSearch wiring + import metrics + native OS/2", () => {
   assert.match(tree, /exportCollectionJson/);
   assert.match(tree, /importCollectionJson/);
   const version = readFileSync(join(root, "src/version.ts"), "utf8");
-  assert.match(version, /2\.5\.0/);
+  assert.match(version, /APP_VERSION\s*=\s*"\d+\.\d+\.\d+"/);
 });

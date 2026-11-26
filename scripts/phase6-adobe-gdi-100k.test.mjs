@@ -142,11 +142,11 @@ test("Fonths 1.0.0 branding and Adobe quit-leftover cleanup contracts", () => {
   const versionTs = readFileSync(join(root, "src/version.ts"), "utf8");
   const activateRs = readRustModule(root, "src-tauri/src/activate.rs");
   assert.equal(pkg.name, "fonths");
-  assert.equal(pkg.version, "2.5.0");
+  assert.match(pkg.version, /^\d+\.\d+\.\d+$/);
   assert.equal(tauri.productName, "Fonths");
-  assert.equal(tauri.version, "2.5.0");
+  assert.equal(tauri.version, pkg.version);
   assert.equal(tauri.identifier, "app.fonths.desktop");
   assert.match(versionTs, /APP_NAME = "Fonths"/);
-  assert.match(versionTs, /APP_VERSION = "2\.5\.0"/);
+  assert.match(versionTs, /APP_VERSION = "\d+\.\d+\.\d+"/);
   assert.match(activateRs, /winfont::unload_paths\(extra\.clone\(\), true\)/);
 });

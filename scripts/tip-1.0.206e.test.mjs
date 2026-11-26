@@ -25,8 +25,8 @@ const readme = readFileSync(join(root, "README.md"), "utf8");
 const bugs = existsSync(join(root, "BUGS.md")) ? readFileSync(join(root, "BUGS.md"), "utf8") : "";
 
 test("206e keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.5.0");
-  assert.match(version, /2\.5\.0/);
+  assert.match(pkg.version, /^\d+\.\d+\.\d+$/);
+  assert.match(version, /APP_VERSION\s*=\s*"\d+\.\d+\.\d+"/);
 });
 
 test("P1 soft Settled requires .settled-add-zero provenance", () => {

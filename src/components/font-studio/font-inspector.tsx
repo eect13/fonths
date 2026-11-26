@@ -56,7 +56,6 @@ export function FontInspector() {
   const selectedId = useFontStore((s) => s.selectedId);
   const localFonts = useFontStore((s) => s.localFonts);
   const googleFonts = useFontStore((s) => s.googleFonts);
-  const systemFonts = useFontStore((s) => s.systemFonts);
   const diskFamilySet = useFontStore((s) => s.diskFamilySet);
   const setInspectorOpen = useFontStore((s) => s.setInspectorOpen);
   const collections = useFontStore((s) => s.collections);
@@ -129,6 +128,19 @@ export function FontInspector() {
           if (layout.axes?.length) store.patchFontAxes(id, layout.axes);
           const metrics = fontMetricsFromLayout(layout);
           if (metrics) store.patchFontMetrics(id, metrics);
+          if (tags.length || layout.glyphCount) {
+            store.applyBulkMetadataIndex([
+              {
+                family,
+                widthClass: layout.metrics?.widthClass ?? 5,
+                glyphCount: layout.glyphCount ?? 0,
+                otFeatures: tags,
+                axes: layout.axes ?? [],
+                variable: layout.variable ?? false,
+                ...(layout.metrics ? { metrics: layout.metrics } : {}),
+              },
+            ]);
+          }
           return;
         }
         let buf: ArrayBuffer | null = null;
@@ -154,6 +166,10 @@ export function FontInspector() {
     };
   }, [activeFontId]);
 
+  const activeOriginPath = font?.originPath;
+  const activeSource = font?.source;
+  const activeFamily = font?.family;
+
   useEffect(() => {
     const cur = fontRef.current;
     if (!cur || !isDesktopShellSync()) {
@@ -165,7 +181,8 @@ export function FontInspector() {
     const collected: string[] = [];
     if (cur.originPath) collected.push(cur.originPath);
     if (!isItalicOnlyFace(cur)) {
-      const siblings = cur.source === "system" ? systemFonts : localFonts;
+      const st = useFontStore.getState();
+      const siblings = cur.source === "system" ? st.systemFonts : st.localFonts;
       for (const s of siblings) {
         if (s.originPath && s.family.trim().toLowerCase() === famKey && !collected.includes(s.originPath)) {
           collected.push(s.originPath);
@@ -198,7 +215,7 @@ export function FontInspector() {
     return () => {
       cancelled = true;
     };
-  }, [activeFontId, font?.originPath, diskHasFamily, isOn, localFonts, systemFonts]);
+  }, [activeFontId, activeFamily, activeSource, activeOriginPath, diskHasFamily, isOn]);
 
   useEffect(() => {
     const cur = fontRef.current;

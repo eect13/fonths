@@ -894,7 +894,7 @@ fn is_gdi_maps_dir_name(path: &Path) -> bool {
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
-fn gdi_maps_root() -> Option<PathBuf> {
+pub(crate) fn gdi_maps_root() -> Option<PathBuf> {
     if let Some(sb) = sandbox_root() {
         return Some(sb.join("gdi-maps"));
     }
@@ -1800,6 +1800,7 @@ fn delete_font_file(path: &Path) -> Result<(), String> {
     }
     unregister_path(path);
     crate::font_protocol::evict_path(path);
+    crate::renderer::evict_path(path);
     intact_forget(path);
     gdi_flush_local();
     for attempt in 0..5u32 {
@@ -5494,6 +5495,58 @@ pub fn clear_hkcu_registry_now() {
     winfont::clear_all_hkcu_session_entries();
 }
 
+pub fn activation_mode_label() -> &'static str {
+    match get_activation_mode_code() {
+        1 => "daemon-tray",
+        2 => "session-only",
+        _ => "instant-zero-ram",
+    }
+}
+
+pub fn count_hkcu_session_entries() -> usize {
+    #[cfg(windows)]
+    {
+        winfont::count_hkcu_session_entries()
+    }
+    #[cfg(not(windows))]
+    {
+        0
+    }
+}
+
+pub fn prune_stale_hkcu_session_entries(dry_run: bool) -> (usize, usize) {
+    #[cfg(windows)]
+    {
+        winfont::prune_stale_hkcu_session_entries(dry_run)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = dry_run;
+        (0, 0)
+    }
+}
+
+pub fn gdi_maps_dir_stats() -> (usize, u64) {
+    let Some(dir) = gdi_maps_root() else {
+        return (0, 0);
+    };
+    let Ok(rd) = fs::read_dir(&dir) else {
+        return (0, 0);
+    };
+    let mut count = 0usize;
+    let mut bytes = 0u64;
+    for ent in rd.flatten() {
+        let p = ent.path();
+        if let Ok(meta) = fs::symlink_metadata(&p)
+            && meta.is_file()
+        {
+            count += 1;
+            bytes = bytes.saturating_add(meta.len());
+        }
+    }
+    (count, bytes)
+}
+
 /// Item 2: a folder whose statics came from a full source blocks VF-primary
 /// only when the user opts into Static-first (or per-dir `.prefer-statics`).
 fn dir_static_first_blocks_vf(dir: &Path) -> bool {
@@ -7739,9 +7792,11 @@ fn purge_family_dirs_in(root: &Path, family: &str) -> Result<(), String> {
         for path in &files {
             unregister_path(path);
             crate::font_protocol::evict_path(path);
+            crate::renderer::evict_path(path);
             intact_forget(path);
         }
         crate::font_protocol::evict_dir(&dir);
+        crate::renderer::evict_dir(&dir);
         gdi_flush_local();
         if let Err(err) = recycle_user_font_dir(&dir) {
             last_err = err;

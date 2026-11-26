@@ -193,6 +193,7 @@ interface FontState extends PersistedSlice {
   setGoogleFonts: (fonts: FontRecord[]) => void;
   patchFontAxes: (id: string, axes: { tag: string; name: string; min: number; max: number; def: number }[]) => void;
   patchFontMetrics: (id: string, metrics: FontMetrics) => void;
+  patchLocalChecksums: (updates: Record<string, string>) => void;
   applyBulkMetadataIndex: (entries: IndexedFamilyMeta[]) => void;
   setCatalogLive: (value: boolean) => void;
   setScope: (scope: LibraryScope) => void;
@@ -626,7 +627,10 @@ export const useFontStore = create<FontState>()(
               ...(prev.licenseUserSet
                 ? { license: prev.license, licenseName: prev.licenseName, licenseUserSet: true as const }
                 : {}),
-              // Keep disk-VF honesty across catalog refresh even before axes are probed.
+              // Keep disk-VF & parsed metadata (metrics, otFeatures, glyphCount) across catalog refreshes.
+              ...(prev.metrics && !font.metrics ? { metrics: prev.metrics } : {}),
+              ...(prev.otFeatures?.length && !font.otFeatures?.length ? { otFeatures: prev.otFeatures } : {}),
+              ...(prev.glyphCount && !font.glyphCount ? { glyphCount: prev.glyphCount } : {}),
               ...(prev.variable
                 ? {
                     variable: true as const,
@@ -692,6 +696,17 @@ export const useFontStore = create<FontState>()(
           const systemFonts = s.systemFonts.slice();
           systemFonts[si] = patch(systemFonts[si]!);
           return { systemFonts };
+        }),
+      patchLocalChecksums: (updates) =>
+        set((s) => {
+          let changed = false;
+          const localFonts = s.localFonts.map((f) => {
+            const digest = updates[f.id];
+            if (!digest || f.checksum === digest) return f;
+            changed = true;
+            return { ...f, checksum: digest };
+          });
+          return changed ? { localFonts } : s;
         }),
       applyBulkMetadataIndex: (entries) =>
         set((s) => {

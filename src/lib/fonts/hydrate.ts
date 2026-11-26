@@ -487,7 +487,18 @@ export function useHydrateFonts() {
       const scheduleIdle = () => {
         if (cancelled) return;
         void reclassifyStoredLocalFonts(() => cancelled);
-        void indexDownloadedMetadata().then((rows) => {
+        const curLocals = useFontStore.getState().localFonts;
+        const watchedExtras: [string, string][] = [];
+        const seenFam = new Set<string>();
+        for (const f of curLocals) {
+          if (!f.originPath) continue;
+          const famKey = f.family.trim().toLowerCase();
+          if (!famKey || seenFam.has(famKey)) continue;
+          if (f.metrics?.xh !== undefined && f.otFeatures !== undefined) continue;
+          seenFam.add(famKey);
+          watchedExtras.push([f.family, f.originPath]);
+        }
+        void indexDownloadedMetadata(watchedExtras).then((rows) => {
           if (!cancelled && rows?.length) {
             useFontStore.getState().applyBulkMetadataIndex(rows);
           }

@@ -722,9 +722,11 @@ pub fn recycle_or_leave(dir: &Path) -> Result<bool, String> {
         for path in &files {
             unregister_path(path);
             crate::font_protocol::evict_path(path);
+            crate::renderer::evict_path(path);
             intact_forget(path);
         }
         crate::font_protocol::evict_dir(dir);
+        crate::renderer::evict_dir(dir);
         gdi_flush_local();
         recycle_bin_windows(dir)?;
         eprintln!("[fm] prune: moved {} to the Recycle Bin", dir.display());
@@ -833,9 +835,11 @@ pub fn purge_non_google_fonts_in(
         for path in &files {
             unregister_path(path);
             crate::font_protocol::evict_path(path);
+            crate::renderer::evict_path(path);
             intact_forget(path);
         }
         crate::font_protocol::evict_dir(dir);
+        crate::renderer::evict_dir(dir);
         gdi_flush_local();
         let res = if permanent {
             fs::remove_dir_all(dir).map_err(|e| e.to_string())

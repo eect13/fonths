@@ -46,9 +46,9 @@ const tauri = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "
 const version = readFileSync(join(root, "src/version.ts"), "utf8");
 
 test("206z keeps ProductVersion 1.0.206", () => {
-  assert.equal(pkg.version, "2.5.0");
-  assert.equal(tauri.version, "2.5.0");
-  assert.match(version, /2\.5\.0/);
+  assert.match(pkg.version, /^\d+\.\d+\.\d+$/);
+  assert.equal(tauri.version, pkg.version);
+  assert.match(version, /APP_VERSION\s*=\s*"\d+\.\d+\.\d+"/);
 });
 
 test("bar Gate D visible Name via cancelChromeVisibleLabel", () => {

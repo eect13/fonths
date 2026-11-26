@@ -24,7 +24,7 @@ export interface RenderFontSpecimenOptions {
 export interface SkiaSpecimenFrame {
   width: number;
   height: number;
-  pixels: Uint8ClampedArray;
+  pixels: Uint8ClampedArray<ArrayBuffer>;
 }
 
 /** Error text Rust returns when a newer request for the same slot replaced this one. */

@@ -333,7 +333,50 @@ const loadedLocal = new Set<string>();
 const inflight = new Map<string, Promise<void>>();
 const googleLinks = new Map<string, HTMLElement>();
 const localFaces = new Map<string, { face: FontFace; url: string }>();
+const LOCAL_FACE_LRU = 512;
 const specialFaces = new Map<string, FontFace>();
+
+function rememberLocalFace(id: string, face: FontFace, url = "") {
+  const prev = localFaces.get(id);
+  if (prev && prev.face !== face) {
+    try {
+      document.fonts.delete(prev.face);
+    } catch {
+      /* ignore */
+    }
+    if (prev.url) {
+      try {
+        URL.revokeObjectURL(prev.url);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  localFaces.delete(id);
+  localFaces.set(id, { face, url });
+  loadedLocal.add(id);
+  while (localFaces.size > LOCAL_FACE_LRU) {
+    const oldest = localFaces.keys().next().value;
+    if (!oldest || oldest === id) break;
+    const evicted = localFaces.get(oldest);
+    if (evicted) {
+      try {
+        document.fonts.delete(evicted.face);
+      } catch {
+        /* ignore */
+      }
+      if (evicted.url) {
+        try {
+          URL.revokeObjectURL(evicted.url);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    localFaces.delete(oldest);
+    loadedLocal.delete(oldest);
+  }
+}
 
 const MAX_CSS = 16;
 let cssActive = 0;
@@ -1013,8 +1056,7 @@ export async function loadLocalFont(font: FontRecord): Promise<void> {
           const face = new FontFace(family, `url(${JSON.stringify(url)})`, opts);
           await face.load();
           document.fonts.add(face);
-          localFaces.set(font.id, { face, url: "" });
-          loadedLocal.add(font.id);
+          rememberLocalFace(font.id, face);
           return;
         }
       } catch {
@@ -1037,8 +1079,7 @@ export async function loadLocalFont(font: FontRecord): Promise<void> {
       const face = new FontFace(family, copy, resolvedOpts);
       await face.load();
       document.fonts.add(face);
-      localFaces.set(font.id, { face, url: "" });
-      loadedLocal.add(font.id);
+      rememberLocalFace(font.id, face);
       return;
     } catch {
       /* WebView2 sometimes rejects raw buffers; fall back to a blob URL. */
@@ -1047,8 +1088,7 @@ export async function loadLocalFont(font: FontRecord): Promise<void> {
     const face = new FontFace(family, `url(${url})`, resolvedOpts);
     await face.load();
     document.fonts.add(face);
-    localFaces.set(font.id, { face, url });
-    loadedLocal.add(font.id);
+    rememberLocalFace(font.id, face, url);
   })()
     .catch(() => {
       if (!previewFailNotified.has(font.id)) {
@@ -1099,8 +1139,7 @@ async function loadPathFont(font: FontRecord): Promise<void> {
     });
     await face.load();
     document.fonts.add(face);
-    localFaces.set(font.id, { face, url: "" });
-    loadedLocal.add(font.id);
+    rememberLocalFace(font.id, face);
   })().catch(() => {
     /* system font still types in other apps */
   });

@@ -6,7 +6,6 @@
 
 use lru::LruCache;
 use memmap2::Mmap;
-use std::fs::File;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -20,6 +19,11 @@ fn mmap_cache() -> &'static Mutex<LruCache<PathBuf, Arc<Mmap>>> {
         Mutex::new(LruCache::new(NonZeroUsize::new(MMAP_CACHE_CAPACITY).unwrap()))
     });
     &CACHE
+}
+
+/// Number of mapped font files currently cached by the `font://` protocol handler.
+pub fn cache_len() -> usize {
+    mmap_cache().lock().map(|g| g.len()).unwrap_or(0)
 }
 
 /// Percent-decode a URI path segment (UTF-8 safe).
@@ -148,7 +152,7 @@ fn read_cached_font_bytes(path: &Path) -> Result<Vec<u8>, String> {
         && let Some(mapped) = cache.get(path) {
             return Ok(mapped.as_ref().to_vec());
         }
-    let file = File::open(path).map_err(|e| format!("open failed: {e}"))?;
+    let file = crate::fast_parse::open_shared_read(path).map_err(|e| format!("open failed: {e}"))?;
     let len = file.metadata().map_err(|e| e.to_string())?.len();
     if !(12..=128 * 1024 * 1024).contains(&len) {
         return Err("font file size out of bounds".into());
@@ -189,7 +193,7 @@ pub fn handle_request(request: Request<Vec<u8>>, responder: UriSchemeResponder) 
                     .status(StatusCode::OK)
                     .header(header::CONTENT_TYPE, mime_for_font(&path))
                     .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                    .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+                    .header(header::CACHE_CONTROL, "no-cache")
                     .body(bytes)
                     .unwrap_or_else(|_| Response::new(Vec::new()));
                 responder.respond(resp);
@@ -225,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_fixture_through_mmap_cache() {
+    fn reads_fixture_through_mmap_cache_and_evicts() {
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("tests")
@@ -235,5 +239,14 @@ mod tests {
         let b = read_cached_font_bytes(&fixture).expect("cached mmap read");
         assert!(a.len() > 1000);
         assert_eq!(a.len(), b.len());
+        assert!(cache_len() >= 1);
+        evict_path(&fixture);
+        let target = fixture.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+        let still_present = mmap_cache()
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(k, _)| k.to_string_lossy().replace('/', "\\").to_ascii_lowercase() == target);
+        assert!(!still_present, "evict_path must drop fixture from mmap cache");
     }
 }

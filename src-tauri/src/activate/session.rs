@@ -737,6 +737,43 @@ fn try_adopt_persistent_session(app: &AppHandle, root: &Path) -> Vec<String> {
     winfont::adopt_persistent_hkcu_session(&disk_maps, &session_fams, &hkcu_entries)
 }
 
+#[cfg(windows)]
+fn seed_restore_progress(
+    app: &AppHandle,
+    initial_total: usize,
+    prestaged_ready: &[String],
+    settled_skip: &[String],
+) {
+    let initial_done = prestaged_ready.len().min(initial_total);
+    if let Ok(mut p) = bulk().progress.lock() {
+        p.running = initial_total > 0;
+        p.paused = false;
+        p.kind = "download".into();
+        p.done = initial_done as u32;
+        p.total = initial_total as u32;
+        p.failed = 0;
+        p.skipped = 0;
+        p.current = if initial_total == 0 {
+            String::new()
+        } else {
+            format!("Restoring {initial_done}/{initial_total}")
+        };
+        p.ready_names = prestaged_ready.to_vec();
+        p.failed_names.clear();
+        p.failed_details.clear();
+        p.settled_names.clear();
+        for name in settled_skip {
+            if !p.settled_names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+                p.settled_names.push(name.clone());
+            }
+        }
+    }
+    if initial_total > 0 {
+        bulk().running.store(true, Ordering::SeqCst);
+    }
+    emit_progress_force(app);
+}
+
 pub fn session_begin(app: &AppHandle) {
     session_boot_begin();
     if sandbox_root().is_some() {
@@ -874,33 +911,7 @@ pub fn session_begin(app: &AppHandle) {
         let mut prestaged_ready: Vec<String> = persistent_adopted;
         let initial_total = families.len().saturating_sub(settled_skip.len());
         if own_progress && (initial_total > 0 || !settled_skip.is_empty()) {
-            if let Ok(mut p) = bulk().progress.lock() {
-                p.running = initial_total > 0;
-                p.paused = false;
-                p.kind = "download".into();
-                p.done = 0;
-                p.total = initial_total as u32;
-                p.failed = 0;
-                p.skipped = 0;
-                p.current = if initial_total == 0 {
-                    String::new()
-                } else {
-                    format!("Restoring 0/{initial_total}")
-                };
-                p.ready_names.clear();
-                p.failed_names.clear();
-                p.failed_details.clear();
-                p.settled_names.clear();
-                for name in &settled_skip {
-                    if !p.settled_names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
-                        p.settled_names.push(name.clone());
-                    }
-                }
-            }
-            if initial_total > 0 {
-                bulk().running.store(true, Ordering::SeqCst);
-            }
-            emit_progress_force(app);
+            seed_restore_progress(app, initial_total, &prestaged_ready, &settled_skip);
         }
 
         if !covered_prestaged.is_empty() {

@@ -1,7 +1,7 @@
 {
   "name": "fonths",
-  "version": "2.5.0",
-  "description": "Fonths 2.5 — High-performance Tauri v2 + Rust 1.100 (2024 edition) + Google Fontations (read-fonts + skrifa + harfrust) typeface manager.",
+  "version": "2.6.0",
+  "description": "Fonths 2.6 — High-performance Tauri v2 + Rust 1.100 (2024 edition) + Google Fontations (read-fonts + skrifa + harfrust) typeface manager.",
   "sideEffects": false,
   "type": "module",
   "engines": {

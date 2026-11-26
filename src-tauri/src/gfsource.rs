@@ -18,7 +18,7 @@ use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 /// Honest UA: app name + repo URL. No invented contact address.
-pub const POLITE_UA: &str = "Fonths/2.5 (+https://github.com/eect13/fonths)";
+pub const POLITE_UA: &str = "Fonths/2.6 (+https://github.com/eect13/fonths)";
 /// Metadata / manifest / API lane: polite burst-free concurrency and spacing.
 pub const MAX_CONCURRENT: usize = 3;
 pub const MIN_SPACING: Duration = Duration::from_millis(100);

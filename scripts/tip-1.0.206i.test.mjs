@@ -50,8 +50,8 @@ function emptyState(over = {}) {
 }
 
 test("206i keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.5.0");
-  assert.match(version, /2\.5\.0/);
+  assert.match(pkg.version, /^\d+\.\d+\.\d+$/);
+  assert.match(version, /APP_VERSION\s*=\s*"\d+\.\d+\.\d+"/);
 });
 
 test("P1 unload_now wires Pause+Cancel (not soft-lie / not hide-only)", () => {

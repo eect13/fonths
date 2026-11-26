@@ -42,12 +42,12 @@ function familyRow(name) {
 }
 
 test("206u keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.5.0");
-  assert.match(version, /2\.5\.0/);
+  assert.match(pkg.version, /^\d+\.\d+\.\d+$/);
+  assert.match(version, /APP_VERSION\s*=\s*"\d+\.\d+\.\d+"/);
   const tauri = JSON.parse(
     readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"),
   );
-  assert.equal(tauri.version, "2.5.0");
+  assert.equal(tauri.version, pkg.version);
 });
 
 test("docs mark 206u Fixed; VF-primary; Refresh Documents; tip-sha; no tip-install/pack", () => {

@@ -197,20 +197,30 @@ try {
   assert.equal(afterCancelProg.running, false, "Cancel on Activate All confirm must not start downloads");
   assert.equal(afterCancelProg.total, 0, "Cancel on Activate All confirm must leave queue empty");
 
-  // Settings + Background & Startup + Separated Fast GDI Restore + Delete Mode + Clean Temp Cache + Purge non-Google + Skia Engine
+  // Settings + Unified Activation Mode + Separated Fast GDI Restore + Delete Mode + Universal Cache Hygiene + Live Diagnostics + Skia Engine
   await p1.click('[data-testid="settings-open"]');
   await p1.waitForSelector('[data-testid="background-mode-card"]', { timeout: 10_000 });
-  await p1.waitForSelector('[data-testid="run-in-background-switch"]', { timeout: 5_000 });
+  await p1.waitForSelector('[data-testid="activation-mode-group"]', { timeout: 5_000 });
+  await p1.waitForSelector('[data-testid="activation-mode-instant-zero-ram"]', { timeout: 5_000 });
   await p1.waitForSelector('[data-testid="start-minimized-switch"]', { timeout: 5_000 });
   await p1.waitForSelector('[data-testid="delete-mode-card"]', { timeout: 10_000 });
+  await p1.waitForSelector('[data-testid="font-cache-hygiene-card"]', { timeout: 5_000 });
+  await p1.waitForSelector('[data-testid="cache-scope-minimal"]', { timeout: 5_000 });
+  await p1.waitForSelector('[data-testid="cache-scope-standard"]', { timeout: 5_000 });
+  await p1.waitForSelector('[data-testid="cache-scope-deep"]', { timeout: 5_000 });
+  await p1.waitForSelector('[data-testid="diagnostics-health-card"]', { timeout: 5_000 });
+  await p1.waitForSelector('[data-testid="diagnostics-refresh-btn"]', { timeout: 5_000 });
   await p1.waitForSelector('[data-testid="gdi-restore-card"]', { timeout: 5_000 });
   await p1.waitForSelector('[data-testid="purge-non-google-btn"]', { timeout: 5_000 });
   await p1.waitForSelector('[data-testid="prefer-static-faces-switch"]', { timeout: 5_000 });
-  await p1.waitForSelector('[data-testid="hkcu-registry-sync-switch"]', { timeout: 5_000 });
+  const hkcuEl = await p1.waitForSelector('[data-testid="hkcu-registry-sync-switch"]', { timeout: 5_000 });
+  assert.equal(await hkcuEl.isDisabled(), true, "HKCU switch must be locked ON in Zero-RAM Instant mode");
   await p1.waitForSelector('[data-testid="backup-restore-card"]', { timeout: 5_000 });
   await p1.waitForSelector('[data-testid="export-backup-btn"]', { timeout: 5_000 });
   await p1.waitForSelector('[data-testid="import-backup-btn"]', { timeout: 5_000 });
   await p1.waitForSelector('[data-testid="dwrite-engine-card"]', { timeout: 5_000 });
+  const diagText = await p1.locator('[data-testid="diagnostics-health-card"]').innerText();
+  assert.ok(diagText.includes("Mode:") && diagText.includes("HKCU entries:"), `Expected Diagnostics stats, got: ${diagText}`);
   const engineCardText = await p1.locator('[data-testid="dwrite-engine-card"]').innerText();
   assert.ok(
     engineCardText.includes("Fontations") && engineCardText.includes("HarfRust") && engineCardText.includes("Win32 Session Table"),
@@ -221,7 +231,7 @@ try {
   await p1.waitForTimeout(300);
   await p1.keyboard.press("Escape");
 
-  // Notification Center Bell icon recorded the temp-clean toast & uses scrollable list
+  // Notification Center Bell icon recorded the cache hygiene toast & uses scrollable list
   await p1.click('[data-testid="notifications-open"]');
   await p1.waitForSelector('[data-testid="notifications-popover"]', { timeout: 5_000 });
   const notifInfo = await p1.evaluate(() => {
@@ -232,7 +242,10 @@ try {
       overflowY: list ? getComputedStyle(list).overflowY : "",
     };
   });
-  assert.ok(notifInfo.text.includes("Temp cache") || notifInfo.text.includes("temporary"), `Expected recorded toast in Notification Center, got: ${notifInfo.text}`);
+  assert.ok(
+    notifInfo.text.includes("Font caches") || notifInfo.text.includes("Temp cache") || notifInfo.text.includes("temporary"),
+    `Expected recorded cache toast in Notification Center, got: ${notifInfo.text}`,
+  );
   assert.equal(notifInfo.overflowY, "auto", `Expected scrollable notifications list, got overflowY=${notifInfo.overflowY}`);
   await p1.keyboard.press("Escape");
 
@@ -537,6 +550,19 @@ try {
   assert.equal(typeof cdnCheck?.upToDate, "number");
   assert.ok(Array.isArray(cdnCheck?.outdatedFamilies));
   assert.ok(Array.isArray(cdnCheck?.incompleteFamilies));
+
+  // Verify v2.6.0 live diagnostics & universal font cache scanner commands
+  const [diagSnap, cacheScan] = await p2.evaluate(() =>
+    Promise.all([
+      window.__TAURI_INTERNALS__.invoke("get_diagnostics_snapshot", { scope: "standard" }),
+      window.__TAURI_INTERNALS__.invoke("scan_font_caches", { scope: "standard" }),
+    ]),
+  );
+  assert.equal(typeof diagSnap?.hkcuEntryCount, "number");
+  assert.equal(typeof diagSnap?.protocolCacheEntries, "number");
+  assert.equal(typeof diagSnap?.rendererCacheEntries, "number");
+  assert.equal(typeof cacheScan?.totalFiles, "number");
+  assert.ok(Array.isArray(cacheScan?.providers) && cacheScan.providers.length >= 1);
   const dlProgAfterCheck = await p2.evaluate(() =>
     window.__TAURI_INTERNALS__.invoke("google_download_progress"),
   );

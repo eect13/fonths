@@ -172,12 +172,11 @@ export const SkiaFontCanvas = memo(function SkiaFontCanvas({
           if (pendingRef.current) return;
           const canvas = canvasRef.current;
           if (!canvas) return;
-          const buffer = frame.pixels;
           canvas.width = frame.width;
           canvas.height = frame.height;
           const ctx = canvas.getContext("2d");
           if (!ctx) return;
-          const imageData = new ImageData(new Uint8ClampedArray(buffer), frame.width, frame.height);
+          const imageData = new ImageData(frame.pixels, frame.width, frame.height);
           ctx.putImageData(imageData, 0, 0);
           const nextCssH = Math.max(minHeight, Math.ceil(frame.height / reqDpr));
           setCssHeight(nextCssH);

@@ -7,6 +7,7 @@ pub mod scanner;
 mod activate;
 mod delete_ops;
 mod fast_parse;
+pub mod font_cache;
 mod google_cdn;
 mod meta_index;
 // Some sfnt/pacer helpers are only exercised by tests and live checks.
@@ -150,7 +151,12 @@ fn set_desktop_prefs(
     let _ = apply_start_with_windows(start_with_windows, minimized);
     activate::set_prefer_static_faces(prefer_static_faces.unwrap_or(false));
     activate::set_fast_session_resume(fast_session_resume.unwrap_or(true));
-    let hkcu = hkcu_registry_sync.unwrap_or(true);
+    // Zero-RAM Instant mode requires HKCU per-user font registration to keep fonts live with 0 MB RAM.
+    let hkcu = if ACTIVATION_MODE.load(Ordering::SeqCst) == 0 {
+        true
+    } else {
+        hkcu_registry_sync.unwrap_or(true)
+    };
     let prev_hkcu = session_stage::hkcu_sync_enabled();
     session_stage::set_hkcu_sync_enabled(hkcu);
     if prev_hkcu != hkcu {
@@ -489,8 +495,15 @@ pub fn run() {
                     true,
                     None::<&str>,
                 )?;
-                let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-                let menu = Menu::with_items(app, &[&show, &folder, &cancel_docs, &quit])?;
+                let close_ui = MenuItem::with_id(
+                    app,
+                    "close_ui",
+                    "Close UI (keep fonts active)",
+                    true,
+                    None::<&str>,
+                )?;
+                let quit = MenuItem::with_id(app, "quit", "Quit & unload all fonts", true, None::<&str>)?;
+                let menu = Menu::with_items(app, &[&show, &folder, &cancel_docs, &close_ui, &quit])?;
 
                 let icon = app
                     .default_window_icon()
@@ -509,6 +522,25 @@ pub fn run() {
                         }
                         "cancel_docs_refresh" => {
                             activate::request_docs_vf_cancel_native(app.clone());
+                        }
+                        "close_ui" => {
+                            if activate::sandbox_active() {
+                                if let Some(win) = app.get_webview_window("main") {
+                                    let _ = win.hide();
+                                }
+                                set_tray_tooltip(app, "Fonths — running in background");
+                            } else {
+                                match ACTIVATION_MODE.load(Ordering::SeqCst) {
+                                    1 => handoff_to_daemon_and_exit(app),
+                                    2 => {
+                                        if let Some(win) = app.get_webview_window("main") {
+                                            let _ = win.hide();
+                                        }
+                                        set_tray_tooltip(app, "Fonths — running in background");
+                                    }
+                                    _ => exit_preserving_active_fonts(app),
+                                }
+                            }
                         }
                         "quit" => quit_gracefully(app),
                         _ => {}
@@ -584,6 +616,9 @@ pub fn run() {
             activate::list_leftover_stage_files,
             activate::recycle_leftover_stage_files,
             activate::cleanup_temp_stage_files,
+            font_cache::scan_font_caches,
+            font_cache::clean_font_caches,
+            font_cache::get_diagnostics_snapshot,
             activate::fetch_live_google_catalog,
             activate::fetch_live_google_catalog_conditional,
             activate::check_google_cdn_updates,
@@ -602,6 +637,7 @@ pub fn run() {
             parse::hash_font_paths,
             parse::index_font_paths,
             parse::diff_font_bytes,
+            parse::diff_font_paths,
             parse::list_system_fonts,
             parse::open_system_fonts_folder,
         ])

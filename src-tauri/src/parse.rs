@@ -899,6 +899,31 @@ pub fn diff_font_bytes_blocking(left: Vec<u8>, right: Vec<u8>) -> DiffOut {
     nearly_same(&left, &right)
 }
 
+#[tauri::command]
+pub async fn diff_font_paths(path_a: String, path_b: String) -> Result<DiffOut, String> {
+    tauri::async_runtime::spawn_blocking(move || diff_font_paths_blocking(&path_a, &path_b))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+pub fn diff_font_paths_blocking(path_a: &str, path_b: &str) -> Result<DiffOut, String> {
+    const MAX_DIFF_BYTES: u64 = 16 * 1024 * 1024;
+    let read_capped = |raw: &str| -> Result<Vec<u8>, String> {
+        let mut file = crate::fast_parse::open_shared_read(Path::new(raw))
+            .map_err(|e| format!("open failed: {e}"))?;
+        let len = file.metadata().map_err(|e| e.to_string())?.len();
+        if len > MAX_DIFF_BYTES {
+            return Err("font file exceeds 16 MB diff limit".into());
+        }
+        let mut buf = Vec::with_capacity(len as usize);
+        file.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+        Ok(buf)
+    };
+    let a = read_capped(path_a)?;
+    let b = read_capped(path_b)?;
+    Ok(nearly_same(&a, &b))
+}
+
 #[derive(Serialize, Clone)]
 pub struct SystemFontOut {
     pub family: String,

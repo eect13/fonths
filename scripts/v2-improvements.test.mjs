@@ -421,7 +421,7 @@ test("13. Fonths 2.0.0 Skia + Fontations + Windows Activator replaces DirectWrit
   const inspectorTsx = readFileSync(join(process.cwd(), "src/components/font-studio/font-inspector.tsx"), "utf8");
   const appShellTsx = readFileSync(join(process.cwd(), "src/components/font-studio/app-shell.tsx"), "utf8");
 
-  assert.match(cargoToml, /version = "2\.5\.0"/);
+  assert.match(cargoToml, /version = "2\.\d+\.\d+"/);
   assert.doesNotMatch(cargoToml, /skia-safe/);
   assert.match(cargoToml, /read-fonts/);
   assert.match(cargoToml, /skrifa/);
@@ -467,7 +467,7 @@ test("13. Fonths 2.0.0 Skia + Fontations + Windows Activator replaces DirectWrit
     assert.match(perms, new RegExp(`"${cmd}"`));
   }
 
-  assert.match(canvasTsx, /new ImageData\(new Uint8ClampedArray\(buffer\)/);
+  assert.match(canvasTsx, /new ImageData\(frame\.pixels/);
   assert.match(canvasTsx, /ctx\.putImageData/);
   assert.match(inspectorTsx, /<SkiaFontCanvas/);
   assert.doesNotMatch(appShellTsx, /Skia Studio/);
@@ -513,7 +513,7 @@ test("14. Live Skia Inspector (italic/weight/auto-height/scroll), watched dedupe
   assert.match(activateRs, /fn rotated_stage_path/);
   assert.match(activateRs, /fn copy_with_lock_retry/);
   assert.match(libRs, /start_minimized: Option<bool>/);
-  assert.match(settingsTsx, /data-testid="run-in-background-switch"/);
+  assert.match(settingsTsx, /data-testid="activation-mode-group"/);
   assert.match(settingsTsx, /data-testid="start-minimized-switch"/);
 });
 
@@ -625,7 +625,7 @@ test("18. Fonths 2.3.0 daemon hardening, RTL/fallback/color Fontations renderer,
   // 1. Default HKCU registry sync preference + coercion
   assert.equal(DEFAULT_DESKTOP_PREFS.hkcuRegistrySync, true);
   assert.equal(coerceDesktopPrefs({}).hkcuRegistrySync, true);
-  assert.equal(coerceDesktopPrefs({ hkcuRegistrySync: false }).hkcuRegistrySync, false);
+  assert.equal(coerceDesktopPrefs({ activationMode: "daemon-tray", hkcuRegistrySync: false }).hkcuRegistrySync, false);
 
   // 2. JSON Backup & Restore roundtrip, validation, and non-activation guarantee
   const snapshot = buildLibraryBackup({
@@ -636,7 +636,7 @@ test("18. Fonths 2.3.0 daemon hardening, RTL/fallback/color Fontations renderer,
     featurePrefs: { "g:Inter": { liga: true, smcp: false } },
     previewAxes: { "g:Inter": { wght: 650 } },
     autoHideDuplicates: true,
-    desktopPrefs: { ...DEFAULT_DESKTOP_PREFS, hkcuRegistrySync: false, deleteMode: "permanent" },
+    desktopPrefs: { ...DEFAULT_DESKTOP_PREFS, activationMode: "daemon-tray", hkcuRegistrySync: false, deleteMode: "permanent" },
   });
   assert.equal(snapshot.version, FONTHS_BACKUP_VERSION);
   assert.equal(snapshot.app, "Fonths");
@@ -734,7 +734,7 @@ test("19. Fonths 2.4.0 instant two-wave startup, ETag/304 Ask-Before-Sync Google
 
   // 1. Rust 2024 edition & modular backend/frontend files
   assert.match(cargoToml, /edition\s*=\s*"2024"/);
-  assert.match(cargoToml, /version\s*=\s*"2\.(4|5)\.0"/);
+  assert.match(cargoToml, /version\s*=\s*"2\.(4|5|6)\.0"/);
   for (const rel of [
     "src-tauri/src/activate/mod.rs",
     "src-tauri/src/activate/winfont.rs",
@@ -777,7 +777,7 @@ test("19. Fonths 2.4.0 instant two-wave startup, ETag/304 Ask-Before-Sync Google
   assert.match(gfsourceRs, /CDN_MIN_SPACING/);
   assert.match(gfsourceRs, /is_cdn_binary_url/);
   assert.match(gfsourceRs, /cache_fresh_for_revision/);
-  assert.match(gfsourceRs, /Fonths\/2\.(4|5)/);
+  assert.match(gfsourceRs, /Fonths\/2\.(4|5|6)/);
   assert.match(googleApiTs, /checkGoogleCdnUpdates/);
   assert.match(googleApiTs, /label:\s*"Sync now"/);
   assert.match(googleApiTs, /if \(syncFiles\)/);
@@ -816,7 +816,7 @@ test("20. Fonths 2.5.0 Rust 1.100, Zero-RAM persistent HKCU activation, WebView2
   const watchTs = readFileSync(join(process.cwd(), "src/lib/fonts/watch-folder.ts"), "utf8");
 
   // A1. Rust 1.100 + unused_dependencies + std::mem::DropGuard
-  assert.match(cargoToml, /version\s*=\s*"2\.5\.0"/);
+  assert.match(cargoToml, /version\s*=\s*"2\.(5|6)\.0"/);
   assert.match(cargoToml, /rust-version\s*=\s*"1\.100"/);
   assert.match(cargoToml, /unused_dependencies\s*=\s*"warn"/);
   assert.match(modRs, /std::mem::DropGuard/);
@@ -874,4 +874,84 @@ test("20. Fonths 2.5.0 Rust 1.100, Zero-RAM persistent HKCU activation, WebView2
   assert.match(dupEngineTs, /nativeHashFontPaths/);
   assert.match(cssExportTsx, /if \(!open\) return \{ fonts: \[\], systemSkipped: 0 \}/);
   assert.match(watchTs, /filterOriginPathsByRule\(dedupedFresh,\s*root,\s*folder\.importFilter,\s*useFontStore\.getState\(\)\.localFonts\)/);
+});
+
+test("21. Fonths 2.6.0 audit hardening, universal modular font cache cleanup, diagnostics & folder toggle", () => {
+  const pkgJson = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8"));
+  const tauriConf = JSON.parse(readFileSync(join(process.cwd(), "src-tauri/tauri.conf.json"), "utf8"));
+  const cargoToml = readFileSync(join(process.cwd(), "src-tauri/Cargo.toml"), "utf8");
+  assert.equal(pkgJson.version, "2.6.0");
+  assert.equal(tauriConf.version, "2.6.0");
+  assert.match(cargoToml, /version\s*=\s*"2\.6\.0"/);
+
+  const libRs = readFileSync(join(process.cwd(), "src-tauri/src/lib.rs"), "utf8");
+  const fontProtoRs = readFileSync(join(process.cwd(), "src-tauri/src/font_protocol.rs"), "utf8");
+  const rendererRs = readFileSync(join(process.cwd(), "src-tauri/src/renderer.rs"), "utf8");
+  const fontCacheRs = readFileSync(join(process.cwd(), "src-tauri/src/font_cache.rs"), "utf8");
+  const metaIndexRs = readFileSync(join(process.cwd(), "src-tauri/src/meta_index.rs"), "utf8");
+  const parseRs = readFileSync(join(process.cwd(), "src-tauri/src/parse.rs"), "utf8");
+  const perms = readFileSync(join(process.cwd(), "src-tauri/permissions/font-activate.toml"), "utf8");
+
+  const prefsTs = readFileSync(join(process.cwd(), "src/lib/desktop/prefs.ts"), "utf8");
+  const settingsTsx = readFileSync(join(process.cwd(), "src/components/font-studio/desktop-settings.tsx"), "utf8");
+  const folderTreeTsx = readFileSync(join(process.cwd(), "src/components/font-studio/folder-tree.tsx"), "utf8");
+  const loaderTs = readFileSync(join(process.cwd(), "src/lib/fonts/loader.ts"), "utf8");
+  const glyphMapTs = readFileSync(join(process.cwd(), "src/lib/fonts/glyph-map.ts"), "utf8");
+  const inspectorTsx = readFileSync(join(process.cwd(), "src/components/font-studio/font-inspector.tsx"), "utf8");
+  const canvasTsx = readFileSync(join(process.cwd(), "src/components/font-studio/skia-font-canvas.tsx"), "utf8");
+  const storeTs = readFileSync(join(process.cwd(), "src/lib/fonts/store.ts"), "utf8");
+  const dupEngineTs = readFileSync(join(process.cwd(), "src/lib/fonts/store/duplicate-engine.ts"), "utf8");
+  const dupFinderTsx = readFileSync(join(process.cwd(), "src/components/font-studio/duplicate-finder.tsx"), "utf8");
+  const activeGuardTsx = readFileSync(join(process.cwd(), "src/components/font-studio/active-set-guard.tsx"), "utf8");
+  const notifTsx = readFileSync(join(process.cwd(), "src/components/font-studio/notification-center.tsx"), "utf8");
+
+  // 1. Unified activation mode + locked Zero-RAM HKCU sync + Tray clarity
+  assert.match(libRs, /Close UI \(keep fonts active\)/);
+  assert.match(libRs, /Quit & unload all fonts/);
+  assert.match(prefsTs, /export type CacheCleanScope/);
+  assert.equal(coerceDesktopPrefs({ activationMode: "instant-zero-ram", hkcuRegistrySync: false }).hkcuRegistrySync, true);
+  assert.equal(coerceDesktopPrefs({ activationMode: "daemon-tray", hkcuRegistrySync: false }).hkcuRegistrySync, false);
+  assert.match(settingsTsx, /disabled=\{zeroRamLocked\}/);
+
+  // 2. Windows file lock + protocol cache-control + Fontations eviction
+  assert.match(fontProtoRs, /open_shared_read/);
+  assert.match(fontProtoRs, /"no-cache"/);
+  assert.match(fontProtoRs, /pub fn cache_len/);
+  assert.match(rendererRs, /open_shared_read/);
+  assert.match(rendererRs, /pub fn evict_path/);
+  assert.match(rendererRs, /pub fn evict_dir/);
+  assert.match(rendererRs, /pub fn cache_len/);
+
+  // 3. Universal software-agnostic modular font cache hygiene & live diagnostics
+  for (const pid of ["\"adobe\"", "\"figma\"", "\"affinity\"", "\"corel\"", "\"office-suite\"", "\"fonths-stage\""]) {
+    assert.ok(fontCacheRs.includes(pid), `Missing cache provider ${pid}`);
+  }
+  assert.match(fontCacheRs, /CreateToolhelp32Snapshot/);
+  assert.match(fontCacheRs, /CacheCleanScope/);
+  assert.match(libRs, /font_cache::scan_font_caches/);
+  assert.match(libRs, /font_cache::clean_font_caches/);
+  assert.match(libRs, /font_cache::get_diagnostics_snapshot/);
+  assert.match(perms, /"scan_font_caches"/);
+  assert.match(perms, /"clean_font_caches"/);
+  assert.match(perms, /"get_diagnostics_snapshot"/);
+  assert.match(settingsTsx, /data-testid="diagnostics-health-card"/);
+  assert.match(settingsTsx, /data-testid="font-cache-hygiene-card"/);
+  assert.match(settingsTsx, /data-testid=\{`cache-scope-\$\{opt\.id\}`\}/);
+
+  // 4. Memory leaks, SuperSearch, Duplicates & Watched Folder toggle
+  assert.match(loaderTs, /const LOCAL_FACE_LRU = 512/);
+  assert.doesNotMatch(glyphMapTs, /fm-glyphs-/);
+  assert.match(inspectorTsx, /applyBulkMetadataIndex/);
+  assert.doesNotMatch(canvasTsx, /new Uint8ClampedArray\(buffer\)/);
+  assert.match(storeTs, /prev\.metrics && !font\.metrics/);
+  assert.match(metaIndexRs, /extra_paths:\s*Option<Vec<\(String,\s*String\)>>/);
+  assert.match(parseRs, /pub async fn diff_font_paths/);
+  assert.match(perms, /"diff_font_paths"/);
+  assert.match(dupEngineTs, /diffFontPaths/);
+  assert.match(dupFinderTsx, /patchLocalChecksums/);
+  assert.match(dupFinderTsx, /st\.activatedSet\?\.has\(id\) \|\| st\.pendingSet\?\.has\(id\)/);
+  assert.match(folderTreeTsx, /data-testid=\{`folder-toggle-\$\{folder\.id\}`\}/);
+  assert.match(folderTreeTsx, /fontIds\.length > 100/);
+  assert.match(activeGuardTsx, /GUARD_DISMISSED_KEY/);
+  assert.match(notifTsx, /30_000/);
 });

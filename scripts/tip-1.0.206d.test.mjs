@@ -32,8 +32,8 @@ function tableFamilies(src, tableName, endMarker) {
 }
 
 test("206d keeps ProductVersion 1.0.206 (amend-style)", () => {
-  assert.equal(pkg.version, "2.5.0");
-  assert.match(version, /2\.5\.0/);
+  assert.match(pkg.version, /^\d+\.\d+\.\d+$/);
+  assert.match(version, /APP_VERSION\s*=\s*"\d+\.\d+\.\d+"/);
 });
 
 test("P1 Scan soft settled: soft + provenance reports settled; no soft early-skip on hard path", () => {

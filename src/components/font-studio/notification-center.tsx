@@ -1,5 +1,5 @@
 import { AlertCircle, AlertTriangle, Bell, Check, CheckCircle2, Copy, Info, Trash2, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -39,6 +39,16 @@ export function NotificationCenter() {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState<"all" | "issues">("all");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [, setTimeTick] = useState(0);
+
+  useEffect(() => {
+    if (!open) return;
+    setTimeTick((n) => n + 1);
+    const timer = window.setInterval(() => {
+      setTimeTick((n) => n + 1);
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [open]);
   const unread = items.filter((n) => !n.read).length;
   const issueCount = items.filter((n) => n.kind === "error" || n.kind === "warning").length;
   const shown = filter === "issues" ? items.filter((n) => n.kind === "error" || n.kind === "warning") : items;

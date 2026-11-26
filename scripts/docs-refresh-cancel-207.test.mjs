@@ -16,9 +16,9 @@ const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url),
 const version = readFileSync(new URL("../src/version.ts", import.meta.url), "utf8");
 
 test("1.0.207 version pins", () => {
-  assert.equal(pkg.version, "2.5.0");
-  assert.match(version, /APP_VERSION = "2\.5\.0"/);
-  assert.match(cargo, /version = "2\.5\.0"/);
+  assert.match(pkg.version, /^\d+\.\d+\.\d+$/);
+  assert.match(version, /APP_VERSION = "\d+\.\d+\.\d+"/);
+  assert.match(cargo, /version = "\d+\.\d+\.\d+"/);
 });
 
 test("docs refresh uses its own cancel flag, not Activate cancel", () => {

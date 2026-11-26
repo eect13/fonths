@@ -194,7 +194,9 @@ export function DuplicateFinder() {
     if (!hydrated) return;
     let cancelled = false;
     setScanning(true);
-    void findDuplicates(localFonts, googleFonts, systemFonts)
+    void findDuplicates(localFonts, googleFonts, systemFonts, (updates) => {
+      if (!cancelled) useFontStore.getState().patchLocalChecksums(updates);
+    })
       .then((next) => {
         if (cancelled) return;
         setGroups(next);
@@ -220,7 +222,14 @@ export function DuplicateFinder() {
     }
     const hide = hideIdsFromDuplicateGroups(groups);
     useFontStore.setState({ duplicateHideIds: hide });
-    if (hide.length) useFontStore.getState().setActivatedMany(hide, false);
+    if (hide.length) {
+      const st = useFontStore.getState();
+      const activeHide =
+        st.activatedSet || st.pendingSet
+          ? hide.filter((id) => st.activatedSet?.has(id) || st.pendingSet?.has(id))
+          : hide;
+      if (activeHide.length) st.setActivatedMany(activeHide, false);
+    }
   }, [hydrated, autoHide, groups]);
 
   useEffect(() => {

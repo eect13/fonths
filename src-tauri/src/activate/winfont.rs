@@ -242,6 +242,14 @@ pub mod winfont {
         crate::session_stage::hkcu_session::clear_all(super::sandbox_active());
     }
 
+    pub fn count_hkcu_session_entries() -> usize {
+        crate::session_stage::hkcu_session::list_fm_entries(super::sandbox_active()).len()
+    }
+
+    pub fn prune_stale_hkcu_session_entries(dry_run: bool) -> (usize, usize) {
+        crate::session_stage::hkcu_session::prune_stale_entries(dry_run, super::sandbox_active())
+    }
+
     fn forget_map(path: &Path) {
         let gdi = gdi_path_for(path);
         drop_map_file(&gdi);

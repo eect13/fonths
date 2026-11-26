@@ -873,20 +873,6 @@ export function peekGlyphAtlas(id: string) {
   return hit;
 }
 
-async function registerGlyphFace(font: FontRecord, buffer: ArrayBuffer | null): Promise<string> {
-  const fallback = font.cssFamily || font.family;
-  if (!buffer || typeof document === "undefined") return fallback;
-  const name = `fm-glyphs-${font.id.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 48) || "face"}`;
-  try {
-    const face = new FontFace(name, buffer.slice(0), { display: "block" });
-    await face.load();
-    document.fonts.add(face);
-    return name;
-  } catch {
-    return fallback;
-  }
-}
-
 async function buildGlyphAtlas(font: FontRecord): Promise<GlyphAtlas> {
   const hit = cache.get(font.id);
   if (hit) return hit;
@@ -943,7 +929,6 @@ async function buildGlyphAtlas(font: FontRecord): Promise<GlyphAtlas> {
     entries = await entriesFromRenderedFace(font.cssFamily || font.family);
   }
   const faceName = font.cssFamily || font.family;
-  void registerGlyphFace(font, buffer);
   const atlas = atlasFromEntries(entries, fromFile, font.family, faceName);
   if (atlas.glyphs.length) rememberAtlas(font.id, atlas);
   return atlas;

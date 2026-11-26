@@ -322,11 +322,91 @@ export type IndexedFamilyMeta = {
   metrics?: NativeMetrics;
 };
 
-export async function indexDownloadedMetadata(): Promise<IndexedFamilyMeta[] | null> {
-  const rows = await invoke<IndexedFamilyMeta[]>("index_downloaded_metadata");
+export async function indexDownloadedMetadata(
+  extraPaths?: [string, string][],
+): Promise<IndexedFamilyMeta[] | null> {
+  const args = extraPaths?.length ? { extraPaths } : undefined;
+  const rows = await invoke<IndexedFamilyMeta[]>("index_downloaded_metadata", args);
   if (!Array.isArray(rows)) return null;
   return rows.map((row) => ({
     ...row,
     axes: row.axes?.length ? snapAxes(row.axes) : row.axes,
   }));
+}
+
+export async function diffFontPaths(
+  pathA: string,
+  pathB: string,
+): Promise<{ near: boolean; diffs: number } | null> {
+  return invoke<{ near: boolean; diffs: number }>("diff_font_paths", { pathA, pathB });
+}
+
+export type CacheCleanScope = "minimal" | "standard" | "deep";
+
+export type CacheProviderPreview = {
+  id: string;
+  label: string;
+  fileCount: number;
+  bytes: number;
+  staleHkcuCount: number;
+  runningProcesses: string[];
+  blockedByRunningApp: boolean;
+  requiresAdmin: boolean;
+  samplePaths: string[];
+};
+
+export type FontCacheScanResult = {
+  scope: CacheCleanScope;
+  totalFiles: number;
+  totalBytes: number;
+  cleanableFiles: number;
+  cleanableBytes: number;
+  staleHkcuCount: number;
+  runningBlockedProviders: string[];
+  providers: CacheProviderPreview[];
+};
+
+export type FontCacheCleanResult = {
+  scope: CacheCleanScope;
+  deletedFiles: number;
+  freedBytes: number;
+  failedFiles: number;
+  prunedHkcu: number;
+  skippedRunningProviders: string[];
+  restartedWindowsFontCache: boolean;
+  broadcastSent: boolean;
+};
+
+export type DiagnosticsSnapshot = {
+  activationMode: string;
+  hkcuEntryCount: number;
+  liveFamilyCount: number;
+  liveFaceCount: number;
+  gdiObjects: number;
+  gdiQuota: number;
+  gdiMapsFileCount: number;
+  gdiMapsBytes: number;
+  protocolCacheEntries: number;
+  rendererCacheEntries: number;
+  detectedCacheFiles: number;
+  detectedCacheBytes: number;
+  elevated: boolean;
+};
+
+export async function scanFontCaches(
+  scope: CacheCleanScope = "standard",
+): Promise<FontCacheScanResult | null> {
+  return invoke<FontCacheScanResult>("scan_font_caches", { scope });
+}
+
+export async function cleanFontCaches(
+  scope: CacheCleanScope = "standard",
+): Promise<FontCacheCleanResult | null> {
+  return invoke<FontCacheCleanResult>("clean_font_caches", { scope });
+}
+
+export async function getDiagnosticsSnapshot(
+  scope: CacheCleanScope = "standard",
+): Promise<DiagnosticsSnapshot | null> {
+  return invoke<DiagnosticsSnapshot>("get_diagnostics_snapshot", { scope });
 }

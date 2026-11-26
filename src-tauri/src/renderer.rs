@@ -21,11 +21,13 @@ use read_fonts::{
 };
 use skrifa::{DrawMemory, HintOptions, RasterTarget, ScalerFont};
 use std::collections::HashMap;
-use std::fs::{self, File};
+use std::io::Read;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
-use std::sync::{mpsc, Arc, Mutex};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
+use std::time::Duration;
 use tauri::State;
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Transform};
 use tokio::sync::oneshot;
@@ -79,6 +81,46 @@ struct RenderRequest {
     reply: oneshot::Sender<Result<Vec<u8>, String>>,
 }
 
+enum WorkerMsg {
+    Render(Box<RenderRequest>),
+    EvictPath(PathBuf, mpsc::Sender<()>),
+    EvictDir(PathBuf, mpsc::Sender<()>),
+}
+
+static WORKER_TX: OnceLock<mpsc::Sender<WorkerMsg>> = OnceLock::new();
+static RENDERER_CACHE_LEN: AtomicUsize = AtomicUsize::new(0);
+
+/// Number of decoded Fontations font faces currently held in the render worker LRU cache.
+pub fn cache_len() -> usize {
+    RENDERER_CACHE_LEN.load(Ordering::Relaxed)
+}
+
+fn normalize_path_str(p: &Path) -> String {
+    p.to_string_lossy().replace('/', "\\").to_ascii_lowercase()
+}
+
+/// Evict a file from the Fontations render worker cache before deleting/moving it on disk.
+pub fn evict_path(path: &Path) {
+    let Some(tx) = WORKER_TX.get() else {
+        return;
+    };
+    let (ack_tx, ack_rx) = mpsc::channel();
+    if tx.send(WorkerMsg::EvictPath(path.to_path_buf(), ack_tx)).is_ok() {
+        let _ = ack_rx.recv_timeout(Duration::from_millis(150));
+    }
+}
+
+/// Evict all cached Fontations entries under `dir` before deleting/recycling a folder.
+pub fn evict_dir(dir: &Path) {
+    let Some(tx) = WORKER_TX.get() else {
+        return;
+    };
+    let (ack_tx, ack_rx) = mpsc::channel();
+    if tx.send(WorkerMsg::EvictDir(dir.to_path_buf(), ack_tx)).is_ok() {
+        let _ = ack_rx.recv_timeout(Duration::from_millis(150));
+    }
+}
+
 /// Output of a single render: raw unpremultiplied RGBA8888 pixels plus their dimensions.
 #[derive(Debug)]
 struct RenderOutput {
@@ -90,7 +132,7 @@ struct RenderOutput {
 /// Tauri managed state wrapping the sender channel to the dedicated Fontations render worker.
 /// Kept as `SkiaRendererState` alias so existing Tauri state management and call sites stay seamless.
 pub struct FontationsRendererState {
-    tx: Mutex<mpsc::Sender<RenderRequest>>,
+    tx: Mutex<mpsc::Sender<WorkerMsg>>,
 }
 
 pub type SkiaRendererState = FontationsRendererState;
@@ -98,7 +140,8 @@ pub type SkiaRendererState = FontationsRendererState;
 impl FontationsRendererState {
     /// Spawn the dedicated background OS thread owning the Fontations LRU font cache.
     pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel::<RenderRequest>();
+        let (tx, rx) = mpsc::channel::<WorkerMsg>();
+        let _ = WORKER_TX.set(tx.clone());
         thread::Builder::new()
             .name("fonths-fontations-renderer".into())
             .spawn(move || run_render_loop(rx))
@@ -114,10 +157,10 @@ impl FontationsRendererState {
                 .lock()
                 .map_err(|_| "Fontations renderer mutex poisoned".to_string())?;
             guard
-                .send(RenderRequest {
+                .send(WorkerMsg::Render(Box::new(RenderRequest {
                     params,
                     reply: reply_tx,
-                })
+                })))
                 .map_err(|_| "Fontations render worker channel closed".to_string())?;
         }
         reply_rx
@@ -250,11 +293,11 @@ fn face_style_from_bytes(bytes: &[u8]) -> Option<FaceStyle> {
 }
 
 fn read_face_style(path: &str) -> Option<FaceStyle> {
-    let file = File::open(path).ok()?;
+    let file = crate::fast_parse::open_shared_read(Path::new(path)).ok()?;
     if file.metadata().ok()?.len() < 12 {
         return None;
     }
-    // SAFETY: read-only map of an on-disk font file; only immutable reads are performed.
+    // SAFETY: read-only map of an on-disk font file opened with FILE_SHARE_DELETE; only immutable reads are performed.
     let mmap = unsafe { Mmap::map(&file) }.ok()?;
     face_style_from_bytes(&mmap)
 }
@@ -340,7 +383,11 @@ fn pick_face(candidates: &[(String, Option<FaceStyle>)], weight: f32, italic: bo
 }
 
 fn load_font_from_path(path: &str) -> Result<FontationsFont, String> {
-    let raw = fs::read(path).map_err(|e| format!("Failed to read font '{path}': {e}"))?;
+    let mut file = crate::fast_parse::open_shared_read(Path::new(path))
+        .map_err(|e| format!("Failed to read font '{path}': {e}"))?;
+    let mut raw = Vec::new();
+    file.read_to_end(&mut raw)
+        .map_err(|e| format!("Failed to read font '{path}': {e}"))?;
     if raw.len() < 12 {
         return Err(format!("Font file too small: '{path}'"));
     }
@@ -453,7 +500,7 @@ fn load_system_fallback_fonts() -> Vec<FontationsFont> {
         ];
         for name in candidates {
             let p: PathBuf = fonts_dir.join(name);
-            let Ok(file) = File::open(&p) else {
+            let Ok(file) = crate::fast_parse::open_shared_read(&p) else {
                 continue;
             };
             let Ok(meta) = file.metadata() else {
@@ -811,7 +858,64 @@ impl Worker {
         }
         let f = load_font_from_path(path)?;
         self.fonts.put(path.to_string(), f.clone());
+        RENDERER_CACHE_LEN.store(self.fonts.len(), Ordering::Relaxed);
         Ok(f)
+    }
+
+    fn evict_path(&mut self, path: &Path) {
+        let target = normalize_path_str(path);
+        let font_keys: Vec<String> = self
+            .fonts
+            .iter()
+            .filter(|(k, _)| normalize_path_str(Path::new(k.as_str())) == target)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in font_keys {
+            self.fonts.pop(&k);
+        }
+        let style_keys: Vec<String> = self
+            .styles
+            .iter()
+            .filter(|(k, _)| normalize_path_str(Path::new(k.as_str())) == target)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in style_keys {
+            self.styles.pop(&k);
+        }
+        RENDERER_CACHE_LEN.store(self.fonts.len(), Ordering::Relaxed);
+    }
+
+    fn evict_dir(&mut self, dir: &Path) {
+        let mut prefix = normalize_path_str(dir);
+        if !prefix.ends_with('\\') {
+            prefix.push('\\');
+        }
+        let trimmed = prefix.trim_end_matches('\\');
+        let font_keys: Vec<String> = self
+            .fonts
+            .iter()
+            .filter(|(k, _)| {
+                let norm = normalize_path_str(Path::new(k.as_str()));
+                norm.starts_with(&prefix) || norm == trimmed
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in font_keys {
+            self.fonts.pop(&k);
+        }
+        let style_keys: Vec<String> = self
+            .styles
+            .iter()
+            .filter(|(k, _)| {
+                let norm = normalize_path_str(Path::new(k.as_str()));
+                norm.starts_with(&prefix) || norm == trimmed
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in style_keys {
+            self.styles.pop(&k);
+        }
+        RENDERER_CACHE_LEN.store(self.fonts.len(), Ordering::Relaxed);
     }
 
     fn render(&mut self, p: &RenderParams) -> Result<RenderOutput, String> {
@@ -1086,12 +1190,20 @@ fn encode_output(out: RenderOutput, with_header: bool) -> Vec<u8> {
     buf
 }
 
-fn run_render_loop(rx: mpsc::Receiver<RenderRequest>) {
+fn run_render_loop(rx: mpsc::Receiver<WorkerMsg>) {
     let mut worker = Worker::new(FONT_CACHE_CAPACITY);
     while let Ok(first) = rx.recv() {
-        let mut batch = vec![first];
+        let mut batch: Vec<RenderRequest> = Vec::new();
+        let mut evictions: Vec<WorkerMsg> = Vec::new();
+        match first {
+            WorkerMsg::Render(req) => batch.push(*req),
+            ev => evictions.push(ev),
+        }
         while let Ok(more) = rx.try_recv() {
-            batch.push(more);
+            match more {
+                WorkerMsg::Render(req) => batch.push(*req),
+                ev => evictions.push(ev),
+            }
         }
         for req in coalesce_latest(batch) {
             let with_header = req.params.auto_height;
@@ -1099,6 +1211,19 @@ fn run_render_loop(rx: mpsc::Receiver<RenderRequest>) {
                 .unwrap_or_else(|_| Err("Fontations render panicked".to_string()))
                 .map(|out| encode_output(out, with_header));
             let _ = req.reply.send(res);
+        }
+        for ev in evictions {
+            match ev {
+                WorkerMsg::EvictPath(p, ack) => {
+                    worker.evict_path(&p);
+                    let _ = ack.send(());
+                }
+                WorkerMsg::EvictDir(d, ack) => {
+                    worker.evict_dir(&d);
+                    let _ = ack.send(());
+                }
+                WorkerMsg::Render(_) => {}
+            }
         }
     }
 }
@@ -1465,5 +1590,25 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(res.unwrap_err(), COLOR_FONT_DOM_FALLBACK);
+    }
+
+    #[test]
+    fn worker_evict_path_and_dir_clear_font_and_style_caches() {
+        let mut worker = Worker::new(8);
+        let p = fixture("Figtree-wght.ttf");
+        let _ = worker.font(&p).expect("load fixture");
+        assert!(worker.style_of(&p).is_some());
+        assert_eq!(worker.fonts.len(), 1);
+        assert!(cache_len() >= 1);
+
+        worker.evict_path(Path::new(&p));
+        assert_eq!(worker.fonts.len(), 0);
+        assert_eq!(worker.styles.len(), 0);
+
+        let _ = worker.font(&p).expect("reload fixture");
+        let dir = Path::new(&p).parent().unwrap();
+        worker.evict_dir(dir);
+        assert_eq!(worker.fonts.len(), 0);
+        assert_eq!(cache_len(), 0);
     }
 }

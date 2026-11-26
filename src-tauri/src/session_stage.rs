@@ -347,6 +347,19 @@ pub fn is_fm_session_hkcu_value_name(name: &str) -> bool {
     name.contains("[FM-Session-")
 }
 
+/// Pure predicate for stale `HKCU\...\Fonts` entries managed by Fonths.
+pub fn is_stale_hkcu_entry(name: &str, value_path: &str) -> bool {
+    if !is_fm_session_hkcu_value_name(name) {
+        return false;
+    }
+    let trimmed = value_path.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let p = Path::new(trimmed);
+    !must_not_register_as_gdi_path(p) && !p.is_file()
+}
+
 /// Temporary per-user HKCU session registration under
 /// `HKCU\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts` pointing to
 /// `%LOCALAPPDATA%\Font Manager\gdi-maps\<file>`, enabling DirectWrite and
@@ -730,6 +743,45 @@ pub mod hkcu_session {
             RegCloseKey(hkey);
         }
     }
+
+    /// Inspect all `Fonths [FM-Session-*]` registry entries whose target stage file
+    /// no longer exists on disk, optionally deleting them (`!dry_run`).
+    /// Returns `(stale_found, deleted)`.
+    pub fn prune_stale_entries(dry_run: bool, sandbox: bool) -> (usize, usize) {
+        if sandbox {
+            return (0, 0);
+        }
+        let subkey = fonts_subkey();
+        let mut hkey: isize = 0;
+        let desired = if dry_run {
+            KEY_QUERY_VALUE
+        } else {
+            KEY_QUERY_VALUE | KEY_SET_VALUE
+        };
+        unsafe {
+            if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, desired, &mut hkey) != 0 {
+                return (0, 0);
+            }
+            let existing = enum_fm_entries_open(hkey);
+            let stale_names: Vec<String> = existing
+                .iter()
+                .filter(|(name, val)| super::is_stale_hkcu_entry(name, val))
+                .map(|(name, _)| name.clone())
+                .collect();
+            let stale_found = stale_names.len();
+            let mut deleted = 0usize;
+            if !dry_run {
+                for name in stale_names {
+                    let wname = wide_str(&name);
+                    if RegDeleteValueW(hkey, wname.as_ptr()) == 0 {
+                        deleted += 1;
+                    }
+                }
+            }
+            RegCloseKey(hkey);
+            (stale_found, deleted)
+        }
+    }
 }
 
 #[cfg(any(not(windows), test))]
@@ -748,6 +800,9 @@ pub mod hkcu_session {
         (0, 0)
     }
     pub fn clear_all(_sandbox: bool) {}
+    pub fn prune_stale_entries(_dry_run: bool, _sandbox: bool) -> (usize, usize) {
+        (0, 0)
+    }
 }
 
 #[cfg(test)]

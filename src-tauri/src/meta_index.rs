@@ -184,19 +184,22 @@ fn meta_from_layout(family: String, layout: FontLayout) -> IndexedFamilyMeta {
 
 pub fn index_downloaded_metadata_in(
     docs_root: &Path,
+    extra_paths: Option<&[(String, String)]>,
     cache_path: Option<&Path>,
 ) -> Vec<IndexedFamilyMeta> {
-    if !docs_root.is_dir() {
-        return Vec::new();
-    }
-    let dirs = collect_family_dirs(docs_root);
-    if dirs.is_empty() {
+    let dirs = if docs_root.is_dir() {
+        collect_family_dirs(docs_root)
+    } else {
+        Vec::new()
+    };
+    let extras = extra_paths.unwrap_or(&[]);
+    if dirs.is_empty() && extras.is_empty() {
         return Vec::new();
     }
     let mut cache = load_meta_cache(cache_path);
-    let mut hits: Vec<IndexedFamilyMeta> = Vec::with_capacity(dirs.len());
+    let mut hits: Vec<IndexedFamilyMeta> = Vec::with_capacity(dirs.len() + extras.len());
     let mut misses: Vec<(String, String, u64, u64, PathBuf)> = Vec::new();
-    let mut live_keys: HashSet<String> = HashSet::with_capacity(dirs.len());
+    let mut live_keys: HashSet<String> = HashSet::with_capacity(dirs.len() + extras.len());
     let mut dirty = false;
 
     for dir in dirs {
@@ -211,6 +214,32 @@ pub fn index_downloaded_metadata_in(
             continue;
         };
         live_keys.insert(key.clone());
+        if let Some(hit) = cache.get(&key)
+            && hit.mtime == mtime
+            && hit.size == size
+            && hit.row.family.eq_ignore_ascii_case(&family)
+        {
+            hits.push(hit.row.clone());
+            continue;
+        }
+        misses.push((family, key, mtime, size, face_path));
+    }
+
+    for (raw_family, raw_path) in extras {
+        let family = raw_family.trim().to_string();
+        if family.is_empty() || raw_path.trim().is_empty() {
+            continue;
+        }
+        let face_path = PathBuf::from(raw_path);
+        if !face_path.is_file() {
+            continue;
+        }
+        let Some((key, mtime, size)) = path_mtime_size_key(&face_path) else {
+            continue;
+        };
+        if !live_keys.insert(key.clone()) {
+            continue;
+        }
         if let Some(hit) = cache.get(&key)
             && hit.mtime == mtime
             && hit.size == size
@@ -250,14 +279,20 @@ pub fn index_downloaded_metadata_in(
     hits
 }
 
-/// Parallel `rayon` pre-indexer of OS/2, GSUB, and `fvar` metadata across downloaded libraries.
+/// Parallel `rayon` pre-indexer of OS/2, GSUB, and `fvar` metadata across downloaded libraries
+/// and optional watched-folder font paths.
 #[tauri::command]
-pub async fn index_downloaded_metadata(app: AppHandle) -> Result<Vec<IndexedFamilyMeta>, String> {
+pub async fn index_downloaded_metadata(
+    app: AppHandle,
+    extra_paths: Option<Vec<(String, String)>>,
+) -> Result<Vec<IndexedFamilyMeta>, String> {
     let root = activate::documents_root(&app)?;
     let cache = meta_index_cache_path();
-    tauri::async_runtime::spawn_blocking(move || index_downloaded_metadata_in(&root, cache.as_deref()))
-        .await
-        .map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        index_downloaded_metadata_in(&root, extra_paths.as_deref(), cache.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -280,7 +315,7 @@ mod tests {
         fs::write(&fig_path, include_bytes!("../../tests/fixtures/Figtree-wght.ttf")).unwrap();
         fs::write(&inter_path, include_bytes!("../../tests/fixtures/Inter-opsz-wght.ttf")).unwrap();
 
-        let rows1 = index_downloaded_metadata_in(&docs, Some(&cache));
+        let rows1 = index_downloaded_metadata_in(&docs, None, Some(&cache));
         assert_eq!(rows1.len(), 2);
         assert!(cache.is_file(), "cache file must be written on first run");
         let fig = rows1.iter().find(|r| r.family == "Figtree").expect("Figtree indexed");
@@ -291,16 +326,28 @@ mod tests {
         assert!(inter.axes.iter().any(|a| a.tag == "opsz"));
 
         // Second pass hits on-disk cache cleanly even when called again.
-        let rows2 = index_downloaded_metadata_in(&docs, Some(&cache));
+        let rows2 = index_downloaded_metadata_in(&docs, None, Some(&cache));
         assert_eq!(rows2.len(), 2);
         assert_eq!(rows2[0].glyph_count, rows1[0].glyph_count);
 
         // Changing file bytes updates size -> cache entry invalidates and re-parses new face.
         let prev_glyphs = fig.glyph_count;
         fs::write(&fig_path, include_bytes!("../../tests/fixtures/Inter-opsz-wght.ttf")).unwrap();
-        let rows3 = index_downloaded_metadata_in(&docs, Some(&cache));
+        let rows3 = index_downloaded_metadata_in(&docs, None, Some(&cache));
         let fig_after = rows3.iter().find(|r| r.family == "Figtree").unwrap();
         assert_ne!(fig_after.glyph_count, prev_glyphs);
+
+        // External watched-folder face path is also indexed & cached alongside Documents.
+        let watched_path = tmp.join("Watched").join("FigtreeWatched.ttf");
+        fs::create_dir_all(watched_path.parent().unwrap()).unwrap();
+        fs::write(&watched_path, include_bytes!("../../tests/fixtures/Figtree-wght.ttf")).unwrap();
+        let extra = vec![(
+            "Watched Figtree".to_string(),
+            watched_path.to_string_lossy().into_owned(),
+        )];
+        let rows4 = index_downloaded_metadata_in(&docs, Some(&extra), Some(&cache));
+        assert_eq!(rows4.len(), 3);
+        assert!(rows4.iter().any(|r| r.family == "Watched Figtree" && r.variable));
 
         let _ = fs::remove_dir_all(&tmp);
     }
