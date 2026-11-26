@@ -915,7 +915,9 @@ export function FontInspector() {
             </section>
 
             <section className="space-y-1 text-xs text-muted-foreground">
-              {font.fullName && font.fullName !== font.family && <p className="break-words">Name · {font.fullName}</p>}
+              {!font.variable && font.fullName && font.fullName !== font.family && (
+                <p className="break-words">Name · {font.fullName}</p>
+              )}
               <p className="break-words">Family · {font.family}</p>
               {font.originPath && <p className="truncate" title={font.originPath}>Path · {font.originPath}</p>}
               {font.fileName && <p className="break-words">File · {font.fileName}</p>}

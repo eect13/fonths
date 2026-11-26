@@ -9,15 +9,17 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  defaultImportSelection,
+  activeImportPreset,
   filterImportFiles,
   loadSavedImportRule,
+  presetSelection,
   resolveImportOptions,
   selectionFromSavedRule,
   subscribeImportOptions,
   type FontFileFormat,
   type ImportOptionsRequest,
   type ImportOptionsSelection,
+  type ImportPresetId,
   type VarStaticMode,
 } from "@/lib/fonts/import-options";
 import { cn } from "@/lib/utils";
@@ -38,7 +40,7 @@ export function ImportOptionsDialog() {
     return subscribeImportOptions((next) => {
       setReq(next);
       setSelection(
-        next ? selectionFromSavedRule(next.analysis, loadSavedImportRule()) : null,
+        next ? selectionFromSavedRule(next.analysis, next.initialRule ?? loadSavedImportRule()) : null,
       );
     });
   }, []);
@@ -91,53 +93,15 @@ export function ImportOptionsDialog() {
     );
   };
 
-  const applySmartRecommended = () => {
+  const applyPreset = (preset: ImportPresetId) => {
     setSelection((prev) => {
-      const smart = defaultImportSelection(analysis);
-      return prev ? { ...smart, saveAsDefault: prev.saveAsDefault } : smart;
+      const next = presetSelection(analysis, preset);
+      return prev
+        ? { ...next, autoActivate: prev.autoActivate, saveAsDefault: prev.saveAsDefault }
+        : next;
     });
   };
-
-  const applyDesktopOnly = () => {
-    setSelection((prev) =>
-      prev
-        ? {
-            ...prev,
-            includeVariable: true,
-            includeStatic: true,
-            includeItalic: true,
-            formats: {
-              ttf: true,
-              otf: true,
-              ttc: true,
-              woff2: false,
-              woff: false,
-            },
-          }
-        : prev,
-    );
-  };
-
-  const applySelectAll = () => {
-    setSelection((prev) =>
-      prev
-        ? {
-            ...prev,
-            varStaticMode: "both",
-            includeVariable: true,
-            includeStatic: true,
-            includeItalic: true,
-            formats: {
-              ttf: true,
-              otf: true,
-              ttc: true,
-              woff2: true,
-              woff: true,
-            },
-          }
-        : prev,
-    );
-  };
+  const currentPreset = activeImportPreset(analysis, selection);
 
   return (
     <Dialog
@@ -284,29 +248,50 @@ export function ImportOptionsDialog() {
           <section className="space-y-2.5 rounded-lg border border-border p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-xs font-semibold text-foreground">What to import</span>
-              <div className="flex items-center gap-2.5 text-[11px]">
+              <div className="flex flex-wrap items-center gap-1 text-[11px]" role="group" aria-label="Import presets">
                 <button
                   type="button"
-                  className="text-primary underline-offset-2 hover:underline"
-                  onClick={applySmartRecommended}
+                  data-testid="import-preset-smart"
+                  aria-pressed={currentPreset === "smart"}
+                  className={cn(
+                    "rounded-full px-2.5 py-0.5 font-medium transition-colors",
+                    currentPreset === "smart"
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-secondary text-muted-foreground hover:text-foreground",
+                  )}
+                  onClick={() => applyPreset("smart")}
                 >
-                  Smart default
+                  Smart (Recommended)
                 </button>
-                {analysis.hasDesktop && analysis.hasWebOnly ? (
+                {analysis.staticCount > 0 && analysis.hasDesktop ? (
                   <button
                     type="button"
-                    className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-                    onClick={applyDesktopOnly}
+                    data-testid="import-preset-static-desktop"
+                    aria-pressed={currentPreset === "static-desktop"}
+                    className={cn(
+                      "rounded-full px-2.5 py-0.5 font-medium transition-colors",
+                      currentPreset === "static-desktop"
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-secondary text-muted-foreground hover:text-foreground",
+                    )}
+                    onClick={() => applyPreset("static-desktop")}
                   >
-                    Desktop only
+                    Static Desktop
                   </button>
                 ) : null}
                 <button
                   type="button"
-                  className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-                  onClick={applySelectAll}
+                  data-testid="import-preset-all"
+                  aria-pressed={currentPreset === "all"}
+                  className={cn(
+                    "rounded-full px-2.5 py-0.5 font-medium transition-colors",
+                    currentPreset === "all"
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-secondary text-muted-foreground hover:text-foreground",
+                  )}
+                  onClick={() => applyPreset("all")}
                 >
-                  Select all
+                  All Files
                 </button>
               </div>
             </div>

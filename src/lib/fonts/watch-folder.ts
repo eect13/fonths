@@ -248,6 +248,62 @@ export async function addWatchedFolder(): Promise<void> {
   }
 }
 
+/** Re-open Smart Import rules for an existing Watched Folder and apply updated filter rules cleanly (never deletes files on disk). */
+export async function editWatchedFolderRules(collectionId: string): Promise<void> {
+  if (!(await inDesktopShell())) return;
+  const store = useFontStore.getState();
+  const folder = store.collections.find((c) => c.id === collectionId && c.watchPath);
+  if (!folder?.watchPath) return;
+  const root = folder.watchPath;
+
+  const listed = await listWatchFolder(root);
+  if (!listed.paths.length) {
+    toast.message(`${folder.name} has no font files yet`);
+    return;
+  }
+
+  const likes = originPathsToFileLikes(listed.paths, root, listed.sizes);
+  const otherLocals = store.localFonts.filter((f) => !f.originPath || !underWatch(f.originPath, root));
+  const analysis = analyzeImportBatch(likes, otherLocals);
+  const selection = await requestImportOptions(analysis, {
+    mode: "watch",
+    folderLabel: folder.name,
+    initialRule: folder.importFilter,
+  });
+  if (!selection) return;
+
+  const nextRule: SavedImportRule = {
+    ...toSavedImportRule(selection),
+    ...(folder.importFilter?.excludeFamilies?.length
+      ? { excludeFamilies: folder.importFilter.excludeFamilies }
+      : {}),
+  };
+  store.setCollectionImportFilter(folder.id, nextRule);
+  store.setCollectionAutoActivate(folder.id, selection.autoActivate);
+
+  const keptPaths = filterOriginPathsByRule(listed.paths, root, nextRule, otherLocals);
+  const keptSet = new Set(keptPaths.map(norm));
+  const dropIds = useFontStore
+    .getState()
+    .localFonts.filter((f) => f.originPath && underWatch(f.originPath, root) && !keptSet.has(norm(f.originPath)))
+    .map((f) => f.id);
+
+  let removed = 0;
+  if (dropIds.length) {
+    removed = await useFontStore
+      .getState()
+      .removeLocalFontsBatch(dropIds, { deleteFromDisk: false });
+  }
+  clearWatchedFileMemory(root);
+  lastSig = "";
+  await refreshWatchedFolders();
+  toast.success(`Updated import rules for ${folder.name}`, {
+    description: removed > 0
+      ? `Removed ${removed.toLocaleString()} filtered face${removed === 1 ? "" : "s"} from library (files stay untouched on disk).`
+      : "Re-synced watched folder with updated rules.",
+  });
+}
+
 export async function refreshWatchedFolders(): Promise<void> {
   if (inflight) {
     queued = true;

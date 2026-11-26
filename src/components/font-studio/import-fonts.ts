@@ -52,6 +52,8 @@ export async function runFontImport(
     st.googleFonts,
     st.activatedSet,
     st.diskFamilySet,
+    st.localFonts,
+    st.systemFonts,
   );
   if (collisions.length > 0) {
     const choice = await requestImportCollisionChoice(collisions, files.length);

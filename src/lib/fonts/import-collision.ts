@@ -25,7 +25,8 @@ const STYLE_SUFFIX_RE =
 /** Best-effort family name from an uploaded font filename before full SFNT parse. */
 export function guessFamilyFromFileName(fileName: string): string {
   const base = fileName.replace(/\.[^.]+$/, "").trim();
-  let cur = base;
+  // Strip camelCase `Variable` marker (e.g. `InterVariable` / `InterVariable-Italic` -> `Inter`).
+  let cur = base.replace(/([a-z0-9])Variable(?=$|[-_ ]|Italic|Oblique)/g, "$1");
   for (let i = 0; i < 4; i++) {
     const next = cur.replace(STYLE_SUFFIX_RE, "").trim();
     if (next === cur || !next) break;

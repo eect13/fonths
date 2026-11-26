@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
+import { fontDisplayName } from "@/lib/fonts/axes";
 import { formatBytes } from "@/lib/fonts/hash";
 import { cssFamilyStack, evictFamilyPreview, loadFont } from "@/lib/fonts/loader";
 import {
@@ -132,7 +133,7 @@ function DuplicateRow({
     e.preventDefault();
     e.stopPropagation();
     const items: ContextMenuEntry[] = [
-      { kind: "label", text: font.fullName || font.family },
+      { kind: "label", text: fontDisplayName(font) },
     ];
     if (font.source !== "system") {
       items.push({
@@ -389,7 +390,7 @@ export function DuplicateFinder() {
     evictFamilyPreview(target.family);
     if (target.originPath) {
       void ignoreWatchedFont(target.id).then(() => {
-        toast.success(`Hidden ${target.fullName || target.family} from library`, {
+        toast.success(`Hidden ${fontDisplayName(target)} from library`, {
           description: "File stays untouched in your watched folder.",
         });
       });
@@ -398,8 +399,8 @@ export function DuplicateFinder() {
     void removeLocalFont(target.id).then(() => {
       toast.success(
         deleteMode === "permanent"
-          ? `Permanently deleted ${target.fullName || target.family}`
-          : `Moved ${target.fullName || target.family} to Recycle Bin`,
+          ? `Permanently deleted ${fontDisplayName(target)}`
+          : `Moved ${fontDisplayName(target)} to Recycle Bin`,
       );
     });
   }
@@ -578,10 +579,10 @@ export function DuplicateFinder() {
             </DialogTitle>
             <DialogDescription>
               {pendingIsWatched
-                ? `This removes "${pendingRemove?.fullName || pendingRemove?.family}" from Fonths and skips it on watch polls. Your file on disk (${pendingRemove?.originPath}) will NOT be deleted or modified.`
+                ? `This removes "${pendingRemove ? fontDisplayName(pendingRemove) : ""}" from Fonths and skips it on watch polls. Your file on disk (${pendingRemove?.originPath}) will NOT be deleted or modified.`
                 : deleteMode === "permanent"
-                  ? `This will permanently delete "${pendingRemove?.fullName || pendingRemove?.family}" from disk and remove it from your library. This cannot be undone.`
-                  : `This will move "${pendingRemove?.fullName || pendingRemove?.family}" to the Windows Recycle Bin and remove it from your library.`}
+                  ? `This will permanently delete "${pendingRemove ? fontDisplayName(pendingRemove) : ""}" from disk and remove it from your library. This cannot be undone.`
+                  : `This will move "${pendingRemove ? fontDisplayName(pendingRemove) : ""}" to the Windows Recycle Bin and remove it from your library.`}
             </DialogDescription>
           </DialogHeader>
           <div className="fm-dialog-footer">
@@ -620,7 +621,7 @@ export function DuplicateFinder() {
             {redundantLocals.items.slice(0, 60).map((f) => (
               <div key={f.id} className="flex items-center justify-between gap-2 truncate">
                 <span className="min-w-0 truncate">
-                  {f.fullName || f.family}
+                  {fontDisplayName(f)}
                   {f.fileName ? ` · ${f.fileName}` : ""}
                 </span>
                 <span className="shrink-0 font-mono text-[11px] text-muted-foreground">

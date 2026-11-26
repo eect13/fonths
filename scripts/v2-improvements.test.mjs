@@ -966,9 +966,9 @@ test("v2.7.0 thin-preview defaults, multi-weight duplicates, and UI polish contr
   const pkgJson = JSON.parse(readLocal("package.json"));
   const tauriConf = JSON.parse(readLocal("src-tauri/tauri.conf.json"));
   const cargoToml = readLocal("src-tauri/Cargo.toml");
-  assert.equal(pkgJson.version, "2.7.0");
-  assert.equal(tauriConf.version, "2.7.0");
-  assert.match(cargoToml, /version\s*=\s*"2\.7\.0"/);
+  assert.equal(pkgJson.version, tauriConf.version);
+  assert.match(pkgJson.version, /^2\.\d+\.\d+$/);
+  assert.ok(cargoToml.includes(`version = "${pkgJson.version}"`));
 
   // Thin-origin VF (fvar def=100, span 100..900) must default preview to 400 (Regular).
   const thinVf = {
@@ -1051,4 +1051,134 @@ test("v2.7.0 thin-preview defaults, multi-weight duplicates, and UI polish contr
   assert.match(toolbarTsx, /More surfaces/);
   assert.match(gridTsx, /data-testid="manage-uploads-btn"/);
   assert.match(settingsTsx, /Zero-RAM Instant mode, active HKCU fonts are already live at login/);
+});
+
+test("v2.8.0 Smart Import presets, clean VF naming, Variable Italic preview, and Watched Folder rules editor", async () => {
+  const { fontDisplayName, isItalicOnlyFace } = await import("../src/lib/fonts/axes.ts");
+  const {
+    activeImportPreset,
+    analyzeImportBatch,
+    classifyFontFile,
+    filterOriginPathsByRule,
+    presetSelection,
+    selectionFromSavedRule,
+  } = await import("../src/lib/fonts/import-options.ts");
+  const { guessFamilyFromFileName } = await import("../src/lib/fonts/import-collision.ts");
+  const readLocal = (rel) => readFileSync(join(process.cwd(), rel), "utf8");
+
+  // Version bump sync check
+  const pkgJson = JSON.parse(readLocal("package.json"));
+  const tauriConf = JSON.parse(readLocal("src-tauri/tauri.conf.json"));
+  const cargoToml = readLocal("src-tauri/Cargo.toml");
+  assert.equal(pkgJson.version, "2.8.0");
+  assert.equal(tauriConf.version, "2.8.0");
+  assert.match(cargoToml, /version\s*=\s*"2\.8\.0"/);
+
+  // Clean VF naming vs Static full cut name
+  assert.equal(fontDisplayName({ family: "Inter", fullName: "Inter Thin", variable: true }), "Inter");
+  assert.equal(fontDisplayName({ family: "Roboto", fullName: "Roboto Bold", variable: false }), "Roboto Bold");
+  assert.equal(fontDisplayName({ family: "Lato", fullName: undefined, variable: false }), "Lato");
+
+  // Bug I6: separate Variable Italic file detection + descriptor
+  const varItalNoAxis = {
+    source: "local",
+    family: "Inter",
+    fullName: "Inter Thin Italic",
+    fileName: "Inter-Italic[opsz,wght].ttf",
+    variable: true,
+    italic: true,
+    axes: [{ tag: "wght", name: "Weight", min: 100, max: 900, def: 100 }],
+  };
+  assert.equal(isItalicOnlyFace(varItalNoAxis), true);
+  assert.equal(vfStyleDescriptor(varItalNoAxis), "italic");
+  assert.equal(
+    isItalicOnlyFace({
+      ...varItalNoAxis,
+      axes: [...varItalNoAxis.axes, { tag: "ital", name: "Italic", min: 0, max: 1, def: 0 }],
+    }),
+    false,
+  );
+
+  // Bug I1: camelCase Variable filenames & preservation of SemiBold/ExtraLight
+  const iv = classifyFontFile({ name: "InterVariable.ttf", size: 300_000 }, 0);
+  const ivi = classifyFontFile({ name: "InterVariable-Italic.ttf", size: 310_000 }, 1);
+  const fira = classifyFontFile({ name: "FiraCode-SemiBold.ttf", size: 120_000 }, 2);
+  assert.equal(iv.isVariable, true);
+  assert.equal(iv.familyKey, "inter");
+  assert.equal(ivi.isVariable, true);
+  assert.equal(ivi.isItalic, true);
+  assert.equal(ivi.familyKey, "inter");
+  assert.equal(fira.familyLabel, "Fira Code");
+  assert.equal(guessFamilyFromFileName("InterVariable-Italic.ttf"), "Inter");
+
+  // Bug I2: multi-word excludeFamilies matches spaceless familyKey
+  const rootPath = "C:\\Fonts";
+  const filteredMulti = filterOriginPathsByRule(
+    [`${rootPath}\\OpenSans-Regular.ttf`, `${rootPath}\\Lato-Regular.ttf`],
+    rootPath,
+    {
+      varStaticMode: "both",
+      includeVariable: true,
+      includeStatic: true,
+      includeItalic: true,
+      formats: { ttf: true, otf: true, ttc: true, woff2: false, woff: false },
+      autoActivate: true,
+      excludeFamilies: ["open sans"],
+    },
+    [],
+  );
+  assert.deepEqual(filteredMulti, [`${rootPath}\\Lato-Regular.ttf`]);
+
+  // Bug I5: saved rule never deadlocks at 0 selected files when incoming folder is static-only
+  const staticOnlyAnalysis = analyzeImportBatch([{ name: "Roboto-Regular.ttf", size: 90_000 }], []);
+  const unblocked = selectionFromSavedRule(staticOnlyAnalysis, {
+    varStaticMode: "variable",
+    includeVariable: true,
+    includeStatic: false,
+    includeItalic: true,
+    formats: { ttf: true, otf: true, ttc: true, woff2: false, woff: false },
+    autoActivate: true,
+  });
+  assert.equal(unblocked.includeStatic, true);
+
+  // Distinct Smart Import presets
+  const mixedAnalysis = analyzeImportBatch(
+    [
+      { name: "InterVariable.ttf", size: 300_000 },
+      { name: "Inter-Regular.ttf", size: 80_000 },
+      { name: "Inter-Regular.woff2", size: 30_000 },
+    ],
+    [],
+  );
+  const smartPreset = presetSelection(mixedAnalysis, "smart");
+  const staticPreset = presetSelection(mixedAnalysis, "static-desktop");
+  const allPreset = presetSelection(mixedAnalysis, "all");
+  assert.equal(smartPreset.varStaticMode, "variable");
+  assert.equal(smartPreset.formats.woff2, false);
+  assert.equal(staticPreset.varStaticMode, "static");
+  assert.equal(staticPreset.includeVariable, false);
+  assert.equal(allPreset.varStaticMode, "both");
+  assert.equal(allPreset.formats.woff2, true);
+  assert.equal(activeImportPreset(mixedAnalysis, smartPreset), "smart");
+  assert.equal(activeImportPreset(mixedAnalysis, staticPreset), "static-desktop");
+  assert.equal(activeImportPreset(mixedAnalysis, allPreset), "all");
+
+  // UI/store/watch wiring contracts
+  const dialogTsx = readLocal("src/components/font-studio/import-options-dialog.tsx");
+  const folderTreeTsx = readLocal("src/components/font-studio/folder-tree.tsx");
+  const watchTs = readLocal("src/lib/fonts/watch-folder.ts");
+  const importFontsTs = readLocal("src/components/font-studio/import-fonts.ts");
+  const cardTsx = readLocal("src/components/font-studio/font-card.tsx");
+  const storeTs = readTsModule(process.cwd(), "src/lib/fonts/store.ts");
+
+  assert.match(dialogTsx, /data-testid="import-preset-smart"/);
+  assert.match(dialogTsx, /data-testid="import-preset-static-desktop"/);
+  assert.match(dialogTsx, /data-testid="import-preset-all"/);
+  assert.match(folderTreeTsx, /editWatchedFolderRules/);
+  assert.match(folderTreeTsx, /Import rules/);
+  assert.match(watchTs, /export async function editWatchedFolderRules/);
+  assert.match(importFontsTs, /st\.localFonts,\s*st\.systemFonts/);
+  assert.match(cardTsx, /fontDisplayName/);
+  assert.match(cardTsx, /title="Variable font"/);
+  assert.match(storeTs, /parsedVar\s*\?\s*undefined/);
 });

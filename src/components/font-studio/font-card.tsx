@@ -15,7 +15,7 @@ import { cssFamilyStack, evictFamilyPreview, loadFont, loadItalicFace, pinCss, u
 import { isDesktopShellSync } from "@/lib/desktop/open-fonts";
 import { openActivatedFolder } from "@/lib/fonts/os-activate";
 import { openContextMenu, type ContextMenuEntry } from "@/lib/context-menu-bus";
-import { axesForFont, axisStep, defaultWeightForFont, formatFvar, hasRealItalic, isItalicOnlyFace, italicPreviewStyle, previewAxisValues, previewWghtAxis, variationStyle } from "@/lib/fonts/axes";
+import { axesForFont, axisStep, defaultWeightForFont, fontDisplayName, formatFvar, hasRealItalic, isItalicOnlyFace, italicPreviewStyle, previewAxisValues, previewWghtAxis, variationStyle } from "@/lib/fonts/axes";
 import { previewSample } from "@/lib/fonts/emoji";
 import { scriptDir, scriptLang } from "@/lib/fonts/scripts";
 import { arabicPreviewLines } from "@/lib/fonts/arabic-preview";
@@ -486,6 +486,17 @@ export const FontCard = memo(function FontCard({
     </button>
   );
 
+  const vfBadge =
+    font.variable ? (
+      <Badge
+        variant="outline"
+        className="shrink-0 px-1.5 text-[10px] text-muted-foreground"
+        title="Variable font"
+      >
+        VF
+      </Badge>
+    ) : null;
+
   // Card 36: Chromium draws OpenType-SVG glyphs as plain outlines — say so on the
   // card with the existing outline Badge, not a new look.
   const svgHint =
@@ -534,8 +545,9 @@ export const FontCard = memo(function FontCard({
     e.preventDefault();
     e.stopPropagation();
     const state = useFontStore.getState();
+    const displayName = fontDisplayName(font);
     const items: ContextMenuEntry[] = [
-      { kind: "label", text: font.fullName || font.family },
+      { kind: "label", text: displayName },
     ];
     if (font.source !== "system") {
       items.push({
@@ -653,7 +665,7 @@ export const FontCard = memo(function FontCard({
       <button
         type="button"
         className="fm-card-open absolute inset-0 z-0 cursor-pointer focus-visible:outline-none"
-        aria-label={`Open ${font.fullName || font.family}`}
+        aria-label={`Open ${fontDisplayName(font)}`}
       />
       {hasCollections ? (
         <button
@@ -678,20 +690,23 @@ export const FontCard = memo(function FontCard({
       {layout === "list" ? (
         <>
           <div className={cn("fm-card-meta flex w-full min-w-0 shrink-0 items-center gap-1.5 border-b px-3 pr-20", metaTone)}>
-            <span className="min-w-0 truncate text-sm font-medium">{font.fullName || font.family}</span>
+            <span className="min-w-0 truncate text-sm font-medium">{fontDisplayName(font)}</span>
             {italicBtn}
-            {settled ? (
-              <Badge
-                variant="outline"
-                className="ml-auto border-muted-foreground/40 text-muted-foreground"
-                title={settledBadgeTitle}
-              >
-                Settled
-              </Badge>
-            ) : font.source === "local" ? (
-              <Badge variant="outline" className="ml-auto">Local</Badge>
-            ) : null}
-            {svgHint}
+            <span className="ml-auto flex min-w-0 items-center gap-1.5">
+              {vfBadge}
+              {settled ? (
+                <Badge
+                  variant="outline"
+                  className="border-muted-foreground/40 text-muted-foreground"
+                  title={settledBadgeTitle}
+                >
+                  Settled
+                </Badge>
+              ) : font.source === "local" ? (
+                <Badge variant="outline">Local</Badge>
+              ) : null}
+              {svgHint}
+            </span>
           </div>
           {specimenPane}
         </>
@@ -699,9 +714,10 @@ export const FontCard = memo(function FontCard({
         <>
           {specimenPane}
           <div className={cn("fm-card-meta flex w-full min-w-0 shrink-0 items-center gap-1.5 border-t px-3", metaTone)}>
-            <span className="min-w-0 truncate text-sm font-medium">{font.fullName || font.family}</span>
+            <span className="min-w-0 truncate text-sm font-medium">{fontDisplayName(font)}</span>
             {italicBtn}
             <span className="ml-auto flex min-w-0 items-center gap-1.5">
+              {vfBadge}
               {settled ? (
                 <Badge
                   variant="outline"
@@ -795,10 +811,10 @@ export const FontCard = memo(function FontCard({
               </DialogTitle>
               <DialogDescription>
                 {font.originPath
-                  ? `"${font.fullName || font.family}" lives in a watched folder (${font.originPath}). Hiding it removes it from Fonths and skips it on watch polls — the file on disk is never deleted.`
+                  ? `"${fontDisplayName(font)}" lives in a watched folder (${font.originPath}). Hiding it removes it from Fonths and skips it on watch polls — the file on disk is never deleted.`
                   : useFontStore.getState().desktopPrefs.deleteMode === "permanent"
-                    ? `This will permanently delete "${font.fullName || font.family}" from disk and remove it from your library. This cannot be undone.`
-                    : `This will move "${font.fullName || font.family}" to the Windows Recycle Bin and remove it from your library.`}
+                    ? `This will permanently delete "${fontDisplayName(font)}" from disk and remove it from your library. This cannot be undone.`
+                    : `This will move "${fontDisplayName(font)}" to the Windows Recycle Bin and remove it from your library.`}
               </DialogDescription>
             </DialogHeader>
             <div className="fm-dialog-footer">

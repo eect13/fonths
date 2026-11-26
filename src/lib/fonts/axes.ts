@@ -255,7 +255,13 @@ export function variationStyle(
   };
 }
 
-/** FontFace `style` descriptor covering the full `slnt` axis degree span when variable. */
+/** Primary display name: Variable fonts use bare `family` (ignoring Thin/Regular master names); static fonts preserve full cut name. */
+export function fontDisplayName(font: Pick<FontRecord, "family" | "fullName" | "variable">): string {
+  if (font.variable) return font.family;
+  return font.fullName?.trim() || font.family;
+}
+
+/** FontFace `style` descriptor covering the full `slnt` axis degree span when variable, or `italic` for italic-only VFs. */
 export function vfStyleDescriptor(font: Pick<FontRecord, "variable" | "italic" | "axes">): string {
   const slnt = (font.axes ?? []).find((a) => a.tag === "slnt");
   if (slnt && slnt.max > slnt.min) {
@@ -266,7 +272,9 @@ export function vfStyleDescriptor(font: Pick<FontRecord, "variable" | "italic" |
     if (hi > lo) return `oblique ${lo}deg ${hi}deg`;
     return `oblique ${lo}deg`;
   }
-  return font.italic && !font.variable ? "italic" : "normal";
+  const hasItalAxis = (font.axes ?? []).some((a) => a.tag === "ital");
+  if (font.italic && (!font.variable || !hasItalAxis)) return "italic";
+  return "normal";
 }
 
 export interface NamedInstance {
@@ -360,11 +368,16 @@ export function hasRealItalic(font: Pick<FontRecord, "italic" | "axes">) {
   return Boolean(ital || slnt || font.italic);
 }
 
-/** Uploaded italic-only file (Inter-Italic.ttf). Catalog `italic: true` means the family *has* an italic cut, not that this row is italic-only. */
+/** Uploaded italic-only file (e.g. Inter-Italic.ttf or Inter-Italic[opsz,wght].ttf without ital/slnt axis).
+ *  Catalog `italic: true` means the family *has* an italic cut, not that this row is italic-only. */
 export function isItalicOnlyFace(
-  font: Pick<FontRecord, "source" | "variable" | "italic" | "fileName" | "fullName">,
+  font: Pick<FontRecord, "source" | "variable" | "italic" | "fileName" | "fullName" | "axes">,
 ) {
-  if (font.variable || !font.italic || font.source !== "local") return false;
+  if (!font.italic || font.source !== "local") return false;
+  if (font.variable) {
+    const { ital, slnt } = realItalicAxes(font);
+    return !ital && !slnt;
+  }
   return /italic|oblique/i.test(`${font.fileName ?? ""} ${font.fullName ?? ""}`);
 }
 

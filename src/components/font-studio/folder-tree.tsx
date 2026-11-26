@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
-import { ChevronRight, Eye, FileJson, Folder, FolderPlus, FolderSearch, Layers, Package, Pencil, Power, Trash2, Upload } from "lucide-react";
+import { ChevronRight, Eye, FileJson, Folder, FolderPlus, FolderSearch, Layers, Package, Pencil, Power, SlidersHorizontal, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,7 +25,7 @@ import {
 import { ActivateMenuItem, DeactivateMenuItem } from "./activate-toggle";
 import { HelpTip } from "./help-tip";
 import { runFontImport } from "./import-fonts";
-import { addWatchedFolder, clearWatchedFileMemory } from "@/lib/fonts/watch-folder";
+import { addWatchedFolder, clearWatchedFileMemory, editWatchedFolderRules } from "@/lib/fonts/watch-folder";
 import { exportCollectionJson, exportCollectionZip, importCollectionJson } from "@/lib/fonts/export-collection";
 import { SidebarCount, SidebarOverflowMenu, sidebarMainClass } from "./sidebar-row";
 import type { Collection } from "@/lib/fonts/types";
@@ -474,21 +474,27 @@ const GroupRow = memo(function GroupRow({
             </DropdownMenuItem>
           ) : null}
           {folder.watchPath ? (
-            <DropdownMenuItem
-              onSelect={() => {
-                const on = !folder.autoActivate;
-                useFontStore.getState().setCollectionAutoActivate(folder.id, on);
-                if (on && fontIds.length) useFontStore.getState().setActivatedMany(fontIds, true);
-                toast.success(on ? "Auto-activate on" : "Auto-activate off", {
-                  description: on
-                    ? "New files in this folder activate for other apps."
-                    : "New files are listed only. Activate them yourself.",
-                });
-              }}
-            >
-              <Power className="size-3.5" />
-              {folder.autoActivate ? "Auto-activate on" : "Auto-activate off"}
-            </DropdownMenuItem>
+            <>
+              <DropdownMenuItem
+                onSelect={() => {
+                  const on = !folder.autoActivate;
+                  useFontStore.getState().setCollectionAutoActivate(folder.id, on);
+                  if (on && fontIds.length) useFontStore.getState().setActivatedMany(fontIds, true);
+                  toast.success(on ? "Auto-activate on" : "Auto-activate off", {
+                    description: on
+                      ? "New files in this folder activate for other apps."
+                      : "New files are listed only. Activate them yourself.",
+                  });
+                }}
+              >
+                <Power className="size-3.5" />
+                {folder.autoActivate ? "Auto-activate on" : "Auto-activate off"}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => void editWatchedFolderRules(folder.id)}>
+                <SlidersHorizontal className="size-3.5" />
+                Import rules…
+              </DropdownMenuItem>
+            </>
           ) : null}
           <DropdownMenuItem onSelect={() => onStartRename(folder.id)}>
             <Pencil className="size-3.5" />

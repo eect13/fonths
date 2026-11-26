@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { fontDisplayName } from "@/lib/fonts/axes";
 import { cssFamilyStack, loadFont } from "@/lib/fonts/loader";
 import { loadGlyphAtlas } from "@/lib/fonts/glyph-map";
 import { allFonts, findFont, tagsFor, useFontStore } from "@/lib/fonts/store";
@@ -194,7 +195,7 @@ export function FontPicker({
                           : undefined
                       }
                     >
-                      {font.fullName || font.family}
+                      {fontDisplayName(font)}
                     </span>
                     <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">
                       {font.source === "local" ? "file" : font.source === "system" ? "System" : CATEGORY_LABEL[font.category]}

@@ -1497,15 +1497,27 @@ export const useFontStore = create<FontState>()(
                     blob: new Blob([parsed.buffer], { type: fontMime(parsed.fileName) }),
                   });
                 }
+                const parsedVar = Boolean(parsed.variable || parsed.axes.length > 0);
+                const wghtAxis = parsed.axes.find((a) => a.tag === "wght" && a.max > a.min);
+                const vfStops = wghtAxis
+                  ? [100, 200, 300, 400, 500, 600, 700, 800, 900].filter(
+                      (w) => w >= wghtAxis.min && w <= wghtAxis.max,
+                    )
+                  : [];
+                const parsedWeights = vfStops.length ? vfStops : [parsed.weight || 400];
                 const record: FontRecord = {
                   id,
                   family: parsed.family,
-                  fullName: parsed.fullName && parsed.fullName !== parsed.family ? parsed.fullName : undefined,
+                  fullName: parsedVar
+                    ? undefined
+                    : parsed.fullName && parsed.fullName !== parsed.family
+                      ? parsed.fullName
+                      : undefined,
                   source: "local",
                   category: parsed.category,
-                  weights: [parsed.weight],
+                  weights: parsedWeights,
                   italic: parsed.italic,
-                  variable: parsed.variable,
+                  variable: parsedVar,
                   axes: parsed.axes.length ? snapAxes(parsed.axes) : undefined,
                   otFeatures: parsed.otFeatures.length ? parsed.otFeatures : undefined,
                   instances: parsed.instances.length ? parsed.instances : undefined,
@@ -1744,6 +1756,7 @@ export const useFontStore = create<FontState>()(
                 (row.variable || row.axes.length > 0) && !style.tags.includes("variable")
                   ? [...style.tags, "variable"]
                   : style.tags;
+              const rowVar = Boolean(row.variable || row.axes.length > 0);
               const wghtAxis = row.axes.find((a) => a.tag === "wght" && a.max > a.min);
               const vfStops = wghtAxis
                 ? [100, 200, 300, 400, 500, 600, 700, 800, 900].filter(
@@ -1754,12 +1767,16 @@ export const useFontStore = create<FontState>()(
               waveRecords.push({
                 id,
                 family: row.family,
-                fullName: row.fullName && row.fullName !== row.family ? row.fullName : undefined,
+                fullName: rowVar
+                  ? undefined
+                  : row.fullName && row.fullName !== row.family
+                    ? row.fullName
+                    : undefined,
                 source: "local",
                 category: style.category,
                 weights,
                 italic: row.italic,
-                variable: row.variable,
+                variable: rowVar,
                 axes: row.axes.length ? row.axes : undefined,
                 otFeatures: row.otFeatures.length ? row.otFeatures : undefined,
                 tags,

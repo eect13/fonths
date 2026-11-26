@@ -40,7 +40,7 @@ test("cards are not role=button with buttons nested inside (4.1.2)", () => {
   // not also call selectFont itself.
   const open = card.slice(card.indexOf("aria-label={`Open"), card.indexOf("/>", card.indexOf("aria-label={`Open")));
   assert.doesNotMatch(open, /onClick=/);
-  assert.match(card, /aria-label=\{`Open \$\{font\.fullName \|\| font\.family\}`\}/);
+  assert.match(card, /aria-label=\{`Open \$\{(?:fontDisplayName\(font\)|font\.fullName \|\| font\.family)\}`\}/);
 });
 
 test("card focus ring is drawn on the card, not clipped on the overlay (2.4.7)", () => {

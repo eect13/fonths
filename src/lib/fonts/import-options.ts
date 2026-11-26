@@ -9,6 +9,7 @@
 export type FontFileFormat = "ttf" | "otf" | "ttc" | "woff2" | "woff";
 export type VarStaticMode = "variable" | "static" | "both";
 export type ImportSourceMode = "upload" | "watch";
+export type ImportPresetId = "smart" | "static-desktop" | "all";
 
 export interface SavedImportRule {
   varStaticMode: VarStaticMode;
@@ -89,6 +90,7 @@ export interface ImportOptionsRequest {
   analysis: ImportBatchAnalysis;
   mode: ImportSourceMode;
   folderLabel?: string;
+  initialRule?: SavedImportRule;
 }
 
 const KNOWN_FORMATS = new Set<string>(["ttf", "otf", "ttc", "otc", "woff2", "woff"]);
@@ -162,6 +164,8 @@ function stripTrailingStyleTokens(stem: string): string {
   let clean = stem.replace(/\[[^\]]+\]/g, " ");
   // Remove VariableFont_... suffixes (e.g. Inter-VariableFont_opsz,wght).
   clean = clean.replace(/[-_\s]*variablefont(?:[-_,\s]+[a-z0-9]+)*/gi, " ");
+  // Strip camelCase `Variable` suffix before tokenizing (e.g. InterVariable-Italic -> Inter -Italic).
+  clean = clean.replace(/([a-z0-9])Variable(?=$|[-_\s,]|Italic|Oblique)/g, "$1 ");
   // Remove optical size suffixes like _18pt, _24pt, -18pt.
   clean = clean.replace(/[-_\s]+\d+pt\b/gi, " ");
   // Split into tokens on separators.
@@ -199,6 +203,7 @@ export function classifyFontFile(file: MinimalFileLike, index: number): Classifi
   const hasVarMarker =
     /\[[^\]]*(?:wght|opsz|wdth|slnt|ital|grad|soft|wonk|casl|crsv)[^\]]*\]/i.test(stem) ||
     /variablefont/i.test(stem) ||
+    /[a-z0-9]Variable(?:$|[-_\s,]|Italic|Oblique)/.test(stem) ||
     /(?:^|[-_\s])(variable|varfont|vf)(?:$|[-_\s,])/i.test(stem) ||
     /(?:^|[-_])(?:opsz[-_,])?wght(?:$|[-_,])/i.test(stem);
 
@@ -496,6 +501,71 @@ export function clearSavedImportRule(): void {
   }
 }
 
+export function presetSelection(
+  analysis: ImportBatchAnalysis,
+  preset: ImportPresetId,
+): ImportOptionsSelection {
+  const smart = defaultImportSelection(analysis);
+  if (preset === "smart") return smart;
+  if (preset === "static-desktop") {
+    return {
+      ...smart,
+      varStaticMode: "static",
+      includeVariable: false,
+      includeStatic: true,
+      includeItalic: true,
+      formats: {
+        ttf: true,
+        otf: true,
+        ttc: true,
+        woff2: false,
+        woff: false,
+      },
+    };
+  }
+  return {
+    ...smart,
+    varStaticMode: "both",
+    includeVariable: true,
+    includeStatic: true,
+    includeItalic: true,
+    formats: {
+      ttf: true,
+      otf: true,
+      ttc: true,
+      woff2: true,
+      woff: true,
+    },
+  };
+}
+
+export function activeImportPreset(
+  analysis: ImportBatchAnalysis,
+  selection: ImportOptionsSelection,
+): ImportPresetId | null {
+  const candidates: ImportPresetId[] =
+    analysis.staticCount > 0 && analysis.hasDesktop
+      ? ["smart", "static-desktop", "all"]
+      : ["smart", "all"];
+  for (const id of candidates) {
+    const p = presetSelection(analysis, id);
+    if (
+      selection.varStaticMode === p.varStaticMode &&
+      selection.includeVariable === p.includeVariable &&
+      selection.includeStatic === p.includeStatic &&
+      selection.includeItalic === p.includeItalic &&
+      selection.formats.ttf === p.formats.ttf &&
+      selection.formats.otf === p.formats.otf &&
+      selection.formats.ttc === p.formats.ttc &&
+      selection.formats.woff2 === p.formats.woff2 &&
+      selection.formats.woff === p.formats.woff
+    ) {
+      return id;
+    }
+  }
+  return null;
+}
+
 /** Merge saved user defaults with smart batch safeguards so we never deadlock at 0 selected files. */
 export function selectionFromSavedRule(
   analysis: ImportBatchAnalysis,
@@ -516,12 +586,29 @@ export function selectionFromSavedRule(
     woff2: !analysis.hasDesktop && analysis.formats.woff2 > 0 ? true : saved.formats.woff2,
     woff: !analysis.hasDesktop && analysis.formats.woff > 0 ? true : saved.formats.woff,
   };
+  if (analysis.presentFormats.length > 0 && !analysis.presentFormats.some((fmt) => formats[fmt])) {
+    for (const fmt of analysis.presentFormats) {
+      if (analysis.hasDesktop && (fmt === "woff" || fmt === "woff2")) continue;
+      formats[fmt] = true;
+    }
+    if (!analysis.presentFormats.some((fmt) => formats[fmt])) {
+      for (const fmt of analysis.presentFormats) formats[fmt] = true;
+    }
+  }
+  const includeVariable =
+    analysis.staticCount === 0 && analysis.variableCount > 0 ? true : saved.includeVariable;
+  const includeStatic =
+    analysis.variableCount === 0 && analysis.staticCount > 0 ? true : saved.includeStatic;
+  const includeItalic =
+    analysis.italicCount === analysis.totalFiles && analysis.totalFiles > 0
+      ? true
+      : saved.includeItalic;
   return {
     ...smart,
     varStaticMode,
-    includeVariable: saved.includeVariable,
-    includeStatic: saved.includeStatic,
-    includeItalic: saved.includeItalic,
+    includeVariable,
+    includeStatic,
+    includeItalic,
     formats,
     autoActivate: saved.autoActivate,
     saveAsDefault: true,
@@ -595,7 +682,7 @@ export function filterOriginPathsByRule(
   const analysis = analyzeImportBatch(likes, existingLocalFonts);
   const selection = selectionFromSavedRule(analysis, rule);
   const filtered = filterImportFiles(likes, analysis, selection);
-  const excluded = new Set((rule.excludeFamilies ?? []).map((f) => f.trim().toLowerCase()));
+  const excluded = new Set((rule.excludeFamilies ?? []).map(normalizeImportFamilyKey).filter(Boolean));
   const keptIndices = new Set(
     filtered.files
       .map((item) => likes.indexOf(item))
@@ -603,7 +690,7 @@ export function filterOriginPathsByRule(
         if (i < 0) return false;
         if (!excluded.size) return true;
         const classified = analysis.files[i];
-        return !classified || !excluded.has(classified.familyKey.toLowerCase());
+        return !classified || !excluded.has(classified.familyKey);
       }),
   );
   return originPaths.filter((_, i) => keptIndices.has(i));
@@ -629,7 +716,7 @@ export function subscribeImportOptions(fn: Listener): () => void {
 
 export function requestImportOptions(
   analysis: ImportBatchAnalysis,
-  opts?: { mode?: ImportSourceMode; folderLabel?: string },
+  opts?: { mode?: ImportSourceMode; folderLabel?: string; initialRule?: SavedImportRule },
 ): Promise<ImportOptionsSelection | null> {
   if (currentResolver) {
     currentResolver(null);
@@ -640,6 +727,7 @@ export function requestImportOptions(
       analysis,
       mode: opts?.mode ?? "upload",
       folderLabel: opts?.folderLabel,
+      initialRule: opts?.initialRule,
     };
     currentResolver = resolve;
     emit();

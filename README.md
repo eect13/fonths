@@ -1,4 +1,4 @@
-# Fonths 2.7.0
+# Fonths 2.8.0
 
 A high-performance, zero-background-RAM Windows desktop font manager built with **Tauri v2 (Rust 1.100.0, edition 2024)**, **100% pure-Rust Google Fontations (`read-fonts` + `skrifa`) + `harfrust` + `tiny-skia`**, **`rayon`**, a **zero-copy `font://` custom URI protocol**, and **React 19 + Vite 8 Rolldown**. Scan, inspect, preview with 100% OpenType fidelity, organize, and activate Google Fonts and local typefaces in **Adobe Photoshop / Illustrator / InDesign, Microsoft Word, Affinity, CorelDRAW, and Figma**—**without permanently installing them into `C:\Windows\Fonts`**.
 
@@ -6,8 +6,9 @@ By default (**Zero-RAM Instant mode**), Fonths registers active fonts via **Wind
 
 ---
 
-## Core Architecture (v2.7.0)
+## Core Architecture (v2.8.0)
 
+- **Smart Import Presets, Clean Variable Font Naming & Watched Folder Rules Editor (`import-options.ts`, `import-options-dialog.tsx`, `watch-folder.ts`, `axes.ts`, `font-card.tsx`):** Replaces duplicate presets with 3 genuinely distinct highlighted pills (**Smart (Recommended)**, **Static Desktop**, **All Files**); shows clean bare family names + a subtle `VF` badge for Variable Fonts while preserving full cut names for Static files; adds `Import rules…` in Watched Folder `...` menus to re-edit filter rules anytime without touching files on disk; and fixes camelCase `InterVariable` detection, multi-word `excludeFamilies` watch filtering, Local/System upload collision checks, uploaded VF weight stops, saved-rule 0-file deadlocks, and separate Variable Italic previews.
 - **Normal-Weight Library Previews (`downloads.rs`, `meta_index.rs`, `axes.ts`, `loader.ts`):** Ranked Regular (`400`) static face selection (`static_regular_rank`) prevents alphabetical `100` Thin picks; Thin-origin Variable Fonts default library specimen previews to `400` (`defaultWeightForFont`); and Variable Fonts always register an explicit weight-range `font://` `FontFace` even when active in Windows.
 - **Duplicates Tab Overhaul (`duplicate-finder.tsx`, `duplicate-engine.ts`, `store.ts`, `watch-folder.ts`):** Fixes double-scan flicker and multi-weight local Bold/Italic false hiding, guarantees non-destructive **Hide / Ignore** (`ignoredWatchedPaths`) for watched-folder files vs. **Delete** for copied uploads, adds true conflict-swapping **Activate** (`swapActivateFont`), shows folder paths + `Keep` badges + live mini specimens, and provides 1-click **Clean redundant copies** with full breakdown.
 - **Streamlined UI Polish (`folder-tree.tsx`, `preview-toolbar.tsx`, `library-grid.tsx`, `desktop-settings.tsx`, `font-card.tsx`):** Removes redundant inline Watched Folder power buttons (all bulk actions stay in `...`), deduplicates `PreviewToolbar` `More (...)` & `Local Files` header actions, keeps live Win32 stats in Settings `Diagnostics & Health` only, and replaces native browser `window.confirm` with an in-app Radix dialog.
@@ -47,7 +48,7 @@ By default (**Zero-RAM Instant mode**), Fonths registers active fonts via **Wind
 
 ## Font Engine Comparison: FontBase vs. MainType vs. NexusFont vs. Fonths
 
-| Architecture Dimension | FontBase | MainType (High-Logic) | NexusFont | **Fonths 2.7.0** |
+| Architecture Dimension | FontBase | MainType (High-Logic) | NexusFont | **Fonths 2.8.0** |
 | --- | --- | --- | --- | --- |
 | **Runtime & UI** | Electron (Chromium + Node.js) | Native C++ / Win32 + `FmsService` | Native Delphi / Win32 | **Tauri v2 (Rust 1.100, 2024) + Pure-Rust Fontations/HarfRust + React 19 + Vite 8** |
 | **Watched / Local Folders** | Copies or links into `~/FontBase`; `Providers/Google` | SQLite vault + synced disk folders | In-place folder references | **Strictly in-place Watched Folders + ETag/304 Ask-Before-Sync `Providers\Google` + 1-click VF Optimize** |
@@ -80,8 +81,8 @@ npm run test:desktop
 npx tauri build
 ```
 Installers are written to:
-- `src-tauri/target/release/bundle/nsis/Fonths_2.7.0_x64-setup.exe`
-- `src-tauri/target/release/bundle/msi/Fonths_2.7.0_x64_en-US.msi`
+- `src-tauri/target/release/bundle/nsis/Fonths_2.8.0_x64-setup.exe`
+- `src-tauri/target/release/bundle/msi/Fonths_2.8.0_x64_en-US.msi`
 
 See [docs/ARCHITECTURE-2.0.0.md](docs/ARCHITECTURE-2.0.0.md) for historical architecture notes.
 
